@@ -1,0 +1,22 @@
+{
+  "record_size": 8,
+  "endianness": "little",
+  "signals": [
+    {
+      "name": "sine",
+      "value_type": "float32",
+      "byte_offset": 0,
+      "scale": 1.0,
+      "bias": 0.0,
+      "unit": ""
+    },
+    {
+      "name": "cosine",
+      "value_type": "float32",
+      "byte_offset": 4,
+      "scale": 1.0,
+      "bias": 0.0,
+      "unit": ""
+    }
+  ]
+}
