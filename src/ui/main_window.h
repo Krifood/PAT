@@ -10,8 +10,10 @@ class QLabel;
 class QListWidget;
 class QVBoxLayout;
 class QMouseEvent;
+class QWheelEvent;
 class QGraphicsLineItem;
 class QGraphicsSimpleTextItem;
+class QPoint;
 QT_END_NAMESPACE
 
 #ifdef PAT_ENABLE_QT_CHARTS
@@ -39,7 +41,13 @@ class MainWindow : public QMainWindow {
   bool eventFilter(QObject* obj, QEvent* event) override;
   struct ChartItem;
   ChartItem* findChart(QChartView* view);
-  void handleMouseMove(ChartItem& item, QMouseEvent* event);
+  void applySharedXRange();
+  void resetSharedXRange();
+  void handleMouseMove(ChartItem& item, QMouseEvent* event, const QPoint& viewPos);
+  void handleWheelEvent(ChartItem& item, QWheelEvent* event, const QPoint& viewPos);
+  void handleMousePress(ChartItem& item, QMouseEvent* event, const QPoint& viewPos);
+  void handleMouseRelease(ChartItem& item, QMouseEvent* event);
+  QPoint mapToView(QChartView* view, QObject* eventObj, const QPointF& pos) const;
   void updateSharedCursor(int sampleIndex);
   void hideCrosshairs();
 
@@ -49,6 +57,8 @@ class MainWindow : public QMainWindow {
     QGraphicsLineItem* crosshair = nullptr;
     QGraphicsSimpleTextItem* valueLabel = nullptr;
     int seriesIndex = -1;
+    bool panning = false;
+    QPoint lastPanPos;
   };
 
   pat::FormatDefinition format_;
@@ -63,6 +73,11 @@ class MainWindow : public QMainWindow {
   QVBoxLayout* chartsLayout_ = nullptr;
   QVector<ChartItem> charts_;
   int sharedCursorIndex_ = -1;
+  double globalMinX_ = 0.0;
+  double globalMaxX_ = 0.0;
+  double sharedMinX_ = 0.0;
+  double sharedMaxX_ = 0.0;
+  bool hasSharedRange_ = false;
 #endif
   QLabel* statusLabel_ = nullptr;
 };

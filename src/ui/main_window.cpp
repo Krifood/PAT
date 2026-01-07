@@ -13,9 +13,12 @@
 #include <QScrollArea>
 #include <QWidget>
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QGraphicsLineItem>
 #include <QGraphicsSimpleTextItem>
+#include <QColor>
 #include <QPen>
+#include <QSizePolicy>
 #include <algorithm>
 #include <cmath>
 
@@ -40,7 +43,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 }
 
 void MainWindow::setupUi() {
-  setWindowTitle(tr("PAT 飞参解析工具"));
+  setWindowTitle(tr("param_analysis_tool"));
 
   auto* openFormatAction = new QAction(tr("打开格式..."), this);
   auto* openDataAction = new QAction(tr("打开数据..."), this);
@@ -76,7 +79,7 @@ void MainWindow::setupUi() {
   chartsContainer_ = new QWidget(scroll);
   chartsLayout_ = new QVBoxLayout(chartsContainer_);
   chartsLayout_->setContentsMargins(0, 0, 0, 0);
-  chartsLayout_->setSpacing(8);
+  chartsLayout_->setSpacing(12);
   chartsContainer_->setLayout(chartsLayout_);
   scroll->setWidget(chartsContainer_);
   rightLayout->addWidget(scroll, /*stretch=*/1);
@@ -165,6 +168,33 @@ void MainWindow::updateChart() {
     for (int i = 0; i < series_.size(); ++i) selected.append(i);
   }
 
+  // 计算全局时间范围（供所有子图共享 X 轴）
+  double globalMinX = 0.0;
+  double globalMaxX = 0.0;
+  bool hasX = false;
+  for (int idx : selected) {
+    if (idx < 0 || idx >= series_.size()) continue;
+    const auto& s = series_[idx];
+    for (const auto& pt : s.samples) {
+      if (!hasX) {
+        globalMinX = globalMaxX = pt.x();
+        hasX = true;
+      } else {
+        globalMinX = std::min(globalMinX, pt.x());
+        globalMaxX = std::max(globalMaxX, pt.x());
+      }
+    }
+  }
+  if (!hasX) {
+    globalMinX = 0.0;
+    globalMaxX = 1.0;
+  }
+  globalMinX_ = globalMinX;
+  globalMaxX_ = globalMaxX;
+  sharedMinX_ = globalMinX_;
+  sharedMaxX_ = globalMaxX_;
+  hasSharedRange_ = true;
+
   // 计算全局幅值范围（所有已加载信号，保持比例稳定）
   double globalMinY = 0.0;
   double globalMaxY = 0.0;
@@ -195,6 +225,10 @@ void MainWindow::updateChart() {
     const auto& s = series_[idx];
     auto* chart = new QChart();
     chart->setTitle(s.unit.isEmpty() ? s.name : QStringLiteral("%1 (%2)").arg(s.name, s.unit));
+    chart->setBackgroundBrush(QColor(24, 26, 30));
+    chart->setPlotAreaBackgroundBrush(QColor(24, 26, 30));
+    chart->setPlotAreaBackgroundVisible(true);
+    chart->setTitleBrush(QBrush(Qt::white));
 
     auto* line = new QLineSeries(chart);
     for (const auto& pt : s.samples) {
@@ -204,13 +238,20 @@ void MainWindow::updateChart() {
 
     auto* axisX = new QValueAxis(chart);
     axisX->setTitleText(tr("时间索引"));
-    const double maxX = s.samples.isEmpty() ? 0.0 : s.samples.last().x();
-    axisX->setRange(0.0, maxX);
+    axisX->setRange(sharedMinX_, sharedMaxX_);
+    axisX->setLabelsColor(Qt::white);
+    axisX->setTitleBrush(QBrush(Qt::white));
+    axisX->setLinePen(QPen(QColor(200, 200, 200)));
+    axisX->setGridLinePen(QPen(QColor(80, 80, 80)));
     chart->addAxis(axisX, Qt::AlignBottom);
     line->attachAxis(axisX);
 
     auto* axisY = new QValueAxis(chart);
     axisY->setRange(globalMinY, globalMaxY);
+    axisY->setLabelsColor(Qt::white);
+    axisY->setTitleBrush(QBrush(Qt::white));
+    axisY->setLinePen(QPen(QColor(200, 200, 200)));
+    axisY->setGridLinePen(QPen(QColor(80, 80, 80)));
     chart->addAxis(axisY, Qt::AlignLeft);
     line->attachAxis(axisY);
 
@@ -222,6 +263,8 @@ void MainWindow::updateChart() {
       view->viewport()->setMouseTracking(true);
       view->viewport()->installEventFilter(this);
     }
+    view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    view->setMinimumHeight(320);
 
     auto* cross = new QGraphicsLineItem();
     QPen pen(Qt::red);
@@ -232,7 +275,7 @@ void MainWindow::updateChart() {
     chart->scene()->addItem(cross);
 
     auto* label = new QGraphicsSimpleTextItem(chart);
-    label->setBrush(Qt::white);
+    label->setBrush(QColor("#FFD447"));
     label->setVisible(false);
 
     chartsLayout_->addWidget(view);
@@ -246,6 +289,7 @@ void MainWindow::updateChart() {
   }
 
   chartsLayout_->addStretch();
+  applySharedXRange();
 #endif
 }
 
@@ -277,6 +321,28 @@ MainWindow::ChartItem* MainWindow::findChart(QChartView* view) {
   return nullptr;
 }
 
+void MainWindow::applySharedXRange() {
+#ifdef PAT_ENABLE_QT_CHARTS
+  if (!hasSharedRange_) return;
+  for (auto& item : charts_) {
+    if (!item.view || !item.series) continue;
+    auto* chart = item.view->chart();
+    if (!chart) continue;
+    auto* axisX = qobject_cast<QValueAxis*>(chart->axes(Qt::Horizontal, item.series).value(0));
+    if (axisX) axisX->setRange(sharedMinX_, sharedMaxX_);
+  }
+#endif
+}
+
+void MainWindow::resetSharedXRange() {
+#ifdef PAT_ENABLE_QT_CHARTS
+  if (!hasSharedRange_) return;
+  sharedMinX_ = globalMinX_;
+  sharedMaxX_ = globalMaxX_;
+  applySharedXRange();
+#endif
+}
+
 bool MainWindow::eventFilter(QObject* obj, QEvent* event) {
 #ifdef PAT_ENABLE_QT_CHARTS
   QChartView* targetView = qobject_cast<QChartView*>(obj);
@@ -286,9 +352,26 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event) {
     }
   }
   if (targetView) {
+    QPoint viewPos;
     if (event->type() == QEvent::MouseMove) {
       if (auto* item = findChart(targetView)) {
-        handleMouseMove(*item, static_cast<QMouseEvent*>(event));
+        viewPos = mapToView(targetView, obj, static_cast<QMouseEvent*>(event)->position());
+        handleMouseMove(*item, static_cast<QMouseEvent*>(event), viewPos);
+      }
+    } else if (event->type() == QEvent::Wheel) {
+      if (auto* item = findChart(targetView)) {
+        viewPos = mapToView(targetView, obj, static_cast<QWheelEvent*>(event)->position());
+        handleWheelEvent(*item, static_cast<QWheelEvent*>(event), viewPos);
+        return true;
+      }
+    } else if (event->type() == QEvent::MouseButtonPress) {
+      if (auto* item = findChart(targetView)) {
+        viewPos = mapToView(targetView, obj, static_cast<QMouseEvent*>(event)->position());
+        handleMousePress(*item, static_cast<QMouseEvent*>(event), viewPos);
+      }
+    } else if (event->type() == QEvent::MouseButtonRelease) {
+      if (auto* item = findChart(targetView)) {
+        handleMouseRelease(*item, static_cast<QMouseEvent*>(event));
       }
     } else if (event->type() == QEvent::Leave) {
       hideCrosshairs();
@@ -299,7 +382,7 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event) {
   return QMainWindow::eventFilter(obj, event);
 }
 
-void MainWindow::handleMouseMove(ChartItem& item, QMouseEvent* event) {
+void MainWindow::handleMouseMove(ChartItem& item, QMouseEvent* event, const QPoint& viewPos) {
 #ifdef PAT_ENABLE_QT_CHARTS
   if (!item.view || !item.series) return;
   auto* chart = item.view->chart();
@@ -307,16 +390,107 @@ void MainWindow::handleMouseMove(ChartItem& item, QMouseEvent* event) {
   const int samplesCount = static_cast<int>(series_.value(item.seriesIndex).samples.size());
   if (samplesCount == 0) return;
 
-  // 统一使用 viewport 坐标映射，保证所有子图的竖线同步
-  QPoint viewPos = event->pos();
-  if (item.view->viewport()) {
-    viewPos = item.view->viewport()->mapFromGlobal(event->globalPosition().toPoint());
+  if (item.panning && hasSharedRange_) {
+    const QRectF plotArea = chart->plotArea();
+    const double span = sharedMaxX_ - sharedMinX_;
+    const double globalSpan = globalMaxX_ - globalMinX_;
+    if (!plotArea.isEmpty() && span > 0.0 && globalSpan > 0.0) {
+      const double dx = static_cast<double>(viewPos.x() - item.lastPanPos.x());
+      const double deltaValue = dx / plotArea.width() * span;
+      double newMin = sharedMinX_ - deltaValue;
+      double newMax = sharedMaxX_ - deltaValue;
+      if (newMin < globalMinX_) {
+        newMin = globalMinX_;
+        newMax = globalMinX_ + span;
+      }
+      if (newMax > globalMaxX_) {
+        newMax = globalMaxX_;
+        newMin = globalMaxX_ - span;
+      }
+      sharedMinX_ = newMin;
+      sharedMaxX_ = newMax;
+      applySharedXRange();
+      item.lastPanPos = viewPos;
+    }
   }
-  const QPointF plotPoint = chart->mapToValue(viewPos, item.series);
+
+  // 统一使用 viewport 坐标映射，保证所有子图的竖线同步
+  const QPointF plotPoint = chart->mapToValue(item.view->mapToScene(viewPos), item.series);
   int idx = static_cast<int>(std::round(plotPoint.x()));
   idx = std::max(0, std::min(idx, samplesCount - 1));
   updateSharedCursor(idx);
 #endif
+}
+
+void MainWindow::handleWheelEvent(ChartItem& item, QWheelEvent* event, const QPoint& viewPos) {
+#ifdef PAT_ENABLE_QT_CHARTS
+  if (!item.view || !item.series) return;
+  auto* chart = item.view->chart();
+  if (!chart || !hasSharedRange_) return;
+
+  const auto& data = series_.value(item.seriesIndex);
+  if (data.samples.isEmpty()) return;
+
+  const QPointF valuePoint = chart->mapToValue(item.view->mapToScene(viewPos), item.series);
+  const double focusX = valuePoint.x();
+
+  const double span = sharedMaxX_ - sharedMinX_;
+  const double globalSpan = globalMaxX_ - globalMinX_;
+  if (span <= 0.0 || globalSpan <= 0.0) return;
+
+  const int deltaY = event->angleDelta().y();
+  const double factor = deltaY > 0 ? 0.8 : 1.25;
+  const double minSpan = 1e-6;
+  const double desiredSpan = std::max(span * factor, minSpan);
+  const double targetSpan = std::min(desiredSpan, globalSpan);
+
+  double left = focusX - (focusX - sharedMinX_) * (targetSpan / span);
+  double right = left + targetSpan;
+
+  if (left < globalMinX_) {
+    left = globalMinX_;
+    right = left + targetSpan;
+  }
+  if (right > globalMaxX_) {
+    right = globalMaxX_;
+    left = right - targetSpan;
+  }
+
+  sharedMinX_ = left;
+  sharedMaxX_ = right;
+  applySharedXRange();
+  event->accept();
+#endif
+}
+
+void MainWindow::handleMousePress(ChartItem& item, QMouseEvent* event, const QPoint& viewPos) {
+#ifdef PAT_ENABLE_QT_CHARTS
+  if (event->button() == Qt::LeftButton) {
+    item.panning = true;
+    item.lastPanPos = viewPos;
+    event->accept();
+  }
+#endif
+}
+
+void MainWindow::handleMouseRelease(ChartItem& item, QMouseEvent* event) {
+#ifdef PAT_ENABLE_QT_CHARTS
+  if (event->button() == Qt::LeftButton) {
+    item.panning = false;
+    event->accept();
+  }
+#endif
+}
+
+QPoint MainWindow::mapToView(QChartView* view, QObject* eventObj, const QPointF& pos) const {
+#ifdef PAT_ENABLE_QT_CHARTS
+  if (!view) return {};
+  if (auto* widget = qobject_cast<QWidget*>(eventObj)) {
+    const QPoint globalPos = widget->mapToGlobal(pos.toPoint());
+    return view->mapFromGlobal(globalPos);
+  }
+#endif
+  return pos.toPoint();
 }
 
 void MainWindow::updateSharedCursor(int sampleIndex) {
