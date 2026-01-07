@@ -24,8 +24,8 @@ if(PAT_ENABLE_QT_CHARTS)
 endif()
 
 add_library(pat_core
-  src/core/format_definition.cpp
-  src/core/record_parser.cpp
+  src/core/FormatDefinition.cpp
+  src/core/RecordParser.cpp
 )
 
 target_include_directories(pat_core
@@ -47,8 +47,9 @@ if(PAT_STRICT_WARNINGS)
 endif()
 
 add_executable(pat_app
-  src/ui/main.cpp
-  src/ui/main_window.cpp
+  src/ui/Main.cpp
+  src/ui/MainWindow.cpp
+  src/ui/SignalTreeWidget.cpp
 )
 
 target_include_directories(pat_app
