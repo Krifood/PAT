@@ -127,7 +127,7 @@ bool RecordParser::ParseFile(const QString& path, QVector<Series>& outSeries, QS
                 errorMessage = QStringLiteral("信号 '%1' 类型不支持：%2").arg(sig.name, sig.valueType);
                 return false;
             }
-            outSeries[s].samples.append(QPointF(static_cast<double>(recordIndex), value));
+            outSeries[s].samples.append(QPointF(static_cast<double>(recordIndex) * sig.timeScale, value));
         }
     }
 

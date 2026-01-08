@@ -44,6 +44,8 @@ bool ParseSignal(const QJsonObject& obj, SignalFormat& outSignal, int recordSize
 
     outSignal.scale = obj.value(QStringLiteral("scale")).toDouble(1.0);
     outSignal.bias = obj.value(QStringLiteral("bias")).toDouble(0.0);
+    outSignal.timeScale = obj.value(QStringLiteral("time_scale")).toDouble(1.0);
+    if (outSignal.timeScale <= 0.0) outSignal.timeScale = 1.0;
     outSignal.unit = obj.value(QStringLiteral("unit")).toString();
     outSignal.groupPath = obj.value(QStringLiteral("group")).toString();
     return true;
@@ -63,8 +65,12 @@ bool LoadFormatFromJson(const QString& path, FormatDefinition& outFormat, QStrin
         return false;
     }
 
+    return LoadFormatFromJsonData(file.readAll(), outFormat, errorMessage);
+}
+
+bool LoadFormatFromJsonData(const QByteArray& data, FormatDefinition& outFormat, QString& errorMessage) {
     QJsonParseError parseError{};
-    const auto doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+    const auto doc = QJsonDocument::fromJson(data, &parseError);
     if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
         errorMessage = QStringLiteral("JSON 解析失败：%1").arg(parseError.errorString());
         return false;

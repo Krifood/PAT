@@ -4,7 +4,13 @@
 #include <QAbstractItemView>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFile>
 #include <QLabel>
+#include <QTextEdit>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QInputDialog>
+#include <QPushButton>
 #include <QMenu>
 #include <QTreeWidgetItem>
 #include <QMenuBar>
@@ -17,6 +23,14 @@
 #include <QWidget>
 #include <QMouseEvent>
 #include <QWheelEvent>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QDataStream>
+#include <QContextMenuEvent>
+#include <QDrag>
+#include <QApplication>
 #include <QGraphicsLineItem>
 #include <QGraphicsSimpleTextItem>
 #include <QRubberBand>
@@ -26,10 +40,12 @@
 #include <QResizeEvent>
 #include <QSignalBlocker>
 #include <QMap>
+#include <QSet>
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 
 #include "ui/SignalTreeWidget.h"
 
@@ -77,6 +93,14 @@ QPoint ViewportPoint(QChartView* view, const QPointF& globalPos) {
     if (!view || !view->viewport()) return globalPos.toPoint();
     return view->viewport()->mapFromGlobal(globalPos.toPoint());
 }
+
+QPointF ChartPointFromViewport(QChartView* view, QChart* chart, const QPoint& viewportPos) {
+    if (!view || !chart) return viewportPos;
+    const QPointF scenePos = view->mapToScene(viewportPos);
+    return chart->mapFromScene(scenePos);
+}
+
+constexpr const char* kChartReorderMime = "application/x-pat-chart-reorder";
 #endif
 
 }  // namespace
@@ -89,16 +113,31 @@ void MainWindow::SetupUi() {
     setWindowTitle(tr("PAT 飞参解析工具"));
 
     auto* openFormatAction = new QAction(tr("打开格式..."), this);
+    auto* newFormatAction = new QAction(tr("新建格式..."), this);
+    auto* editFormatAction = new QAction(tr("编辑格式..."), this);
+    auto* saveFormatAction = new QAction(tr("保存格式"), this);
+    auto* saveAsFormatAction = new QAction(tr("格式另存为..."), this);
     auto* openDataAction = new QAction(tr("打开数据..."), this);
+    auto* setMaxPointsAction = new QAction(tr("设置最大显示点数..."), this);
     auto* exitAction = new QAction(tr("退出"), this);
 
     connect(openFormatAction, &QAction::triggered, this, &MainWindow::OpenFormatFile);
+    connect(newFormatAction, &QAction::triggered, this, &MainWindow::NewFormatFile);
+    connect(editFormatAction, &QAction::triggered, this, &MainWindow::EditFormatFile);
+    connect(saveFormatAction, &QAction::triggered, this, &MainWindow::SaveFormatFile);
+    connect(saveAsFormatAction, &QAction::triggered, this, &MainWindow::SaveFormatFileAs);
     connect(openDataAction, &QAction::triggered, this, &MainWindow::OpenDataFile);
+    connect(setMaxPointsAction, &QAction::triggered, this, &MainWindow::SetMaxVisiblePoints);
     connect(exitAction, &QAction::triggered, this, &MainWindow::close);
 
     auto* fileMenu = menuBar()->addMenu(tr("文件"));
+    fileMenu->addAction(newFormatAction);
     fileMenu->addAction(openFormatAction);
+    fileMenu->addAction(editFormatAction);
+    fileMenu->addAction(saveFormatAction);
+    fileMenu->addAction(saveAsFormatAction);
     fileMenu->addAction(openDataAction);
+    fileMenu->addAction(setMaxPointsAction);
     fileMenu->addSeparator();
     fileMenu->addAction(exitAction);
 
@@ -131,12 +170,16 @@ void MainWindow::SetupUi() {
     chartsContainer_->setLayout(containerLayout);
     chartsScrollArea_->setWidget(chartsContainer_);
     rightLayout->addWidget(chartsScrollArea_, /*stretch=*/1);
+    chartsScrollArea_->viewport()->setAcceptDrops(true);
+    chartsScrollArea_->viewport()->installEventFilter(this);
+    chartsContainer_->setAcceptDrops(true);
+    chartsContainer_->installEventFilter(this);
 
     connect(chartsSplitter_, &QSplitter::splitterMoved, this, [this](int, int index) {
         if (!chartsSplitter_) return;
         const QList<int> sizes = chartsSplitter_->sizes();
         if (sizes.isEmpty()) return;
-        const int widgetIndex = std::clamp(index, 0, sizes.size() - 1);
+        const int widgetIndex = std::clamp(index, 0, static_cast<int>(sizes.size() - 1));
         chartHeight_ = sizes.value(widgetIndex);
         UpdateChartHeights();
     });
@@ -161,7 +204,13 @@ void MainWindow::OpenFormatFile() {
 
     pat::FormatDefinition fmt;
     QString error;
-    if (!pat::LoadFormatFromJson(path, fmt, error)) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("格式加载失败"), tr("无法打开格式文件：%1").arg(path));
+        return;
+    }
+    const QByteArray jsonData = file.readAll();
+    if (!pat::LoadFormatFromJsonData(jsonData, fmt, error)) {
         QMessageBox::warning(this, tr("格式加载失败"), error);
         return;
     }
@@ -169,6 +218,7 @@ void MainWindow::OpenFormatFile() {
     format_ = std::move(fmt);
     hasFormat_ = true;
     loadedFormatPath_ = path;
+    formatJsonText_ = QString::fromUtf8(jsonData);
     series_.clear();
     mergedGroups_.clear();
     displayGroups_.clear();
@@ -205,6 +255,175 @@ void MainWindow::OpenDataFile() {
 
     const int recordCount = series_.isEmpty() ? 0 : static_cast<int>(series_.first().samples.size());
     UpdateStatus(tr("解析完成：%1，记录数 %2").arg(FileLeaf(path)).arg(recordCount));
+}
+
+void MainWindow::NewFormatFile() {
+    const QString templateJson = QStringLiteral(
+        "{\n"
+        "  \"record_size\": 16,\n"
+        "  \"endianness\": \"little\",\n"
+        "  \"signals\": [\n"
+        "    {\n"
+        "      \"name\": \"sig1\",\n"
+        "      \"byte_offset\": 0,\n"
+        "      \"value_type\": \"int16\",\n"
+        "      \"scale\": 1.0,\n"
+        "      \"bias\": 0.0,\n"
+        "      \"time_scale\": 1.0,\n"
+        "      \"unit\": \"\",\n"
+        "      \"group\": \"\"\n"
+        "    }\n"
+        "  ]\n"
+        "}\n");
+
+    QString edited;
+    if (!RunFormatEditor(templateJson, edited, tr("新建格式"))) return;
+    if (!ApplyFormatJsonText(edited, tr("未保存的新建格式"))) return;
+    loadedFormatPath_.clear();
+    SaveFormatFileAs();
+}
+
+void MainWindow::EditFormatFile() {
+    if (!hasFormat_) {
+        QMessageBox::information(this, tr("提示"), tr("请先打开一个格式文件"));
+        return;
+    }
+    QString edited;
+    if (!RunFormatEditor(formatJsonText_, edited, tr("编辑格式"))) return;
+    ApplyFormatJsonText(edited, loadedFormatPath_.isEmpty() ? tr("未命名格式") : FileLeaf(loadedFormatPath_));
+}
+
+void MainWindow::SaveFormatFile() {
+    if (!hasFormat_) {
+        QMessageBox::information(this, tr("提示"), tr("请先打开或新建格式"));
+        return;
+    }
+    if (loadedFormatPath_.isEmpty()) {
+        SaveFormatFileAs();
+        return;
+    }
+    pat::FormatDefinition tmp;
+    QString error;
+    if (!pat::LoadFormatFromJsonData(formatJsonText_.toUtf8(), tmp, error)) {
+        QMessageBox::warning(this, tr("保存失败"), tr("当前格式内容不合法：%1").arg(error));
+        return;
+    }
+    QFile file(loadedFormatPath_);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, tr("保存失败"), tr("无法写入：%1").arg(loadedFormatPath_));
+        return;
+    }
+    file.write(formatJsonText_.toUtf8());
+    UpdateStatus(tr("格式已保存：%1").arg(FileLeaf(loadedFormatPath_)));
+}
+
+void MainWindow::SaveFormatFileAs() {
+    if (!hasFormat_) {
+        QMessageBox::information(this, tr("提示"), tr("请先打开或新建格式"));
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(this, tr("保存格式文件"), QString(), tr("JSON (*.json)"));
+    if (path.isEmpty()) return;
+    loadedFormatPath_ = path;
+    SaveFormatFile();
+}
+
+void MainWindow::SetMaxVisiblePoints() {
+    const int value = QInputDialog::getInt(this,
+                                          tr("最大显示点数"),
+                                          tr("每条曲线最大绘制点数（用于大文件抽稀显示）"),
+                                          maxVisiblePoints_,
+                                          200,
+                                          200000,
+                                          100);
+    if (value <= 0) return;
+    maxVisiblePoints_ = value;
+    if (hasCurrentXRange_) {
+        RefreshVisibleSeries(currentMinX_, currentMaxX_);
+    }
+}
+
+bool MainWindow::RunFormatEditor(QString initialText, QString& outText, const QString& title) {
+    QDialog dlg(this);
+    dlg.setWindowTitle(title);
+    dlg.setModal(true);
+
+    auto* layout = new QVBoxLayout(&dlg);
+    auto* editor = new QTextEdit(&dlg);
+    editor->setPlainText(std::move(initialText));
+    editor->setTabStopDistance(24);
+    layout->addWidget(editor, /*stretch=*/1);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    auto* validateBtn = buttons->addButton(tr("验证"), QDialogButtonBox::ActionRole);
+    layout->addWidget(buttons);
+
+    const auto validate = [&]() -> bool {
+        pat::FormatDefinition tmp;
+        QString error;
+        if (!pat::LoadFormatFromJsonData(editor->toPlainText().toUtf8(), tmp, error)) {
+            QMessageBox::warning(&dlg, tr("格式不合法"), error);
+            return false;
+        }
+        QMessageBox::information(&dlg, tr("验证通过"), tr("格式校验通过，信号数：%1").arg(static_cast<int>(tmp.signalFormats.size())));
+        return true;
+    };
+
+    QObject::connect(validateBtn, &QPushButton::clicked, &dlg, validate);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, [&]() {
+        pat::FormatDefinition tmp;
+        QString error;
+        const QString text = editor->toPlainText();
+        if (!pat::LoadFormatFromJsonData(text.toUtf8(), tmp, error)) {
+            QMessageBox::warning(&dlg, tr("格式不合法"), error);
+            return;
+        }
+        outText = text;
+        dlg.accept();
+    });
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    dlg.resize(900, 700);
+    return dlg.exec() == QDialog::Accepted;
+}
+
+bool MainWindow::ApplyFormatJsonText(const QString& jsonText, const QString& sourceLabel) {
+    pat::FormatDefinition fmt;
+    QString error;
+    if (!pat::LoadFormatFromJsonData(jsonText.toUtf8(), fmt, error)) {
+        QMessageBox::warning(this, tr("格式应用失败"), error);
+        return false;
+    }
+
+    format_ = std::move(fmt);
+    hasFormat_ = true;
+    formatJsonText_ = jsonText;
+
+    mergedGroups_.clear();
+    displayGroups_.clear();
+    BuildSignalTree();
+
+    if (!loadedDataPath_.isEmpty()) {
+        pat::RecordParser parser(format_);
+        QVector<pat::Series> parsed;
+        QString parseError;
+        if (!parser.ParseFile(loadedDataPath_, parsed, parseError)) {
+            series_.clear();
+            QMessageBox::warning(this, tr("重解析失败"), parseError);
+        } else {
+            series_ = std::move(parsed);
+            UpdateGlobalRanges();
+            currentMinX_ = 0.0;
+            currentMaxX_ = globalMaxX_;
+            hasCurrentXRange_ = true;
+        }
+    } else {
+        series_.clear();
+    }
+
+    UpdateCharts();
+    UpdateStatus(tr("格式已应用：%1").arg(sourceLabel));
+    return true;
 }
 
 void MainWindow::BuildSignalTree() {
@@ -467,6 +686,8 @@ void MainWindow::UpdateCharts() {
     if (displayGroups_.isEmpty()) return;
     if (!hasGlobalRange_) UpdateGlobalRanges();
 
+    const double viewMinX = hasCurrentXRange_ ? currentMinX_ : 0.0;
+    const double viewMaxX = hasCurrentXRange_ ? currentMaxX_ : globalMaxX_;
     const auto palette = SeriesPalette();
 
     for (const auto& group : displayGroups_) {
@@ -485,9 +706,7 @@ void MainWindow::UpdateCharts() {
             if (idx < 0 || idx >= static_cast<int>(series_.size())) continue;
             auto* line = new QLineSeries(chart);
             const auto& data = series_[idx];
-            for (const auto& pt : data.samples) {
-                line->append(pt);
-            }
+            line->replace(DecimateSamples(data.samples, viewMinX, viewMaxX, maxVisiblePoints_));
             QPen seriesPen(palette[i % palette.size()]);
             seriesPen.setWidthF(1.5);
             line->setPen(seriesPen);
@@ -499,11 +718,7 @@ void MainWindow::UpdateCharts() {
 
         auto* axisX = new QValueAxis(chart);
         axisX->setTitleText(tr("时间索引"));
-        if (hasCurrentXRange_) {
-            axisX->setRange(currentMinX_, currentMaxX_);
-        } else {
-            axisX->setRange(0.0, globalMaxX_);
-        }
+        axisX->setRange(viewMinX, viewMaxX);
         axisX->setTitleBrush(QBrush(kAxisTextColor));
         axisX->setLabelsColor(kAxisTextColor);
         axisX->setLinePenColor(kAxisLineColor);
@@ -533,9 +748,11 @@ void MainWindow::UpdateCharts() {
         auto* view = new QChartView(chart);
         view->setRenderHint(QPainter::Antialiasing);
         view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        view->setAcceptDrops(true);
         view->setMouseTracking(true);
         view->installEventFilter(this);
         if (view->viewport()) {
+            view->viewport()->setAcceptDrops(true);
             view->viewport()->setMouseTracking(true);
             view->viewport()->installEventFilter(this);
         }
@@ -618,8 +835,177 @@ MainWindow::ChartItem* MainWindow::FindChart(QChartView* view) {
     return nullptr;
 }
 
+void MainWindow::ResetXRange() {
+#ifdef PAT_ENABLE_QT_CHARTS
+    if (!hasGlobalRange_) UpdateGlobalRanges();
+    ApplyXRange(0.0, globalMaxX_);
+#endif
+}
+
+int MainWindow::ChartIndex(QChartView* view) const {
+#ifdef PAT_ENABLE_QT_CHARTS
+    for (int i = 0; i < charts_.size(); ++i) {
+        if (charts_[i].view == view) return i;
+    }
+#else
+    Q_UNUSED(view)
+#endif
+    return -1;
+}
+
+void MainWindow::ReorderCharts(int fromIndex, int toIndex) {
+#ifdef PAT_ENABLE_QT_CHARTS
+    if (!chartsSplitter_) return;
+    if (fromIndex < 0 || fromIndex >= charts_.size()) return;
+    if (toIndex < 0 || toIndex >= charts_.size()) return;
+    if (fromIndex == toIndex) return;
+
+    // 先移动 splitter 内部 widget（Qt 会自动重排 handle）
+    if (auto* w = charts_[fromIndex].view) {
+        chartsSplitter_->insertWidget(toIndex, w);
+        chartsSplitter_->setStretchFactor(chartsSplitter_->indexOf(w), 1);
+    }
+
+    // 再同步 ChartItem 顺序
+    ChartItem moved = charts_.at(fromIndex);
+    charts_.removeAt(fromIndex);
+    charts_.insert(toIndex, moved);
+
+    UpdateChartHeights();
+#else
+    Q_UNUSED(fromIndex)
+    Q_UNUSED(toIndex)
+#endif
+}
+
+bool MainWindow::ReadSignalIndicesMime(const QMimeData* mime, QVector<int>& outIndices) const {
+    outIndices.clear();
+    if (!mime) return false;
+    if (!mime->hasFormat(SignalTreeWidget::kSignalIndicesMime)) return false;
+    QByteArray payload = mime->data(SignalTreeWidget::kSignalIndicesMime);
+    QDataStream stream(&payload, QIODevice::ReadOnly);
+    stream >> outIndices;
+    return !outIndices.isEmpty();
+}
+
+void MainWindow::SetSignalsChecked(const QVector<int>& indices, bool checked) {
+    if (!signalTree_ || indices.isEmpty()) return;
+    QSignalBlocker blocker(signalTree_);
+    const QSet<int> set = QSet<int>(indices.begin(), indices.end());
+
+    const std::function<void(QTreeWidgetItem*)> visit = [&](QTreeWidgetItem* item) {
+        if (!item) return;
+        const int type = item->data(0, SignalTreeWidget::kItemTypeRole).toInt();
+        if (type == SignalTreeWidget::kItemTypeSignal) {
+            const int idx = item->data(0, SignalTreeWidget::kSignalIndexRole).toInt();
+            if (set.contains(idx)) item->setCheckState(0, checked ? Qt::Checked : Qt::Unchecked);
+            return;
+        }
+        for (int i = 0; i < item->childCount(); ++i) visit(item->child(i));
+    };
+    auto* root = signalTree_->invisibleRootItem();
+    for (int i = 0; i < root->childCount(); ++i) visit(root->child(i));
+}
+
+void MainWindow::RemoveFromMergedGroups(const QVector<int>& indices) {
+    if (indices.isEmpty()) return;
+    QVector<QVector<int>> filtered;
+    for (auto group : mergedGroups_) {
+        group.erase(std::remove_if(group.begin(),
+                                   group.end(),
+                                   [&](int idx) { return indices.contains(idx); }),
+                    group.end());
+        if (group.size() >= 2) filtered.append(group);
+    }
+    mergedGroups_ = std::move(filtered);
+}
+
+QVector<QPointF> MainWindow::DecimateSamples(const QVector<QPointF>& samples, double minX, double maxX, int maxPoints) const {
+    if (samples.isEmpty()) return {};
+    if (maxPoints <= 0) return {};
+    if (maxX < minX) std::swap(minX, maxX);
+
+    auto begin = samples.begin();
+    auto end = samples.end();
+    auto startIt = std::lower_bound(begin, end, minX, [](const QPointF& p, double x) { return p.x() < x; });
+    auto endIt = std::upper_bound(startIt, end, maxX, [](double x, const QPointF& p) { return x < p.x(); });
+    const int count = static_cast<int>(endIt - startIt);
+    if (count <= 0) return {};
+    if (count <= maxPoints) {
+        return QVector<QPointF>(startIt, endIt);
+    }
+
+    const int bucketCount = std::max(1, maxPoints / 2);
+    const double span = maxX - minX;
+    const double bucketSize = span > 0.0 ? span / bucketCount : 1.0;
+
+    QVector<QPointF> out;
+    out.reserve(maxPoints);
+    out.append(*startIt);
+    for (int b = 0; b < bucketCount; ++b) {
+        const double bx0 = minX + bucketSize * b;
+        const double bx1 = (b == bucketCount - 1) ? maxX : (bx0 + bucketSize);
+        auto b0 = std::lower_bound(startIt, endIt, bx0, [](const QPointF& p, double x) { return p.x() < x; });
+        auto b1 = std::lower_bound(b0, endIt, bx1, [](const QPointF& p, double x) { return p.x() < x; });
+        if (b0 == b1) continue;
+        auto minIt = b0;
+        auto maxIt = b0;
+        for (auto it = b0; it != b1; ++it) {
+            if (it->y() < minIt->y()) minIt = it;
+            if (it->y() > maxIt->y()) maxIt = it;
+        }
+        if (minIt->x() <= maxIt->x()) {
+            out.append(*minIt);
+            if (maxIt != minIt) out.append(*maxIt);
+        } else {
+            out.append(*maxIt);
+            if (maxIt != minIt) out.append(*minIt);
+        }
+        if (out.size() >= maxPoints) break;
+    }
+    out.append(*(endIt - 1));
+    return out;
+}
+
+void MainWindow::RefreshVisibleSeries(double minX, double maxX) {
+#ifdef PAT_ENABLE_QT_CHARTS
+    for (auto& chartItem : charts_) {
+        for (int i = 0; i < chartItem.series.size() && i < chartItem.seriesIndices.size(); ++i) {
+            auto* line = chartItem.series[i];
+            const int idx = chartItem.seriesIndices[i];
+            if (!line || idx < 0 || idx >= static_cast<int>(series_.size())) continue;
+            line->replace(DecimateSamples(series_[idx].samples, minX, maxX, maxVisiblePoints_));
+        }
+    }
+#else
+    Q_UNUSED(minX)
+    Q_UNUSED(maxX)
+#endif
+}
+
 bool MainWindow::eventFilter(QObject* obj, QEvent* event) {
 #ifdef PAT_ENABLE_QT_CHARTS
+    if (obj == chartsScrollArea_->viewport() || obj == chartsContainer_) {
+        if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
+            auto* dragEvent = static_cast<QDragMoveEvent*>(event);
+            QVector<int> indices;
+            if (ReadSignalIndicesMime(dragEvent->mimeData(), indices)) {
+                dragEvent->acceptProposedAction();
+                return true;
+            }
+        } else if (event->type() == QEvent::Drop) {
+            auto* dropEvent = static_cast<QDropEvent*>(event);
+            QVector<int> indices;
+            if (ReadSignalIndicesMime(dropEvent->mimeData(), indices)) {
+                SetSignalsChecked(indices, true);
+                RemoveFromMergedGroups(indices);
+                UpdateCharts();
+                dropEvent->acceptProposedAction();
+                return true;
+            }
+        }
+    }
+
     QChartView* targetView = qobject_cast<QChartView*>(obj);
     if (!targetView) {
         if (auto* widget = qobject_cast<QWidget*>(obj)) {
@@ -627,18 +1013,119 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event) {
         }
     }
     if (targetView) {
-        if (event->type() == QEvent::MouseMove) {
+        if (event->type() == QEvent::ContextMenu) {
+            auto* ctx = static_cast<QContextMenuEvent*>(event);
+            QMenu menu(this);
+            menu.addAction(tr("还原时间轴"), this, &MainWindow::ResetXRange);
+            menu.exec(ctx->globalPos());
+            return true;
+        }
+
+        if (event->type() == QEvent::DragEnter) {
+            auto* dragEvent = static_cast<QDragEnterEvent*>(event);
+            if (dragEvent->mimeData() &&
+                (dragEvent->mimeData()->hasFormat(SignalTreeWidget::kSignalIndicesMime) ||
+                 dragEvent->mimeData()->hasFormat(kChartReorderMime))) {
+                dragEvent->acceptProposedAction();
+                return true;
+            }
+        } else if (event->type() == QEvent::DragMove) {
+            auto* dragEvent = static_cast<QDragMoveEvent*>(event);
+            if (dragEvent->mimeData() &&
+                (dragEvent->mimeData()->hasFormat(SignalTreeWidget::kSignalIndicesMime) ||
+                 dragEvent->mimeData()->hasFormat(kChartReorderMime))) {
+                dragEvent->acceptProposedAction();
+                return true;
+            }
+        } else if (event->type() == QEvent::Drop) {
+            auto* dropEvent = static_cast<QDropEvent*>(event);
+            if (!dropEvent->mimeData()) return false;
+
+            if (dropEvent->mimeData()->hasFormat(kChartReorderMime)) {
+                QByteArray payload = dropEvent->mimeData()->data(kChartReorderMime);
+                QDataStream stream(&payload, QIODevice::ReadOnly);
+                int fromIndex = -1;
+                stream >> fromIndex;
+                const int toIndex = ChartIndex(targetView);
+                ReorderCharts(fromIndex, toIndex);
+                dropEvent->acceptProposedAction();
+                return true;
+            }
+
+            QVector<int> dropped;
+            if (ReadSignalIndicesMime(dropEvent->mimeData(), dropped)) {
+                if (auto* item = FindChart(targetView)) {
+                    QVector<int> merged = item->seriesIndices;
+                    for (int idx : dropped) {
+                        if (idx >= 0 && !merged.contains(idx)) merged.append(idx);
+                    }
+                    SetSignalsChecked(merged, true);
+                    MergeSignals(merged);
+                    dropEvent->acceptProposedAction();
+                    return true;
+                }
+            }
+        } else if (event->type() == QEvent::MouseMove) {
             if (auto* item = FindChart(targetView)) {
+                if (item->reorderArmed && (static_cast<QMouseEvent*>(event)->buttons() & Qt::LeftButton)) {
+                    const QPoint pos = ViewportPoint(item->view, static_cast<QMouseEvent*>(event)->globalPosition());
+                    if ((pos - item->reorderStartPos).manhattanLength() >= QApplication::startDragDistance()) {
+                        const int fromIndex = ChartIndex(item->view);
+                        if (fromIndex >= 0) {
+                            auto* drag = new QDrag(item->view);
+                            auto* mime = new QMimeData();
+                            QByteArray payload;
+                            QDataStream stream(&payload, QIODevice::WriteOnly);
+                            stream << fromIndex;
+                            mime->setData(kChartReorderMime, payload);
+                            drag->setMimeData(mime);
+                            drag->exec(Qt::MoveAction);
+                        }
+                        item->reorderArmed = false;
+                        return true;
+                    }
+                }
+
                 HandleMouseMove(*item, static_cast<QMouseEvent*>(event));
                 if (item->rubberActive) HandleRubberBand(*item, static_cast<QMouseEvent*>(event));
             }
         } else if (event->type() == QEvent::MouseButtonPress) {
             if (auto* item = FindChart(targetView)) {
-                HandleRubberBand(*item, static_cast<QMouseEvent*>(event));
+                auto* mouseEvent = static_cast<QMouseEvent*>(event);
+                if (mouseEvent->button() == Qt::LeftButton) {
+                    const QPoint viewPos = ViewportPoint(item->view, mouseEvent->globalPosition());
+                    auto* chart = item->view ? item->view->chart() : nullptr;
+                    if (chart) {
+                        const QPointF chartPos = ChartPointFromViewport(item->view, chart, viewPos);
+                        const QRectF plotArea = chart->plotArea();
+                        if (!plotArea.isEmpty() && chartPos.y() < plotArea.top()) {
+                            item->reorderArmed = true;
+                            item->reorderStartPos = viewPos;
+                            return true;
+                        }
+                    }
+
+                    if (mouseEvent->modifiers() & Qt::AltModifier) {
+                        item->panning = true;
+                        item->panLastPos = viewPos;
+                        return true;
+                    }
+
+                    HandleRubberBand(*item, mouseEvent);
+                    return true;
+                }
             }
         } else if (event->type() == QEvent::MouseButtonRelease) {
             if (auto* item = FindChart(targetView)) {
-                HandleRubberBand(*item, static_cast<QMouseEvent*>(event));
+                auto* mouseEvent = static_cast<QMouseEvent*>(event);
+                if (mouseEvent->button() == Qt::LeftButton) {
+                    item->reorderArmed = false;
+                    item->panning = false;
+                    if (item->rubberActive) {
+                        HandleRubberBand(*item, mouseEvent);
+                        return true;
+                    }
+                }
             }
         } else if (event->type() == QEvent::Wheel) {
             if (auto* item = FindChart(targetView)) {
@@ -646,6 +1133,13 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event) {
                 return true;
             }
         } else if (event->type() == QEvent::Leave) {
+            if (auto* item = FindChart(targetView)) {
+                item->panning = false;
+                item->reorderArmed = false;
+                item->rubberActive = false;
+                item->rubberShown = false;
+                if (item->rubberBand) item->rubberBand->hide();
+            }
             HideCrosshairs();
             sharedCursorX_ = 0.0;
         }
@@ -662,6 +1156,18 @@ void MainWindow::HandleMouseMove(ChartItem& item, QMouseEvent* event) {
     if (!hasGlobalRange_) UpdateGlobalRanges();
 
     const QPoint viewPos = ViewportPoint(item.view, event->globalPosition());
+    if (item.panning && !item.rubberActive && (event->buttons() & Qt::LeftButton)) {
+        const double minX = hasCurrentXRange_ ? currentMinX_ : 0.0;
+        const double maxX = hasCurrentXRange_ ? currentMaxX_ : globalMaxX_;
+        const double span = maxX - minX;
+        const QRectF plotArea = chart->plotArea();
+        if (!plotArea.isEmpty() && span > 0.0) {
+            const double dx = static_cast<double>(viewPos.x() - item.panLastPos.x());
+            const double deltaValue = dx / plotArea.width() * span;
+            ApplyXRange(minX - deltaValue, maxX - deltaValue);
+            item.panLastPos = viewPos;
+        }
+    }
     const QPointF scenePos = item.view->mapToScene(viewPos);
     const QPointF chartPos = chart->mapFromScene(scenePos);
     const QPointF plotPoint = chart->mapToValue(chartPos, item.series.first());
@@ -683,26 +1189,34 @@ void MainWindow::HandleRubberBand(ChartItem& item, QMouseEvent* event) {
     if (!item.view || !item.rubberBand) return;
     if (event->button() == Qt::LeftButton && event->type() == QEvent::MouseButtonPress) {
         item.rubberActive = true;
+        item.rubberShown = false;
         item.rubberOrigin = ViewportPoint(item.view, event->globalPosition());
         item.rubberBand->setGeometry(QRect(item.rubberOrigin, QSize()));
-        item.rubberBand->show();
+        item.rubberBand->hide();
         return;
     }
 
     if (event->type() == QEvent::MouseMove && item.rubberActive) {
         const QPoint currentPos = ViewportPoint(item.view, event->globalPosition());
         const QRect rect(item.rubberOrigin, currentPos);
-        item.rubberBand->setGeometry(rect.normalized());
+        const QRect normalized = rect.normalized();
+        if (!item.rubberShown && (normalized.width() + normalized.height()) >= QApplication::startDragDistance()) {
+            item.rubberShown = true;
+            item.rubberBand->show();
+        }
+        if (item.rubberShown) item.rubberBand->setGeometry(normalized);
         return;
     }
 
     if (event->button() == Qt::LeftButton && event->type() == QEvent::MouseButtonRelease && item.rubberActive) {
         item.rubberBand->hide();
         item.rubberActive = false;
+        const bool didShow = item.rubberShown;
+        item.rubberShown = false;
         const QPoint currentPos = ViewportPoint(item.view, event->globalPosition());
         QRect rect(item.rubberOrigin, currentPos);
         rect = rect.normalized();
-        if (rect.width() < 6) return;
+        if (!didShow || rect.width() < 6) return;
 
         auto* chart = item.view->chart();
         if (!chart || item.series.isEmpty()) return;
@@ -734,7 +1248,7 @@ void MainWindow::HandleWheel(ChartItem& item, QWheelEvent* event) {
 
     const double currentMin = axisX->min();
     const double currentMax = axisX->max();
-    if (qFuzzyCompare(currentMin, currentMax)) return;
+    if (currentMax <= currentMin) return;
 
     const double delta = static_cast<double>(event->angleDelta().y());
     if (delta == 0.0) return;
@@ -768,6 +1282,10 @@ void MainWindow::UpdateSharedCursor(double cursorX) {
         auto* axisY = qobject_cast<QValueAxis*>(chart->axes(Qt::Vertical, item.series.first()).value(0));
         if (!axisY) continue;
 
+        for (auto* label : item.valueLabels) {
+            if (label) label->setVisible(false);
+        }
+
         const double yMin = axisY->min();
         const double yMax = axisY->max();
         const QPointF top = chart->mapToPosition(QPointF(cursorX, yMax), item.series.first());
@@ -782,22 +1300,30 @@ void MainWindow::UpdateSharedCursor(double cursorX) {
             if (idx < 0 || idx >= static_cast<int>(series_.size())) continue;
             const auto& seriesData = series_[idx];
             if (seriesData.samples.isEmpty()) continue;
-            const int lastIdx = static_cast<int>(seriesData.samples.size()) - 1;
+            const double seriesMinX = seriesData.samples.first().x();
             const double seriesMaxX = seriesData.samples.last().x();
             double clampedX = cursorX;
-            if (clampedX < 0.0) clampedX = 0.0;
+            if (clampedX < seriesMinX) clampedX = seriesMinX;
             if (clampedX > seriesMaxX) clampedX = seriesMaxX;
 
-            const int leftIdx = std::max(0, std::min(static_cast<int>(std::floor(clampedX)), lastIdx));
-            const int rightIdx = std::min(leftIdx + 1, lastIdx);
-            double value = seriesData.samples.at(leftIdx).y();
-            if (rightIdx != leftIdx) {
-                const double x0 = seriesData.samples.at(leftIdx).x();
-                const double x1 = seriesData.samples.at(rightIdx).x();
-                const double y0 = seriesData.samples.at(leftIdx).y();
-                const double y1 = seriesData.samples.at(rightIdx).y();
-                const double t = (clampedX - x0) / (x1 - x0);
-                value = y0 + (y1 - y0) * t;
+            auto begin = seriesData.samples.begin();
+            auto end = seriesData.samples.end();
+            auto it = std::lower_bound(begin, end, clampedX, [](const QPointF& p, double x) { return p.x() < x; });
+            double value = 0.0;
+            if (it == begin) {
+                value = it->y();
+            } else if (it == end) {
+                value = (end - 1)->y();
+            } else {
+                const QPointF p0 = *(it - 1);
+                const QPointF p1 = *it;
+                const double dx = p1.x() - p0.x();
+                if (dx == 0.0) {
+                    value = p1.y();
+                } else {
+                    const double t = (clampedX - p0.x()) / dx;
+                    value = p0.y() + (p1.y() - p0.y()) * t;
+                }
             }
 
             if (i < item.valueLabels.size() && item.valueLabels[i]) {
@@ -807,7 +1333,7 @@ void MainWindow::UpdateSharedCursor(double cursorX) {
                 auto* seriesRef = item.series.value(i);
                 if (!seriesRef) seriesRef = item.series.first();
                 const QPointF valuePoint = chart->mapToPosition(QPointF(cursorX, value), seriesRef);
-                QPointF labelPos = chart->mapToScene(valuePoint) + QPointF(6, -12 - (12 * i));
+                QPointF labelPos = valuePoint + QPointF(6, -12 - (12 * i));
                 item.valueLabels[i]->setPos(labelPos);
                 item.valueLabels[i]->setVisible(true);
             }
@@ -835,6 +1361,8 @@ void MainWindow::UpdateGlobalRanges() {
     globalMaxY_ = 1.0;
     globalMaxX_ = 0.0;
     hasGlobalRange_ = false;
+    double minStep = std::numeric_limits<double>::infinity();
+    bool hasStep = false;
 
     for (const auto& series : series_) {
         for (const auto& pt : series.samples) {
@@ -849,6 +1377,16 @@ void MainWindow::UpdateGlobalRanges() {
         if (!series.samples.isEmpty()) {
             globalMaxX_ = std::max(globalMaxX_, series.samples.last().x());
         }
+
+        constexpr int kMaxStepScan = 4096;
+        const int n = std::min(static_cast<int>(series.samples.size()), kMaxStepScan);
+        for (int i = 1; i < n; ++i) {
+            const double dx = std::abs(series.samples.at(i).x() - series.samples.at(i - 1).x());
+            if (dx > 0.0 && dx < minStep) {
+                minStep = dx;
+                hasStep = true;
+            }
+        }
     }
 
     if (!hasGlobalRange_) {
@@ -861,14 +1399,34 @@ void MainWindow::UpdateGlobalRanges() {
         globalMaxY_ += delta;
     }
     hasGlobalRange_ = true;
+
+    // 防止缩放到极小范围导致映射/滚轮逻辑不可恢复
+    minXSpan_ = hasStep ? std::max(minStep * 0.01, 1e-3) : 1e-3;
 }
 
 void MainWindow::ApplyXRange(double minX, double maxX) {
 #ifdef PAT_ENABLE_QT_CHARTS
     if (!hasGlobalRange_) return;
-    minX = std::max(0.0, minX);
-    maxX = std::min(globalMaxX_, maxX);
+    const double boundMin = 0.0;
+    const double boundMax = globalMaxX_;
+    minX = std::max(boundMin, minX);
+    maxX = std::min(boundMax, maxX);
     if (maxX <= minX) return;
+
+    if (maxX - minX < minXSpan_) {
+        const double center = (minX + maxX) * 0.5;
+        minX = center - minXSpan_ * 0.5;
+        maxX = center + minXSpan_ * 0.5;
+        if (minX < boundMin) {
+            minX = boundMin;
+            maxX = std::min(boundMax, boundMin + minXSpan_);
+        }
+        if (maxX > boundMax) {
+            maxX = boundMax;
+            minX = std::max(boundMin, boundMax - minXSpan_);
+        }
+        if (maxX <= minX) return;
+    }
     currentMinX_ = minX;
     currentMaxX_ = maxX;
     hasCurrentXRange_ = true;
@@ -895,7 +1453,12 @@ void MainWindow::ApplyXRange(double minX, double maxX) {
             }
         }
     }
-    if (cursorActive_) UpdateSharedCursor(sharedCursorX_);
+    RefreshVisibleSeries(minX, maxX);
+    if (cursorActive_) {
+        if (sharedCursorX_ < currentMinX_) sharedCursorX_ = currentMinX_;
+        if (sharedCursorX_ > currentMaxX_) sharedCursorX_ = currentMaxX_;
+        UpdateSharedCursor(sharedCursorX_);
+    }
 #endif
 }
 

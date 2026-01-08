@@ -16,6 +16,7 @@ class QWheelEvent;
 class QGraphicsLineItem;
 class QGraphicsSimpleTextItem;
 class QRubberBand;
+class QMimeData;
 QT_END_NAMESPACE
 
 class SignalTreeWidget;
@@ -34,6 +35,11 @@ public:
 private slots:
     void OpenFormatFile();
     void OpenDataFile();
+    void NewFormatFile();
+    void EditFormatFile();
+    void SaveFormatFile();
+    void SaveFormatFileAs();
+    void SetMaxVisiblePoints();
 
 private:
     void SetupUi();
@@ -62,6 +68,16 @@ private:
     bool AreUnitsCompatible(const QVector<int>& indices, QString& outUnit) const;
     bool ComputeGroupRange(const QVector<int>& indices, double& outMinY, double& outMaxY) const;
     void UpdateChartHeights();
+    void ResetXRange();
+    int ChartIndex(QChartView* view) const;
+    void ReorderCharts(int fromIndex, int toIndex);
+    bool RunFormatEditor(QString initialText, QString& outText, const QString& title);
+    bool ApplyFormatJsonText(const QString& jsonText, const QString& sourceLabel);
+    void SetSignalsChecked(const QVector<int>& indices, bool checked);
+    void RemoveFromMergedGroups(const QVector<int>& indices);
+    bool ReadSignalIndicesMime(const QMimeData* mime, QVector<int>& outIndices) const;
+    void RefreshVisibleSeries(double minX, double maxX);
+    QVector<QPointF> DecimateSamples(const QVector<QPointF>& samples, double minX, double maxX, int maxPoints) const;
 
     struct ChartItem {
         QChartView* view = nullptr;
@@ -73,11 +89,17 @@ private:
         QRubberBand* rubberBand = nullptr;
         QPoint rubberOrigin;
         bool rubberActive = false;
+        bool rubberShown = false;
+        bool panning = false;
+        QPoint panLastPos;
+        bool reorderArmed = false;
+        QPoint reorderStartPos;
     };
 
     pat::FormatDefinition format_;
     bool hasFormat_ = false;
     QString loadedFormatPath_;
+    QString formatJsonText_;
     QString loadedDataPath_;
     QVector<pat::Series> series_;
 
@@ -96,7 +118,9 @@ private:
     double currentMinX_ = 0.0;
     double currentMaxX_ = 0.0;
     bool hasCurrentXRange_ = false;
+    double minXSpan_ = 1e-3;
     bool cursorActive_ = false;
+    int maxVisiblePoints_ = 5000;
 
     SignalTreeWidget* signalTree_ = nullptr;
 #ifdef PAT_ENABLE_QT_CHARTS
