@@ -4,6 +4,7 @@
 #include <QtEndian>
 
 #include <cstring>
+#include <utility>
 
 namespace pat {
 namespace {

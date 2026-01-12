@@ -24,7 +24,9 @@ if(PAT_ENABLE_QT_CHARTS)
 endif()
 
 add_library(pat_core
+  src/core/DataSession.cpp
   src/core/FormatDefinition.cpp
+  src/core/FormatDocument.cpp
   src/core/RecordParser.cpp
 )
 
@@ -49,6 +51,11 @@ endif()
 add_executable(pat_app
   src/ui/Main.cpp
   src/ui/MainWindow.cpp
+  src/ui/ChartArea.cpp
+  src/ui/DisplayGroupManager.cpp
+  src/ui/FormatEditorDialog.cpp
+  src/ui/SignalChartView.cpp
+  src/ui/SignalTreeController.cpp
   src/ui/SignalTreeWidget.cpp
 )
 

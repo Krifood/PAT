@@ -1,0 +1,280 @@
+{
+  "record_size": 64,
+  "endianness": "little",
+  "signals": [
+    {
+      "name": "imu_ax",
+      "description": "accel x",
+      "byte_offset": 0,
+      "value_type": "int16",
+      "scale": 0.01,
+      "bias": 0.0,
+      "time_scale": 0.01,
+      "unit": "m/s2",
+      "group": "Flight/IMU"
+    },
+    {
+      "name": "imu_ay",
+      "description": "accel y",
+      "byte_offset": 2,
+      "value_type": "int16",
+      "scale": 0.01,
+      "bias": 0.0,
+      "time_scale": 0.01,
+      "unit": "m/s2",
+      "group": "Flight/IMU"
+    },
+    {
+      "name": "imu_az",
+      "description": "accel z",
+      "byte_offset": 4,
+      "value_type": "int16",
+      "scale": 0.01,
+      "bias": 0.0,
+      "time_scale": 0.01,
+      "unit": "m/s2",
+      "group": "Flight/IMU"
+    },
+    {
+      "name": "gyro_p",
+      "description": "gyro p",
+      "byte_offset": 6,
+      "value_type": "int16",
+      "scale": 0.001,
+      "bias": 0.0,
+      "time_scale": 0.005,
+      "unit": "rad/s",
+      "group": "Flight/IMU"
+    },
+    {
+      "name": "gyro_q",
+      "description": "gyro q",
+      "byte_offset": 8,
+      "value_type": "int16",
+      "scale": 0.001,
+      "bias": 0.0,
+      "time_scale": 0.005,
+      "unit": "rad/s",
+      "group": "Flight/IMU"
+    },
+    {
+      "name": "gyro_r",
+      "description": "gyro r",
+      "byte_offset": 10,
+      "value_type": "int16",
+      "scale": 0.001,
+      "bias": 0.0,
+      "time_scale": 0.005,
+      "unit": "rad/s",
+      "group": "Flight/IMU"
+    },
+    {
+      "name": "battery_voltage",
+      "description": "battery voltage",
+      "byte_offset": 12,
+      "value_type": "uint16",
+      "scale": 0.01,
+      "bias": 0.0,
+      "time_scale": 0.1,
+      "unit": "V",
+      "group": "Power/Battery"
+    },
+    {
+      "name": "battery_current",
+      "description": "battery current",
+      "byte_offset": 14,
+      "value_type": "int16",
+      "scale": 0.01,
+      "bias": 0.0,
+      "time_scale": 0.1,
+      "unit": "A",
+      "group": "Power/Battery"
+    },
+    {
+      "name": "gps_lat",
+      "description": "latitude",
+      "byte_offset": 16,
+      "value_type": "float32",
+      "scale": 1.0,
+      "bias": 0.0,
+      "time_scale": 1.0,
+      "unit": "deg",
+      "group": "Navigation/GPS"
+    },
+    {
+      "name": "gps_lon",
+      "description": "longitude",
+      "byte_offset": 20,
+      "value_type": "float32",
+      "scale": 1.0,
+      "bias": 0.0,
+      "time_scale": 1.0,
+      "unit": "deg",
+      "group": "Navigation/GPS"
+    },
+    {
+      "name": "altitude_m",
+      "description": "altitude",
+      "byte_offset": 24,
+      "value_type": "float32",
+      "scale": 1.0,
+      "bias": 0.0,
+      "time_scale": 0.05,
+      "unit": "m",
+      "group": "Navigation"
+    },
+    {
+      "name": "airspeed_mps",
+      "description": "air speed",
+      "byte_offset": 28,
+      "value_type": "float32",
+      "scale": 1.0,
+      "bias": 0.0,
+      "time_scale": 0.02,
+      "unit": "m/s",
+      "group": "Flight/Control"
+    },
+    {
+      "name": "status_flags",
+      "description": "status flags",
+      "byte_offset": 32,
+      "value_type": "uint32",
+      "scale": 1.0,
+      "bias": 0.0,
+      "time_scale": 0.5,
+      "unit": "",
+      "group": "System"
+    },
+    {
+      "name": "baro_raw",
+      "description": "barometer raw",
+      "byte_offset": 36,
+      "value_type": "int32",
+      "scale": 1.0,
+      "bias": 0.0,
+      "time_scale": 0.05,
+      "unit": "Pa",
+      "group": "Env/Baro"
+    },
+    {
+      "name": "temp_c",
+      "description": "temperature",
+      "byte_offset": 40,
+      "value_type": "float64",
+      "scale": 1.0,
+      "bias": 0.0,
+      "time_scale": 0.5,
+      "unit": "C",
+      "group": "Env/Weather"
+    },
+    {
+      "name": "custom_signal",
+      "description": "custom wave",
+      "byte_offset": 48,
+      "value_type": "float32",
+      "scale": 1.0,
+      "bias": 0.0,
+      "time_scale": 0.015,
+      "unit": "",
+      "group": ""
+    },
+    {
+      "name": "standalone_counter",
+      "description": "counter",
+      "byte_offset": 52,
+      "value_type": "uint16",
+      "scale": 1.0,
+      "bias": 0.0,
+      "time_scale": 0.02,
+      "unit": "",
+      "group": ""
+    },
+    {
+      "name": "spare",
+      "description": "spare channel",
+      "byte_offset": 54,
+      "value_type": "int16",
+      "scale": 1.0,
+      "bias": 0.0,
+      "time_scale": 0.02,
+      "unit": "",
+      "group": ""
+    },
+    {
+      "name": "servo_1",
+      "description": "servo 1",
+      "byte_offset": 56,
+      "value_type": "float32",
+      "scale": 1.0,
+      "bias": 0.0,
+      "time_scale": 0.005,
+      "unit": "us",
+      "group": "Actuation/Servos"
+    },
+    {
+      "name": "servo_2",
+      "description": "servo 2",
+      "byte_offset": 60,
+      "value_type": "float32",
+      "scale": 1.0,
+      "bias": 0.0,
+      "time_scale": 0.005,
+      "unit": "us",
+      "group": "Actuation/Servos"
+    }
+  ],
+  "groups": [
+    {
+      "path": "Flight",
+      "description": "flight systems"
+    },
+    {
+      "path": "Flight/IMU",
+      "description": "imu sensors"
+    },
+    {
+      "path": "Flight/Control",
+      "description": "control signals"
+    },
+    {
+      "path": "Power",
+      "description": "power system"
+    },
+    {
+      "path": "Power/Battery",
+      "description": "battery pack"
+    },
+    {
+      "path": "Navigation",
+      "description": "navigation data"
+    },
+    {
+      "path": "Navigation/GPS",
+      "description": "gps signals"
+    },
+    {
+      "path": "System",
+      "description": "system state"
+    },
+    {
+      "path": "Env",
+      "description": "environment"
+    },
+    {
+      "path": "Env/Baro",
+      "description": "barometer"
+    },
+    {
+      "path": "Env/Weather",
+      "description": "weather"
+    },
+    {
+      "path": "Actuation",
+      "description": "actuation"
+    },
+    {
+      "path": "Actuation/Servos",
+      "description": "servo outputs"
+    }
+  ]
+}
