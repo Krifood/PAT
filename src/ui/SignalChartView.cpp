@@ -120,8 +120,7 @@ void SignalChartView::Configure(const QString& title,
     }
 
     auto* axisX = new QValueAxis(chart);
-    const QString timeTitle = timeUnit.trimmed().isEmpty() ? QObject::tr("时间") : QObject::tr("时间 (%1)").arg(timeUnit.trimmed());
-    axisX->setTitleText(timeTitle);
+    axisX->setTitleText(timeUnit);
     axisX->setRange(minX, maxX);
     axisX->setTitleBrush(QBrush(AXIS_TEXT_COLOR));
     axisX->setLabelsColor(AXIS_TEXT_COLOR);
@@ -406,7 +405,7 @@ void SignalChartView::resizeEvent(QResizeEvent* event) {
 
 void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
     QMenu menu(this);
-    auto* resetAction = menu.addAction(tr("还原时间轴"));
+    auto* resetAction = menu.addAction(tr("还原横轴"));
     connect(resetAction, &QAction::triggered, this, &SignalChartView::ResetXRangeRequested);
     if (!seriesIndices_.isEmpty()) {
         menu.addAction(tr("取消显示本图信号"), this, [this]() {

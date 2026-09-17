@@ -28,7 +28,8 @@ void SignalTreeController::Build(const pat::FormatDefinition& format) {
     QSignalBlocker blocker(tree_);
     tree_->clear();
     tree_->setColumnCount(3);
-    tree_->setHeaderLabels({QObject::tr("信号"), QObject::tr("说明"), QObject::tr("时间比例")});
+    tree_->setHeaderLabels({QObject::tr("信号"), QObject::tr("说明"),
+                            format.HasFraming() ? QObject::tr("采样轴") : QObject::tr("时间比例")});
 
     QMap<QString, QTreeWidgetItem*> groupItems;
     auto* root = tree_->invisibleRootItem();
@@ -54,8 +55,9 @@ void SignalTreeController::Build(const pat::FormatDefinition& format) {
             }
         }
 
-        QString timeScaleText = QString::number(signal.timeScale, 'f', 3);
-        if (!signal.timeUnit.isEmpty()) {
+        QString timeScaleText = format.HasFraming() ? QObject::tr("每成功帧")
+                                                    : QString::number(signal.timeScale, 'f', 3);
+        if (!format.HasFraming() && !signal.timeUnit.isEmpty()) {
             timeScaleText = QStringLiteral("%1 %2").arg(timeScaleText, signal.timeUnit);
         }
         auto* signalItem = new QTreeWidgetItem(parent, {signal.name, signal.description, timeScaleText});

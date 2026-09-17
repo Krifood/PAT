@@ -5,7 +5,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QSet>
 
+#include <cmath>
 #include <utility>
 
 namespace pat {
@@ -13,6 +15,7 @@ namespace {
 
 int TypeSize(const QString& type) {
     const auto t = type.toLower();
+    if (t == "int8" || t == "uint8") return 1;
     if (t == "int16" || t == "uint16") return 2;
     if (t == "int32" || t == "uint32" || t == "float32") return 4;
     if (t == "float64") return 8;
@@ -124,10 +127,55 @@ bool LoadFormatFromJsonData(const QByteArray& data, FormatDefinition& outFormat,
 
     const auto root = doc.object();
 
+    outFormat = FormatDefinition{};
+    outFormat.schemaVersion = root.value(QStringLiteral("schema_version")).toInt(1);
+    if (outFormat.schemaVersion != 1 && outFormat.schemaVersion != 2) {
+        errorMessage = QStringLiteral("schema_version 不支持：%1").arg(outFormat.schemaVersion);
+        return false;
+    }
+    if (root.contains(QStringLiteral("framing"))) {
+        if (outFormat.schemaVersion != 2 || !root.value(QStringLiteral("framing")).isObject()) {
+            errorMessage = QStringLiteral("framing 仅支持 schema_version 2 的对象格式");
+            return false;
+        }
+        const auto framing = root.value(QStringLiteral("framing")).toObject();
+        if (framing.value(QStringLiteral("kind")).toString() != QStringLiteral("fixed_header")) {
+            errorMessage = QStringLiteral("framing.kind 必须为 fixed_header");
+            return false;
+        }
+        const QString headerHex = framing.value(QStringLiteral("header_hex")).toString().trimmed();
+        for (const QChar ch : headerHex) {
+            const bool decimal = ch >= QLatin1Char('0') && ch <= QLatin1Char('9');
+            const bool hexLetter = ch.toLower() >= QLatin1Char('a') && ch.toLower() <= QLatin1Char('f');
+            if (!decimal && !hexLetter) {
+                errorMessage = QStringLiteral("framing.header_hex 必须为连续十六进制字符");
+                return false;
+            }
+        }
+        if (headerHex.isEmpty() || headerHex.size() % 2 != 0) {
+            errorMessage = QStringLiteral("framing.header_hex 长度必须为偶数且非空");
+            return false;
+        }
+        outFormat.frameHeader = QByteArray::fromHex(headerHex.toLatin1());
+        outFormat.templateId = root.value(QStringLiteral("template_id")).toString().trimmed();
+        if (outFormat.templateId.isEmpty()) {
+            errorMessage = QStringLiteral("template_id 缺失");
+            return false;
+        }
+    }
+
     outFormat.recordSize = root.value(QStringLiteral("record_size")).toInt(0);
     if (outFormat.recordSize <= 0) {
         errorMessage = QStringLiteral("record_size 缺失或非法");
         return false;
+    }
+    if (outFormat.HasFraming()) {
+        const int frameLength = root.value(QStringLiteral("framing")).toObject()
+                                    .value(QStringLiteral("frame_length")).toInt(0);
+        if (frameLength != outFormat.recordSize || frameLength < outFormat.frameHeader.size()) {
+            errorMessage = QStringLiteral("framing.frame_length 必须等于 record_size 且不小于帧头长度");
+            return false;
+        }
     }
 
     outFormat.endianness = root.value(QStringLiteral("endianness")).toString(QStringLiteral("little")).toLower();
@@ -155,6 +203,7 @@ bool LoadFormatFromJsonData(const QByteArray& data, FormatDefinition& outFormat,
 
     outFormat.signalFormats.clear();
     outFormat.signalFormats.reserve(static_cast<size_t>(signalsArray.size()));
+    QSet<QString> signalNames;
     for (const auto& sigVal : signalsArray) {
         if (!sigVal.isObject()) {
             errorMessage = QStringLiteral("signals 内元素应为对象");
@@ -168,6 +217,17 @@ bool LoadFormatFromJsonData(const QByteArray& data, FormatDefinition& outFormat,
                          outFormat.timeAxisUnit,
                          errorMessage)) {
             return false;
+        }
+        if (outFormat.schemaVersion == 2) {
+            if (signalNames.contains(sig.name)) {
+                errorMessage = QStringLiteral("signal.name 重复：%1").arg(sig.name);
+                return false;
+            }
+            if (!std::isfinite(sig.scale) || !std::isfinite(sig.bias)) {
+                errorMessage = QStringLiteral("signal '%1' 的 scale 或 bias 非法").arg(sig.name);
+                return false;
+            }
+            signalNames.insert(sig.name);
         }
         outFormat.signalFormats.push_back(std::move(sig));
     }

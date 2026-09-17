@@ -13,21 +13,32 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-option(PAT_ENABLE_QT_CHARTS "Enable Qt Charts plotting support" ON)
+option(PAT_BUILD_GUI "Build the PAT desktop application" ON)
+option(PAT_ENABLE_SERIAL "Enable serial acquisition" ON)
+option(PAT_BUILD_TESTS "Build core tests" ON)
 option(PAT_STRICT_WARNINGS "Enable compiler warnings" ON)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Widgets)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core)
 
-if(PAT_ENABLE_QT_CHARTS)
-  find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Charts)
+if(PAT_BUILD_GUI)
+  find_package(Qt6 REQUIRED COMPONENTS Widgets Charts)
+endif()
+
+if(PAT_ENABLE_SERIAL)
+  find_package(Qt6 REQUIRED COMPONENTS SerialPort)
 endif()
 
 add_library(pat_core
+  src/core/CaptureSession.cpp
   src/core/DataSession.cpp
   src/core/FormatDefinition.cpp
   src/core/FormatDocument.cpp
+  src/core/FrameExporter.cpp
+  src/core/InputReader.cpp
+  src/core/LiveDataSession.cpp
+  src/core/RecordDecoder.cpp
   src/core/RecordParser.cpp
+  src/core/SerialFrameAssembler.cpp
 )
 
 target_include_directories(pat_core
@@ -37,7 +48,7 @@ target_include_directories(pat_core
 
 target_link_libraries(pat_core
   PUBLIC
-    Qt${QT_VERSION_MAJOR}::Core
+    Qt6::Core
 )
 
 if(PAT_STRICT_WARNINGS)
@@ -48,34 +59,51 @@ if(PAT_STRICT_WARNINGS)
   endif()
 endif()
 
-add_executable(pat_app
-  src/ui/Main.cpp
-  src/ui/MainWindow.cpp
-  src/ui/ChartArea.cpp
-  src/ui/DisplayGroupManager.cpp
-  src/ui/FormatEditorDialog.cpp
-  src/ui/SignalChartView.cpp
-  src/ui/SignalTreeController.cpp
-  src/ui/SignalTreeWidget.cpp
-)
-
-target_include_directories(pat_app
-  PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-
-target_link_libraries(pat_app
-  PRIVATE
-    pat_core
-    Qt${QT_VERSION_MAJOR}::Widgets
-)
-
-if(PAT_ENABLE_QT_CHARTS)
-  target_link_libraries(pat_app PRIVATE Qt${QT_VERSION_MAJOR}::Charts)
+if(PAT_BUILD_GUI)
+  add_executable(pat_app
+    src/ui/main.cpp
+    src/ui/MainWindow.cpp
+    src/ui/ChartArea.cpp
+    src/ui/DisplayGroupManager.cpp
+    src/ui/FormatEditorDialog.cpp
+    src/ui/SignalChartView.cpp
+    src/ui/SignalTreeController.cpp
+    src/ui/SignalTreeWidget.cpp
+  )
+  target_include_directories(pat_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(pat_app PRIVATE pat_core Qt6::Widgets Qt6::Charts)
   target_compile_definitions(pat_app PRIVATE PAT_ENABLE_QT_CHARTS=1)
 endif()
 
-if(PAT_STRICT_WARNINGS)
+if(PAT_ENABLE_SERIAL)
+  add_library(pat_serial
+    src/serial/SerialCaptureWorker.cpp
+  )
+  target_include_directories(pat_serial PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(pat_serial PUBLIC pat_core Qt6::SerialPort)
+  if(PAT_BUILD_GUI)
+    target_link_libraries(pat_app PRIVATE pat_serial)
+    target_compile_definitions(pat_app PRIVATE PAT_ENABLE_SERIAL=1)
+  endif()
+endif()
+
+if(PAT_BUILD_TESTS)
+  enable_testing()
+  find_package(Qt6 REQUIRED COMPONENTS Test)
+  add_executable(pat_core_tests tests/CoreTests.cpp)
+  target_link_libraries(pat_core_tests PRIVATE pat_core Qt6::Test)
+  add_test(NAME pat_core_tests COMMAND pat_core_tests)
+  if(PAT_ENABLE_SERIAL AND UNIX)
+    add_executable(pat_serial_tests tests/SerialWorkerTests.cpp)
+    target_link_libraries(pat_serial_tests PRIVATE pat_serial Qt6::Test)
+    if(NOT APPLE)
+      target_link_libraries(pat_serial_tests PRIVATE util)
+    endif()
+    add_test(NAME pat_serial_tests COMMAND pat_serial_tests)
+  endif()
+endif()
+
+if(PAT_BUILD_GUI AND PAT_STRICT_WARNINGS)
   if(MSVC)
     target_compile_options(pat_app PRIVATE /W4)
   else()
@@ -83,4 +111,48 @@ if(PAT_STRICT_WARNINGS)
   endif()
 endif()
 
-install(TARGETS pat_app)
+if(PAT_BUILD_GUI)
+  if(APPLE)
+    # Some QtGui builds link QtDBus; keep it in the app's deploy graph when present.
+    find_package(Qt6 COMPONENTS DBus QUIET)
+    if(TARGET Qt6::DBus)
+      target_link_libraries(pat_app PRIVATE Qt6::DBus)
+    endif()
+    get_filename_component(PAT_QT_LIB_DIR "${Qt6_DIR}/../.." ABSOLUTE)
+    set_target_properties(pat_app PROPERTIES
+      MACOSX_BUNDLE TRUE
+      INSTALL_RPATH "${PAT_QT_LIB_DIR}"
+    )
+    install(TARGETS pat_app BUNDLE DESTINATION .)
+    qt_generate_deploy_app_script(
+      TARGET pat_app
+      OUTPUT_SCRIPT pat_deploy_script
+      DEPLOY_TOOL_OPTIONS "-libpath=${PAT_QT_LIB_DIR}"
+    )
+    install(SCRIPT ${pat_deploy_script})
+    # A second pass resolves dependencies of Qt plugins copied by the first pass.
+    find_program(PAT_MACDEPLOYQT macdeployqt HINTS "${PAT_QT_LIB_DIR}/../bin" REQUIRED)
+    set(PAT_MAC_CODESIGN_IDENTITY "-" CACHE STRING
+      "macOS signing identity; '-' performs an ad hoc development signature")
+    install(CODE "
+      execute_process(
+        COMMAND \"${PAT_MACDEPLOYQT}\" \"\${CMAKE_INSTALL_PREFIX}/pat_app.app\"
+                -always-overwrite \"-libpath=${PAT_QT_LIB_DIR}\"
+        RESULT_VARIABLE pat_deploy_status
+      )
+      if(NOT pat_deploy_status EQUAL 0)
+        message(FATAL_ERROR \"Second macdeployqt pass failed\")
+      endif()
+      execute_process(
+        COMMAND /usr/bin/codesign --force --deep --sign \"${PAT_MAC_CODESIGN_IDENTITY}\"
+                \"\${CMAKE_INSTALL_PREFIX}/pat_app.app\"
+        RESULT_VARIABLE pat_sign_status
+      )
+      if(NOT pat_sign_status EQUAL 0)
+        message(FATAL_ERROR \"macOS bundle signing failed\")
+      endif()
+    ")
+  else()
+    install(TARGETS pat_app RUNTIME DESTINATION bin)
+  endif()
+endif()

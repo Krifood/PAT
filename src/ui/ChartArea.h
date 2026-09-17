@@ -20,7 +20,10 @@ public:
     void SetDisplayGroups(const QVector<DisplayGroup>& groups);
     void SetStatistics(const pat::SeriesStatistics& stats);
     void SetTimeUnit(const QString& unit);
+    void SetAxisTitle(const QString& title);
     void SetMaxVisiblePoints(int maxPoints);
+    void ResetSessionView();
+    void RefreshLiveData(bool followLatest);
     void ResetXRange();
     void RefreshCharts();
 
@@ -66,7 +69,7 @@ private:
     QVector<DisplayGroup> groups_;
     pat::SeriesStatistics stats_;
     bool hasStats_ = false;
-    QString timeUnit_ = QStringLiteral("s");
+    QString axisTitle_ = QStringLiteral("时间 (s)");
     double currentMinX_ = 0.0;
     double currentMaxX_ = 0.0;
     bool hasCurrentRange_ = false;

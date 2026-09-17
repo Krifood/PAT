@@ -1,0 +1,298 @@
+#include "core/CaptureSession.h"
+#include "core/FormatDefinition.h"
+#include "core/FrameExporter.h"
+#include "core/InputReader.h"
+#include "core/LiveDataSession.h"
+#include "core/RecordDecoder.h"
+#include "core/RecordParser.h"
+#include "core/SerialFrameAssembler.h"
+
+#include <QFile>
+#include <QBuffer>
+#include <QCryptographicHash>
+#include <QTemporaryDir>
+#include <QtTest>
+
+namespace {
+
+constexpr auto kFramedFormat = R"({
+  "schema_version": 2,
+  "template_id": "sensor",
+  "record_size": 4,
+  "endianness": "little",
+  "framing": {"kind": "fixed_header", "header_hex": "AA55", "frame_length": 4},
+  "signals": [{"name": "temperature", "byte_offset": 2, "value_type": "int16",
+               "scale": 0.1, "bias": -40, "unit": "C"}]
+})";
+
+}  // namespace
+
+class CoreTests : public QObject {
+    Q_OBJECT
+
+private slots:
+    void legacyAndEndian();
+    void framedAcrossChunks();
+    void replayUsesSameDecoder();
+    void invalidFraming();
+    void hexTextAndExport();
+    void longContinuousHexText();
+    void liveBufferBounded();
+    void captureLogsAreIndependentOfDisplay();
+    void oneHourSimulatedStream();
+    void legacyFileRegression();
+};
+
+void CoreTests::legacyAndEndian() {
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY2(pat::LoadFormatFromJsonData(R"({"record_size":4,"endianness":"big",
+        "signals":[{"name":"signed","byte_offset":0,"value_type":"int16"},
+                   {"name":"small","byte_offset":2,"value_type":"uint8"}]})",
+        format, error), qPrintable(error));
+    QVERIFY(!format.HasFraming());
+    pat::RecordDecoder decoder(format);
+    QVector<double> values;
+    QVERIFY2(decoder.Decode(QByteArray::fromHex("ff9cfe00"), values, error), qPrintable(error));
+    QCOMPARE(values.size(), 2);
+    QCOMPARE(values[0], -100.0);
+    QCOMPARE(values[1], 254.0);
+}
+
+void CoreTests::legacyFileRegression() {
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY2(pat::LoadFormatFromJsonData(R"({
+      "record_size":8,"endianness":"little","time_unit":"s",
+      "signals":[{"name":"sine","byte_offset":0,"value_type":"float32","time_scale":0.02},
+                 {"name":"cosine","byte_offset":4,"value_type":"float32","time_scale":0.02}]
+    })", format, error), qPrintable(error));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("legacy.bin"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray record = QByteArray::fromHex("0000803f000000bf");
+    QCOMPARE(file.write(record + record), qint64(16));
+    file.close();
+    pat::RecordParser parser(format);
+    QVector<pat::Series> series;
+    QVERIFY2(parser.ParseFile(path, series, error), qPrintable(error));
+    QCOMPARE(series.size(), 2);
+    QCOMPARE(series[0].samples.size(), 2);
+    QCOMPARE(series[0].samples[0], QPointF(0.0, 1.0));
+    QCOMPARE(series[1].samples[0], QPointF(0.0, -0.5));
+    QCOMPARE(series[0].samples[1].x(), 0.02);
+}
+
+void CoreTests::framedAcrossChunks() {
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY2(pat::LoadFormatFromJsonData(kFramedFormat, format, error), qPrintable(error));
+    pat::SerialFrameAssembler assembler({format});
+    QVERIFY(assembler.ConfigurationError().isEmpty());
+    QVERIFY(assembler.Feed(QByteArray::fromHex("99aa")).isEmpty());
+    const auto frames = assembler.Feed(QByteArray::fromHex("559001aa559101"));
+    QCOMPARE(frames.size(), 2);
+    QCOMPARE(frames[0].bytes.toHex(), QByteArray("aa559001"));
+    QCOMPARE(frames[1].bytes.toHex(), QByteArray("aa559101"));
+    QCOMPARE(assembler.SkippedBytes(), quint64(1));
+    QCOMPARE(assembler.PendingBytes(), qsizetype(0));
+
+    pat::RecordDecoder decoder(format);
+    QVector<double> values;
+    QVERIFY2(decoder.Decode(frames[0].bytes, values, error), qPrintable(error));
+    QCOMPARE(values[0], 0.0);
+    QVERIFY2(decoder.Decode(frames[1].bytes, values, error), qPrintable(error));
+    QVERIFY(qAbs(values[0] - 0.1) < 1e-9);
+}
+
+void CoreTests::replayUsesSameDecoder() {
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY2(pat::LoadFormatFromJsonData(kFramedFormat, format, error), qPrintable(error));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("raw.bin"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(QByteArray::fromHex("00aa559001aa559101aa")), qint64(10));
+    file.close();
+    pat::RecordParser parser(format);
+    QVector<pat::Series> series;
+    QVERIFY2(parser.ParseFile(path, series, error), qPrintable(error));
+    QCOMPARE(series.size(), 1);
+    QCOMPARE(series[0].samples.size(), 2);
+    QCOMPARE(series[0].samples[0], QPointF(0.0, 0.0));
+    QCOMPARE(series[0].samples[1].x(), 1.0);
+    QVERIFY(qAbs(series[0].samples[1].y() - 0.1) < 1e-9);
+}
+
+void CoreTests::invalidFraming() {
+    pat::FormatDefinition format;
+    QString error;
+    const QByteArray invalid = QByteArray(kFramedFormat).replace("\"frame_length\": 4",
+                                                              "\"frame_length\": 5");
+    QVERIFY(!pat::LoadFormatFromJsonData(invalid, format, error));
+    QVERIFY(error.contains(QStringLiteral("frame_length")));
+}
+
+void CoreTests::hexTextAndExport() {
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY2(pat::LoadFormatFromJsonData(kFramedFormat, format, error), qPrintable(error));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString inputPath = dir.filePath(QStringLiteral("mixed.txt"));
+    QFile input(inputPath);
+    QVERIFY(input.open(QIODevice::WriteOnly));
+    const QByteArray text = "\xe6\x8e\xa5\xe6\x94\xb6: AA 55 90 01 \xe6\x97\xa0\xe6\x95\x88\n"
+                            "0xAA, 0x55, 0x91, 0x01\n";
+    QCOMPARE(input.write(text), qint64(text.size()));
+    input.close();
+
+    pat::RecordParser parser(format);
+    QVector<pat::Series> series;
+    QVERIFY2(parser.ParseFile(inputPath, series, error), qPrintable(error));
+    QCOMPARE(series[0].samples.size(), 2);
+
+    pat::FrameExportOptions options;
+    options.category = pat::FrameCategory::ByteIndex;
+    options.byteIndex = 2;
+    pat::FrameExportResult result;
+    const QString outputPath = dir.filePath(QStringLiteral("frames.txt"));
+    QVERIFY2(pat::ExportFrames(inputPath, outputPath, format, options, result, error), qPrintable(error));
+    QCOMPARE(result.frameCount, quint64(2));
+    QCOMPARE(result.skippedTextTokens, quint64(2));
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    const QByteArray exported = output.readAll();
+    QVERIFY(exported.startsWith("\xe5\x88\x86\xe7\xb1\xbb\t\xe5\xb8\xa7\xe6\x95\xb0\xe6\x8d\xae\n"));
+    QVERIFY(exported.contains("90\tAA 55 90 01\n"));
+    QVERIFY(exported.contains("91\tAA 55 91 01\n"));
+
+    options.format = pat::FrameExportFormat::Csv;
+    options.category = pat::FrameCategory::SignalValue;
+    options.signalIndex = 0;
+    const QString csvPath = dir.filePath(QStringLiteral("frames.csv"));
+    QVERIFY2(pat::ExportFrames(inputPath, csvPath, format, options, result, error), qPrintable(error));
+    QFile csv(csvPath);
+    QVERIFY(csv.open(QIODevice::ReadOnly));
+    const QList<QByteArray> csvLines = csv.readAll().trimmed().split('\n');
+    QCOMPARE(csvLines.size(), 3);
+    QVERIFY(csvLines[0].startsWith("\xe5\x88\x86\xe7\xb1\xbb,"));
+    QVERIFY(qAbs(csvLines[1].split(',').first().toDouble()) < 1e-9);
+    QVERIFY(qAbs(csvLines[2].split(',').first().toDouble() - 0.1) < 1e-9);
+}
+
+void CoreTests::longContinuousHexText() {
+    QByteArray text(1200000, 'A');
+    QBuffer input(&text);
+    QVERIFY(input.open(QIODevice::ReadOnly));
+    pat::InputReadStats stats;
+    QString error;
+    quint64 consumed = 0;
+    const auto consume = [&](const QByteArray& bytes) {
+        consumed += static_cast<quint64>(bytes.size());
+        return bytes.count(char(0xAA)) == bytes.size();
+    };
+    QVERIFY2(pat::ReadInputBytes(input, true, consume, stats, error), qPrintable(error));
+    QCOMPARE(consumed, quint64(600000));
+    QCOMPARE(stats.validBytes, consumed);
+}
+
+void CoreTests::liveBufferBounded() {
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY2(pat::LoadFormatFromJsonData(kFramedFormat, format, error), qPrintable(error));
+    pat::LiveDataSession session;
+    session.Reset(format, 2);
+    QVERIFY(session.Append(0, {1.0}));
+    QVERIFY(session.Append(1, {2.0}));
+    QVERIFY(session.Append(2, {3.0}));
+    session.UpdateStatistics();
+    QCOMPARE(session.SeriesData()[0].samples.size(), 2);
+    QCOMPARE(session.SeriesData()[0].samples[0], QPointF(1.0, 2.0));
+    QCOMPARE(session.Statistics().maxX, 2.0);
+    QCOMPARE(session.Statistics().minY, 2.0);
+    QCOMPARE(session.Statistics().maxY, 3.0);
+}
+
+void CoreTests::captureLogsAreIndependentOfDisplay() {
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY2(pat::LoadFormatFromJsonData(kFramedFormat, format, error), qPrintable(error));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    pat::CaptureSession capture(format);
+    QVERIFY2(capture.Start(dir.path(), error), qPrintable(error));
+    QVector<pat::LiveSample> samples;
+    QVERIFY2(capture.Feed(QByteArray::fromHex("ffaa"), samples, error), qPrintable(error));
+    QVERIFY(samples.isEmpty());
+    QVERIFY2(capture.Feed(QByteArray::fromHex("559001aa559101"), samples, error), qPrintable(error));
+    QCOMPARE(samples.size(), 2);
+    QCOMPARE(samples[0].index, quint64(0));
+    QCOMPARE(samples[1].index, quint64(1));
+    QCOMPARE(capture.FrameCount(), quint64(2));
+    QCOMPARE(capture.SkippedBytes(), quint64(1));
+    QVERIFY2(capture.Stop(error), qPrintable(error));
+    QFile raw(capture.RawPath());
+    QVERIFY(raw.open(QIODevice::ReadOnly));
+    QCOMPARE(raw.readAll(), QByteArray::fromHex("ffaa559001aa559101"));
+    QFile csv(capture.CsvPath());
+    QVERIFY(csv.open(QIODevice::ReadOnly));
+    const QList<QByteArray> lines = csv.readAll().trimmed().split('\n');
+    QCOMPARE(lines.size(), 3);
+    QCOMPARE(lines[0], QByteArray("timestamp,temperature"));
+    QVERIFY(lines[1].split(',').first().endsWith('Z'));
+    QVERIFY(qAbs(lines[1].split(',').last().toDouble() - 0.0) < 1e-9);
+    QVERIFY(qAbs(lines[2].split(',').last().toDouble() - 0.1) < 1e-9);
+}
+
+void CoreTests::oneHourSimulatedStream() {
+    constexpr auto formatJson = R"({
+      "schema_version":2,"template_id":"load_test","record_size":100,
+      "endianness":"little",
+      "framing":{"kind":"fixed_header","header_hex":"AA55","frame_length":100},
+      "signals":[{"name":"counter","byte_offset":2,"value_type":"uint16"}]
+    })";
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY2(pat::LoadFormatFromJsonData(formatJson, format, error), qPrintable(error));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    pat::CaptureSession capture(format);
+    QVERIFY2(capture.Start(dir.path(), error), qPrintable(error));
+    QCryptographicHash expectedHash(QCryptographicHash::Sha256);
+    QVector<pat::LiveSample> samples;
+    for (int second = 0; second < 3600; ++second) {
+        QByteArray block;
+        block.reserve(50 * 100);
+        for (int frameNumber = 0; frameNumber < 50; ++frameNumber) {
+            const int index = second * 50 + frameNumber;
+            QByteArray frame(100, '\0');
+            frame[0] = static_cast<char>(0xAA);
+            frame[1] = static_cast<char>(0x55);
+            frame[2] = static_cast<char>(index & 0xFF);
+            frame[3] = static_cast<char>((index >> 8) & 0xFF);
+            block.append(frame);
+        }
+        expectedHash.addData(block);
+        QVERIFY2(capture.Feed(block, samples, error), qPrintable(error));
+        QCOMPARE(samples.size(), 50);
+        QCOMPARE(samples.last().index, quint64(second * 50 + 49));
+    }
+    QVERIFY2(capture.Stop(error), qPrintable(error));
+    QCOMPARE(capture.FrameCount(), quint64(180000));
+    QCOMPARE(capture.SkippedBytes(), quint64(0));
+    QFile raw(capture.RawPath());
+    QVERIFY(raw.open(QIODevice::ReadOnly));
+    QCOMPARE(raw.size(), qint64(18000000));
+    QCOMPARE(QCryptographicHash::hash(raw.readAll(), QCryptographicHash::Sha256), expectedHash.result());
+    QFile csv(capture.CsvPath());
+    QVERIFY(csv.open(QIODevice::ReadOnly));
+    QCOMPARE(csv.readAll().count('\n'), qsizetype(180001));
+}
+
+QTEST_GUILESS_MAIN(CoreTests)
+#include "CoreTests.moc"

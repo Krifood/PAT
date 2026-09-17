@@ -1,0 +1,22 @@
+{
+  "schema_version": 2,
+  "template_id": "sensor_v1",
+  "record_size": 4,
+  "endianness": "little",
+  "framing": {
+    "kind": "fixed_header",
+    "header_hex": "AA55",
+    "frame_length": 4
+  },
+  "signals": [
+    {
+      "name": "温度",
+      "byte_offset": 2,
+      "value_type": "int16",
+      "scale": 0.1,
+      "bias": -40,
+      "unit": "°C",
+      "description": "探头温度"
+    }
+  ]
+}

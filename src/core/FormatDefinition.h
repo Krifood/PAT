@@ -21,11 +21,16 @@ struct SignalFormat {
 };
 
 struct FormatDefinition {
+    int schemaVersion = 1;
+    QString templateId;
     int recordSize = 0;
     QString endianness = QStringLiteral("little");
+    QByteArray frameHeader;
     std::vector<SignalFormat> signalFormats;
     QHash<QString, QString> groupDescriptions;
     QString timeAxisUnit = QStringLiteral("s");
+
+    bool HasFraming() const { return !frameHeader.isEmpty(); }
 };
 
 bool LoadFormatFromJson(const QString& path, FormatDefinition& outFormat, QString& errorMessage);

@@ -1,137 +1,84 @@
-﻿#include "core/RecordParser.h"
+#include "core/RecordParser.h"
+
+#include "core/RecordDecoder.h"
+#include "core/SerialFrameAssembler.h"
+#include "core/InputReader.h"
 
 #include <QFile>
-#include <QtEndian>
 
-#include <cstring>
 #include <utility>
 
 namespace pat {
-namespace {
-
-int TypeSize(const QString& type) {
-    const auto t = type.toLower();
-    if (t == "int16" || t == "uint16") return 2;
-    if (t == "int32" || t == "uint32" || t == "float32") return 4;
-    if (t == "float64") return 8;
-    return 0;
-}
-
-template <typename T>
-T ReadLittle(const char* data) {
-    T value{};
-    std::memcpy(&value, data, sizeof(T));
-#if Q_BYTE_ORDER == Q_BIG_ENDIAN
-    if constexpr (sizeof(T) == 2) {
-        value = static_cast<T>(qFromLittleEndian<quint16>(reinterpret_cast<const uchar*>(data)));
-    } else if constexpr (sizeof(T) == 4) {
-        value = static_cast<T>(qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(data)));
-    } else if constexpr (sizeof(T) == 8) {
-        value = static_cast<T>(qFromLittleEndian<quint64>(reinterpret_cast<const uchar*>(data)));
-    }
-#endif
-    return value;
-}
-
-bool DecodeValue(const SignalFormat& sig, const char* recordBase, double& outValue) {
-    const char* ptr = recordBase + sig.byteOffset;
-    const auto t = sig.valueType.toLower();
-
-    if (t == "int16") {
-        const auto v = ReadLittle<qint16>(ptr);
-        outValue = static_cast<double>(v) * sig.scale + sig.bias;
-        return true;
-    }
-    if (t == "uint16") {
-        const auto v = ReadLittle<quint16>(ptr);
-        outValue = static_cast<double>(v) * sig.scale + sig.bias;
-        return true;
-    }
-    if (t == "int32") {
-        const auto v = ReadLittle<qint32>(ptr);
-        outValue = static_cast<double>(v) * sig.scale + sig.bias;
-        return true;
-    }
-    if (t == "uint32") {
-        const auto v = ReadLittle<quint32>(ptr);
-        outValue = static_cast<double>(v) * sig.scale + sig.bias;
-        return true;
-    }
-    if (t == "float32") {
-        quint32 raw = ReadLittle<quint32>(ptr);
-        float v{};
-        std::memcpy(&v, &raw, sizeof(float));
-        outValue = static_cast<double>(v) * sig.scale + sig.bias;
-        return true;
-    }
-    if (t == "float64") {
-        quint64 raw = ReadLittle<quint64>(ptr);
-        double v{};
-        std::memcpy(&v, &raw, sizeof(double));
-        outValue = v * sig.scale + sig.bias;
-        return true;
-    }
-    return false;
-}
-
-}  // namespace
 
 RecordParser::RecordParser(FormatDefinition format) : format_(std::move(format)) {}
 
 bool RecordParser::ParseFile(const QString& path, QVector<Series>& outSeries, QString& errorMessage) const {
-    if (format_.signalFormats.empty()) {
-        errorMessage = QStringLiteral("格式未包含信号定义");
+    if (format_.signalFormats.empty() || format_.recordSize <= 0) {
+        errorMessage = QStringLiteral("格式缺少有效记录或信号定义");
         return false;
     }
-    if (format_.recordSize <= 0) {
-        errorMessage = QStringLiteral("record_size 非法");
-        return false;
-    }
-    if (format_.endianness != QStringLiteral("little")) {
-        errorMessage = QStringLiteral("当前仅支持 little-endian");
-        return false;
-    }
-
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         errorMessage = QStringLiteral("无法打开数据文件：%1").arg(path);
         return false;
     }
 
-    const QByteArray buffer = file.readAll();
-    if (buffer.size() < format_.recordSize) {
-        errorMessage = QStringLiteral("数据长度不足一个记录");
+    QVector<Series> parsed(static_cast<qsizetype>(format_.signalFormats.size()));
+    for (qsizetype i = 0; i < parsed.size(); ++i) {
+        parsed[i].name = format_.signalFormats[static_cast<size_t>(i)].name;
+        parsed[i].unit = format_.signalFormats[static_cast<size_t>(i)].unit;
+    }
+
+    RecordDecoder decoder(format_);
+    SerialFrameAssembler assembler(format_.HasFraming() ? QVector<FormatDefinition>{format_}
+                                                        : QVector<FormatDefinition>{});
+    if (format_.HasFraming() && !assembler.ConfigurationError().isEmpty()) {
+        errorMessage = assembler.ConfigurationError();
         return false;
     }
+    QByteArray pending;
+    qint64 recordIndex = 0;
 
-    const int recordCount = buffer.size() / format_.recordSize;
-    const int signalCount = static_cast<int>(format_.signalFormats.size());
-
-    outSeries.clear();
-    outSeries.resize(signalCount);
-    for (int i = 0; i < signalCount; ++i) {
-        outSeries[i].name = format_.signalFormats[i].name;
-        outSeries[i].unit = format_.signalFormats[i].unit;
-    }
-
-    for (int recordIndex = 0; recordIndex < recordCount; ++recordIndex) {
-        const char* recordBase = buffer.constData() + recordIndex * format_.recordSize;
-        for (int s = 0; s < signalCount; ++s) {
-            const auto& sig = format_.signalFormats[s];
-            const int size = TypeSize(sig.valueType);
-            if (sig.byteOffset + size > format_.recordSize) {
-                errorMessage = QStringLiteral("信号 '%1' 超出记录长度").arg(sig.name);
-                return false;
-            }
-            double value{};
-            if (!DecodeValue(sig, recordBase, value)) {
-                errorMessage = QStringLiteral("信号 '%1' 类型不支持：%2").arg(sig.name, sig.valueType);
-                return false;
-            }
-            outSeries[s].samples.append(QPointF(static_cast<double>(recordIndex) * sig.timeScale, value));
+    const auto appendRecord = [&](QByteArrayView record) -> bool {
+        QVector<double> values;
+        if (!decoder.Decode(record, values, errorMessage)) return false;
+        for (qsizetype i = 0; i < values.size(); ++i) {
+            const double x = format_.HasFraming()
+                                 ? static_cast<double>(recordIndex)
+                                 : static_cast<double>(recordIndex)
+                                       * format_.signalFormats[static_cast<size_t>(i)].timeScale;
+            parsed[i].samples.append(QPointF(x, values[i]));
         }
-    }
+        ++recordIndex;
+        return true;
+    };
 
+    const auto consume = [&](const QByteArray& chunk) -> bool {
+        if (format_.HasFraming()) {
+            for (const auto& frame : assembler.Feed(chunk)) {
+                if (!appendRecord(frame.bytes)) return false;
+            }
+        } else {
+            pending.append(chunk);
+            qsizetype offset = 0;
+            while (pending.size() - offset >= format_.recordSize) {
+                if (!appendRecord(QByteArrayView(pending.constData() + offset, format_.recordSize))) {
+                    return false;
+                }
+                offset += format_.recordSize;
+            }
+            if (offset > 0) pending.remove(0, offset);
+        }
+        return true;
+    };
+    InputReadStats readStats;
+    if (!ReadInputBytes(file, IsHexTextPath(path), consume, readStats, errorMessage)) return false;
+
+    if (recordIndex == 0) {
+        errorMessage = QStringLiteral("数据文件未包含完整记录");
+        return false;
+    }
+    outSeries = std::move(parsed);
     return true;
 }
 

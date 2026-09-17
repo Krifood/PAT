@@ -18,7 +18,7 @@ bool DataSession::Load(const QString& path, const FormatDefinition& format, QStr
 
     series_ = std::move(parsed);
     path_ = path;
-    timeUnit_ = format.timeAxisUnit;
+    timeUnit_ = format.HasFraming() ? QString() : format.timeAxisUnit;
     hasData_ = true;
     ComputeStatistics();
     return true;

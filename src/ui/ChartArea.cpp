@@ -80,13 +80,47 @@ void ChartArea::SetStatistics(const pat::SeriesStatistics& stats) {
     minXSpan_ = stats_.minStep;
     if (!hasCurrentRange_) {
         currentMinX_ = 0.0;
-        currentMaxX_ = stats_.maxX;
+        currentMaxX_ = std::max(1.0, stats_.maxX);
         hasCurrentRange_ = true;
     }
 }
 
 void ChartArea::SetTimeUnit(const QString& unit) {
-    timeUnit_ = unit.trimmed().isEmpty() ? QStringLiteral("s") : unit.trimmed();
+    const QString normalized = unit.trimmed().isEmpty() ? QStringLiteral("s") : unit.trimmed();
+    axisTitle_ = tr("时间 (%1)").arg(normalized);
+}
+
+void ChartArea::SetAxisTitle(const QString& title) {
+    axisTitle_ = title;
+}
+
+void ChartArea::ResetSessionView() {
+    hasStats_ = false;
+    hasCurrentRange_ = false;
+    currentMinX_ = 0.0;
+    currentMaxX_ = 0.0;
+    ClearCharts();
+}
+
+void ChartArea::RefreshLiveData(bool followLatest) {
+    if (!series_ || !hasStats_) return;
+    if (charts_.isEmpty()) {
+        BuildCharts();
+        if (!followLatest) return;
+    }
+    for (auto* chart : charts_) {
+        double minY = -1.0;
+        double maxY = 1.0;
+        if (chart && ComputeGroupRange(chart->SeriesIndices(), minY, maxY)) {
+            chart->SetYAxisRange(minY, maxY);
+        }
+    }
+    if (followLatest) {
+        const double maxX = std::max(1.0, stats_.maxX);
+        ApplyXRange(std::max(0.0, maxX - 2000.0), maxX);
+    } else if (hasCurrentRange_) {
+        RefreshVisibleSeries(currentMinX_, currentMaxX_);
+    }
 }
 
 void ChartArea::SetMaxVisiblePoints(int maxPoints) {
@@ -99,7 +133,7 @@ void ChartArea::SetMaxVisiblePoints(int maxPoints) {
 
 void ChartArea::ResetXRange() {
     if (!hasStats_) return;
-    ApplyXRange(0.0, stats_.maxX);
+    ApplyXRange(0.0, std::max(1.0, stats_.maxX));
 }
 
 void ChartArea::RefreshCharts() {
@@ -291,7 +325,7 @@ void ChartArea::BuildCharts() {
     if (!hasStats_) return;
 
     const double viewMinX = hasCurrentRange_ ? currentMinX_ : 0.0;
-    const double viewMaxX = hasCurrentRange_ ? currentMaxX_ : stats_.maxX;
+    const double viewMaxX = hasCurrentRange_ ? currentMaxX_ : std::max(1.0, stats_.maxX);
     const auto palette = SeriesPalette();
 
     for (int groupIndex = 0; groupIndex < groups_.size(); ++groupIndex) {
@@ -317,7 +351,7 @@ void ChartArea::BuildCharts() {
         view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         view->Configure(group.title,
                         group.unit,
-                        timeUnit_,
+                        axisTitle_,
                         group.merged,
                         palette,
                         group.signalIndices,
@@ -362,7 +396,7 @@ void ChartArea::ClearCharts() {
 void ChartArea::ApplyXRange(double minX, double maxX) {
     if (!hasStats_) return;
     const double boundMin = 0.0;
-    const double boundMax = stats_.maxX;
+    const double boundMax = std::max(1.0, stats_.maxX);
     minX = std::max(boundMin, minX);
     maxX = std::min(boundMax, maxX);
     if (maxX <= minX) return;
@@ -524,7 +558,7 @@ void ChartArea::UpdateChartHeights() {
 void ChartArea::UpdateRangeContext() {
     ChartRangeContext context;
     context.globalMinX = 0.0;
-    context.globalMaxX = stats_.maxX;
+    context.globalMaxX = std::max(1.0, stats_.maxX);
     context.currentMinX = currentMinX_;
     context.currentMaxX = currentMaxX_;
     context.minSpan = minXSpan_;
