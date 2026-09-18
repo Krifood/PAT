@@ -624,7 +624,17 @@ QString SignalChartView::GuideTooltip(int index, double cursorX) const {
                 foundY = y;
                 found = true;
             }
-            for (qsizetype i = 1; i < samples.size(); ++i) {
+            const auto firstVisible = std::lower_bound(samples.begin(), samples.end(), visibleMinX,
+                                                       [](const QPointF& point, double key) {
+                                                           return point.x() < key;
+                                                       });
+            const auto afterVisible = std::upper_bound(firstVisible, samples.end(), visibleMaxX,
+                                                       [](double key, const QPointF& point) {
+                                                           return key < point.x();
+                                                       });
+            const qsizetype start = std::max<qsizetype>(1, firstVisible - samples.begin());
+            const qsizetype end = std::min<qsizetype>(samples.size() - 1, afterVisible - samples.begin());
+            for (qsizetype i = start; i <= end; ++i) {
                 const QPointF p0 = samples[i - 1];
                 const QPointF p1 = samples[i];
                 if (p1.x() < visibleMinX || p0.x() > visibleMaxX) continue;
