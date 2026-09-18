@@ -49,6 +49,8 @@ private:
     QVector<LiveSample> pendingSamples_;
     bool running_ = false;
     bool stopping_ = false;
+    quint64 receivedBytes_ = 0;
+    int noFrameStatusTicks_ = 0;
 };
 
 }  // namespace pat

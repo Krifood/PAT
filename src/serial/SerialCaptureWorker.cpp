@@ -38,7 +38,14 @@ void SerialCaptureWorker::Start() {
     });
     displayTimer_ = new QTimer(this);
     displayTimer_->setInterval(100);
-    connect(displayTimer_, &QTimer::timeout, this, &SerialCaptureWorker::EmitPending);
+    connect(displayTimer_, &QTimer::timeout, this, [this]() {
+        EmitPending();
+        if (session_.FrameCount() == 0 && receivedBytes_ > 0 && ++noFrameStatusTicks_ >= 10) {
+            noFrameStatusTicks_ = 0;
+            emit Status(QStringLiteral("已收到 %1 字节，尚无有效帧；请检查串口参数、帧头和校验")
+                            .arg(receivedBytes_));
+        }
+    });
     displayTimer_->start();
     inactivityTimer_ = new QTimer(this);
     inactivityTimer_->setSingleShot(true);
@@ -55,6 +62,7 @@ void SerialCaptureWorker::ReadAvailable() {
     if (!running_ || !port_) return;
     const QByteArray bytes = port_->readAll();
     if (bytes.isEmpty()) return;
+    receivedBytes_ += static_cast<quint64>(bytes.size());
     if (inactivityTimer_ && config_.inactivityTimeoutMs > 0) {
         inactivityTimer_->start(config_.inactivityTimeoutMs);
     }

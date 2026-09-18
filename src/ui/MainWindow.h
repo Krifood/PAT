@@ -30,6 +30,7 @@ class QThread;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
+    friend class UiTests;
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);

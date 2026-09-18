@@ -18,6 +18,7 @@ class SerialWorkerTests : public QObject {
 private slots:
     void pseudoTerminalCapture();
     void cp01B3PseudoTerminalCapture();
+    void noValidFramesReport();
 };
 
 void SerialWorkerTests::pseudoTerminalCapture() {
@@ -121,6 +122,38 @@ void SerialWorkerTests::cp01B3PseudoTerminalCapture() {
     QFile csv(started.first().at(1).toString());
     QVERIFY(csv.open(QIODevice::ReadOnly));
     QCOMPARE(csv.readAll().count('\n'), qsizetype(3));
+}
+
+void SerialWorkerTests::noValidFramesReport() {
+    int master = -1;
+    int slave = -1;
+    char path[256]{};
+    QCOMPARE(openpty(&master, &slave, path, nullptr, nullptr), 0);
+    ::close(slave);
+
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY2(pat::LoadFormatFromJson(QString::fromUtf8(PAT_SOURCE_DIR)
+                                     + QStringLiteral("/samples/cp01_b3_navigation.json"),
+                                     format, error), qPrintable(error));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    pat::SerialCaptureConfig config;
+    config.portName = QString::fromLocal8Bit(path);
+    config.logDirectory = dir.path();
+    config.inactivityTimeoutMs = 0;
+    pat::SerialCaptureWorker worker(format, config);
+    QSignalSpy statuses(&worker, &pat::SerialCaptureWorker::Status);
+    QSignalSpy errors(&worker, &pat::SerialCaptureWorker::Error);
+    worker.Start();
+    const QByteArray unrelated(200, char(0xFF));
+    QCOMPARE(::write(master, unrelated.constData(), static_cast<size_t>(unrelated.size())),
+             ssize_t(unrelated.size()));
+    QTRY_VERIFY_WITH_TIMEOUT(!statuses.isEmpty(), 2500);
+    QVERIFY(statuses.first().first().toString().contains(QStringLiteral("尚无有效帧")));
+    worker.Stop();
+    ::close(master);
+    QCOMPARE(errors.size(), 0);
 }
 
 QTEST_GUILESS_MAIN(SerialWorkerTests)

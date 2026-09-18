@@ -60,8 +60,7 @@ if(PAT_STRICT_WARNINGS)
 endif()
 
 if(PAT_BUILD_GUI)
-  add_executable(pat_app
-    src/ui/main.cpp
+  set(PAT_UI_SOURCES
     src/ui/MainWindow.cpp
     src/ui/ChartArea.cpp
     src/ui/DisplayGroupManager.cpp
@@ -70,6 +69,7 @@ if(PAT_BUILD_GUI)
     src/ui/SignalTreeController.cpp
     src/ui/SignalTreeWidget.cpp
   )
+  add_executable(pat_app src/ui/main.cpp ${PAT_UI_SOURCES})
   target_include_directories(pat_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(pat_app PRIVATE pat_core Qt6::Widgets Qt6::Charts)
   target_compile_definitions(pat_app PRIVATE PAT_ENABLE_QT_CHARTS=1)
@@ -102,6 +102,18 @@ if(PAT_BUILD_TESTS)
       target_link_libraries(pat_serial_tests PRIVATE util)
     endif()
     add_test(NAME pat_serial_tests COMMAND pat_serial_tests)
+    if(PAT_BUILD_GUI)
+      add_executable(pat_ui_tests tests/UiTests.cpp ${PAT_UI_SOURCES})
+      target_include_directories(pat_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+      target_link_libraries(pat_ui_tests PRIVATE pat_serial Qt6::Widgets Qt6::Charts Qt6::Test)
+      target_compile_definitions(pat_ui_tests PRIVATE PAT_ENABLE_QT_CHARTS=1 PAT_ENABLE_SERIAL=1
+        PAT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+      if(NOT APPLE)
+        target_link_libraries(pat_ui_tests PRIVATE util)
+      endif()
+      add_test(NAME pat_ui_tests COMMAND pat_ui_tests)
+      set_tests_properties(pat_ui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    endif()
   endif()
 endif()
 

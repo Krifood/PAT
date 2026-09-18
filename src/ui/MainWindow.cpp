@@ -581,7 +581,9 @@ void MainWindow::UpdateCharts() {
 #ifdef PAT_ENABLE_QT_CHARTS
     if (!chartArea_) return;
     const bool hasData = liveMode_ ? liveSession_.HasData() : dataSession_.HasData();
-    if (!formatDocument_.HasFormat() || !hasData) {
+    // Framed signals can show empty axes before capture and while waiting for a valid frame.
+    if (!formatDocument_.HasFormat()
+        || (!liveMode_ && !hasData && !formatDocument_.Format().HasFraming())) {
         chartArea_->SetDisplayGroups({});
         chartArea_->RefreshCharts();
         return;
@@ -899,6 +901,8 @@ void MainWindow::StartSerialCapture() {
         chartArea_->SetSeries(&liveSession_.SeriesData());
         chartArea_->SetAxisTitle(tr("采样序号"));
     }
+    UpdateCharts();
+    liveChartsInitialized_ = true;
 
     qRegisterMetaType<QVector<pat::LiveSample>>();
     serialThread_ = new QThread(this);
@@ -907,7 +911,7 @@ void MainWindow::StartSerialCapture() {
     connect(serialThread_, &QThread::started, serialWorker_, &pat::SerialCaptureWorker::Start);
     connect(serialWorker_, &pat::SerialCaptureWorker::Started, this,
             [this](const QString& raw, const QString& csv) {
-                UpdateStatus(tr("采集中；原始日志：%1；解析日志：%2").arg(raw, csv));
+                UpdateStatus(tr("串口已打开，等待有效帧；原始日志：%1；解析日志：%2").arg(raw, csv));
             });
     connect(serialWorker_, &pat::SerialCaptureWorker::SamplesReady,
             this, &MainWindow::HandleSerialSamples);
