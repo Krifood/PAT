@@ -20,7 +20,15 @@ Unsigned ReadUnsigned(const uchar* data, bool little = true) {
 
 bool DecodeValue(const SignalFormat& signal, const uchar* data, bool little, double& value) {
     const auto type = signal.valueType.toLower();
-    if (type == "int8") value = std::bit_cast<qint8>(ReadUnsigned<quint8>(data));
+    if (signal.bitWidth > 0) {
+        quint64 raw = 0;
+        if (type == "uint8") raw = ReadUnsigned<quint8>(data);
+        else if (type == "uint16") raw = ReadUnsigned<quint16>(data, little);
+        else if (type == "uint32") raw = ReadUnsigned<quint32>(data, little);
+        else return false;
+        const quint64 mask = (quint64{1} << signal.bitWidth) - 1;
+        value = static_cast<double>((raw >> signal.bitOffset) & mask);
+    } else if (type == "int8") value = std::bit_cast<qint8>(ReadUnsigned<quint8>(data));
     else if (type == "uint8") value = ReadUnsigned<quint8>(data);
     else if (type == "int16") value = std::bit_cast<qint16>(ReadUnsigned<quint16>(data, little));
     else if (type == "uint16") value = ReadUnsigned<quint16>(data, little);

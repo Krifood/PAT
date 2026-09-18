@@ -35,6 +35,7 @@ private slots:
     void framedAcrossChunks();
     void replayUsesSameDecoder();
     void invalidFraming();
+    void invalidBitSelection();
     void cp01B3NavigationChecksum();
     void hexTextAndExport();
     void longContinuousHexText();
@@ -138,6 +139,26 @@ void CoreTests::invalidFraming() {
     QVERIFY(error.contains(QStringLiteral("frame_length")));
 }
 
+void CoreTests::invalidBitSelection() {
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY(!pat::LoadFormatFromJsonData(R"({"record_size":1,"signals":[
+      {"name":"bad","byte_offset":0,"value_type":"uint8","bit_offset":7,"bit_width":2}]})",
+      format, error));
+    QVERIFY(error.contains(QStringLiteral("位段")));
+    QVERIFY(!pat::LoadFormatFromJsonData(R"({"record_size":1,"signals":[
+      {"name":"bad","byte_offset":0,"value_type":"int8","bit_offset":0,"bit_width":1}]})",
+      format, error));
+    QVERIFY(error.contains(QStringLiteral("位段")));
+    QVERIFY2(pat::LoadFormatFromJsonData(R"({"record_size":2,"endianness":"big","signals":[
+      {"name":"slice","byte_offset":0,"value_type":"uint16","bit_offset":4,"bit_width":4}]})",
+      format, error), qPrintable(error));
+    pat::RecordDecoder decoder(format);
+    QVector<double> values;
+    QVERIFY2(decoder.Decode(QByteArray::fromHex("1234"), values, error), qPrintable(error));
+    QCOMPARE(values[0], 3.0);
+}
+
 void CoreTests::cp01B3NavigationChecksum() {
     pat::FormatDefinition format;
     QString error;
@@ -145,7 +166,7 @@ void CoreTests::cp01B3NavigationChecksum() {
                                  + QStringLiteral("/samples/cp01_b3_navigation.json");
     QVERIFY2(pat::LoadFormatFromJson(templatePath, format, error), qPrintable(error));
     QCOMPARE(format.recordSize, 86);
-    QCOMPARE(format.signalFormats.size(), size_t(40));
+    QCOMPARE(format.signalFormats.size(), size_t(82));
     QCOMPARE(format.frameHeader.toHex(), QByteArray("eb901a56"));
     QVERIFY(format.HasSum8Checksum());
     QFile templateFile(templatePath);
@@ -169,6 +190,10 @@ void CoreTests::cp01B3NavigationChecksum() {
     };
     put16(4, 2300);                          // GPS week
     put32(6, 123456789);                     // Raw GPS week seconds
+    frame[10] = static_cast<char>(0x4B);     // System status 1: bits 0, 1, 3, 6
+    frame[11] = static_cast<char>(0x45);     // System status 2: navigation 5, positioning 4
+    put32(16, 0x00004001);                  // Alarm bits 0 and 14
+    put32(20, 0x00000004);                  // Fault bit 2
     put16(24, static_cast<quint16>(-1234));  // Roll = -12.34 degrees
     put16(26, 250);                          // Pitch = 2.50 degrees
     put16(28, 9000);                         // Yaw = 90.00 degrees
@@ -198,6 +223,15 @@ void CoreTests::cp01B3NavigationChecksum() {
         return qQNaN();
     };
     QCOMPARE(valueFor(QStringLiteral("GPS周")), 2300.0);
+    QCOMPARE(valueFor(QStringLiteral("GPS周秒")), 123456789.0);
+    QCOMPARE(valueFor(QStringLiteral("系统状态1_导航运行")), 1.0);
+    QCOMPARE(valueFor(QStringLiteral("系统状态1_GNSS航迹角有效")), 0.0);
+    QCOMPARE(valueFor(QStringLiteral("系统状态2_导航状态码")), 5.0);
+    QCOMPARE(valueFor(QStringLiteral("系统状态2_定位状态码")), 4.0);
+    QCOMPARE(valueFor(QStringLiteral("告警字_滚转角")), 1.0);
+    QCOMPARE(valueFor(QStringLiteral("告警字_北向速度")), 1.0);
+    QCOMPARE(valueFor(QStringLiteral("故障字_偏航角")), 1.0);
+    QCOMPARE(valueFor(QStringLiteral("故障字_滚转角")), 0.0);
     QVERIFY(qAbs(valueFor(QStringLiteral("GNSS经度")) - 116.3971287) < 1e-9);
     QVERIFY(qAbs(valueFor(QStringLiteral("GNSS纬度")) - 39.9165278) < 1e-9);
     QCOMPARE(valueFor(QStringLiteral("校验")), static_cast<double>(sum));
@@ -239,7 +273,7 @@ void CoreTests::cp01B3NavigationChecksum() {
     pat::RecordParser parser(format);
     QVector<pat::Series> series;
     QVERIFY2(parser.ParseFile(rawPath, series, error), qPrintable(error));
-    QCOMPARE(series.size(), 40);
+    QCOMPARE(series.size(), 82);
     QCOMPARE(series[0].samples.size(), 2);
     QCOMPARE(series[0].samples[0].y(), -12.34);
     QCOMPARE(series[0].samples[1].x(), 1.0);

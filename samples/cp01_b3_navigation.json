@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "template_id": "cp01_b3_navigation_output_v1",
+  "template_id": "cp01_b3_navigation_output_v2",
   "record_size": 86,
   "endianness": "little",
   "framing": {
@@ -56,14 +56,16 @@
       "byte_offset": 2,
       "value_type": "uint8",
       "description": "固定帧号 0x1A",
-      "group": "帧信息"
+      "group": "帧信息",
+      "scale": 1
     },
     {
       "name": "长度",
       "byte_offset": 3,
       "value_type": "uint8",
       "description": "固定帧长 0x56，即 86 字节",
-      "group": "帧信息"
+      "group": "帧信息",
+      "scale": 1
     },
     {
       "name": "GPS周",
@@ -71,70 +73,81 @@
       "value_type": "uint16",
       "unit": "周",
       "description": "GPS 周",
-      "group": "时间"
+      "group": "时间",
+      "scale": 1
     },
     {
       "name": "GPS周秒",
       "byte_offset": 6,
       "value_type": "uint32",
-      "description": "协议未说明周秒字段的时间分辨率；按原始整数显示",
-      "group": "时间"
+      "description": "设备确认：未注明分辨率的字段按 1 处理；GPS 周秒按 1 s/计数显示。",
+      "group": "时间",
+      "scale": 1,
+      "unit": "s"
     },
     {
       "name": "系统状态1",
       "byte_offset": 10,
       "value_type": "uint8",
       "description": "原始整数，位定义见源协议表。\n第0位：0-初始对准，1-正在导航\n第1位：GNSS 航向角，0-无效，1 有效\n第2位：GNSS 航迹角，0-无效，1- 有效\n第3位：导航模式，0-惯性，1-组合 \n第4位：加速度：0 正常；1-超限 \n第5位：角速度：0-正常；1-超限\n 第6位：差分状态，0-无效，1-有效\n 第7位：姿态：0-正常；1-超限",
-      "group": "状态与诊断"
+      "group": "状态与诊断",
+      "scale": 1
     },
     {
       "name": "系统状态2",
       "byte_offset": 11,
       "value_type": "uint8",
       "description": "原始整数，位定义见源协议表。\n系统状态：\n低半字节二进制：\n0：初始化\n1：粗对准\n2：精对准\n3：GPS定位\n4：GPS定向\n5：RTK\n6：DMI（轮速里程计）组合\n7：DMI（轮速里程计）标定\n8：纯惯性\n9：零速修正\nA：VG模式（垂直陀螺）\nB：GPS  定位， 定向\nC：GPS RTK 定位 \nD：GPS RTK 定位，定向\n高半字节二进制：\n0：未定位\n1：单点\n2：伪距差分\n3：3有吗？文档里没有3的描述\n4：固定解RTK\n5：浮点解RTK",
-      "group": "状态与诊断"
+      "group": "状态与诊断",
+      "scale": 1
     },
     {
       "name": "表决航姿源ID",
       "byte_offset": 12,
       "value_type": "uint8",
       "description": "当前使用航姿数据源ID\n请补充有哪些源，且不同值分别代表了哪些源",
-      "group": "状态与诊断"
+      "group": "状态与诊断",
+      "scale": 1
     },
     {
       "name": "表决惯导源ID",
       "byte_offset": 13,
       "value_type": "uint8",
       "description": "当前使用惯导数据源ID\n请补充有哪些源，且不同值分别代表了哪些源",
-      "group": "状态与诊断"
+      "group": "状态与诊断",
+      "scale": 1
     },
     {
       "name": "表决高度源ID",
       "byte_offset": 14,
       "value_type": "uint8",
       "description": "当前使用高度数据源ID\n请补充有哪些源，且不同值分别代表了哪些源",
-      "group": "状态与诊断"
+      "group": "状态与诊断",
+      "scale": 1
     },
     {
       "name": "表决大气数据源ID",
       "byte_offset": 15,
       "value_type": "uint8",
       "description": "当前使用大气数据源ID\n请补充有哪些源，且不同值分别代表了哪些源",
-      "group": "状态与诊断"
+      "group": "状态与诊断",
+      "scale": 1
     },
     {
       "name": "告警字",
       "byte_offset": 16,
       "value_type": "uint32",
       "description": "原始整数，位定义见源协议表。\n第0位：滚转角告警\n第1位：俯仰角告警\n第2位：偏航角告警\n第3位：四元素告警\n第4位：滚转速率告警\n第5位：俯仰速率告警\n 第6位：偏航速率告警\n 第7位：轴向过载告警\n第8位：侧向过载告警\n第9位：法向过载告警\n第10位：经度告警\n第11位：纬度告警\n第12位：高度告警\n第13位：东向速度告警\n第14位：北向速度告警\n第15位：天向速度告警\n其他位：预留。默认值为0\n\n值说明\n0：正常  1：告警\n请补充告警逻辑，什么条件触发告警",
-      "group": "状态与诊断"
+      "group": "状态与诊断",
+      "scale": 1
     },
     {
       "name": "故障字",
       "byte_offset": 20,
       "value_type": "uint32",
       "description": "原始整数，位定义见源协议表。\n第0位：滚转角告警\n第1位：俯仰角告警\n第2位：偏航角告警\n第3位：四元素告警\n第4位：滚转速率告警\n第5位：俯仰速率告警\n 第6位：偏航速率告警\n 第7位：轴向过载告警\n第8位：侧向过载告警\n第9位：法向过载告警\n第10位：经度告警\n第11位：纬度告警\n第12位：高度告警\n第13位：东向速度告警\n第14位：北向速度告警\n第15位：天向速度告警\n其他位：预留。默认值为0\n\n值说明\n0：正常  1：告警\n故障字内容描述为什么是XX告警？故障字逻辑是什么，什么条件触发，请补充",
-      "group": "状态与诊断"
+      "group": "状态与诊断",
+      "scale": 1
     },
     {
       "name": "GNSS经度",
@@ -205,7 +218,8 @@
       "value_type": "uint8",
       "unit": "颗",
       "description": "单位：颗（定位天线GNSS2）",
-      "group": "GNSS/质量"
+      "group": "GNSS/质量",
+      "scale": 1
     },
     {
       "name": "后天线卫星数",
@@ -213,7 +227,8 @@
       "value_type": "uint8",
       "unit": "颗",
       "description": "单位：颗（定向天线GNSS1）",
-      "group": "GNSS/质量"
+      "group": "GNSS/质量",
+      "scale": 1
     },
     {
       "name": "GNSS1_PDOP",
@@ -263,8 +278,8 @@
       "byte_offset": 60,
       "value_type": "int16",
       "scale": 0.01,
-      "unit": "m/s",
-      "description": "单位：m/s，分辨率：1e-2\n范围：[-327.67：327.68]\n原文单位为 m/s；过载量纲是否应为 m/s² 待确认。",
+      "unit": "m/s²",
+      "description": "单位：m/s²，分辨率：1e-2；设备确认修正原表的 m/s。",
       "group": "过载"
     },
     {
@@ -272,8 +287,8 @@
       "byte_offset": 62,
       "value_type": "int16",
       "scale": 0.01,
-      "unit": "m/s",
-      "description": "单位：m/s，分辨率：1e-2\n范围：[-327.67：327.68]\n原文单位为 m/s；过载量纲是否应为 m/s² 待确认。",
+      "unit": "m/s²",
+      "description": "单位：m/s²，分辨率：1e-2；设备确认修正原表的 m/s。",
       "group": "过载"
     },
     {
@@ -281,8 +296,8 @@
       "byte_offset": 64,
       "value_type": "int16",
       "scale": 0.01,
-      "unit": "m/s",
-      "description": "单位：m/s，分辨率：1e-2\n范围：[-327.67：327.68]\n原文单位为 m/s；过载量纲是否应为 m/s² 待确认。",
+      "unit": "m/s²",
+      "description": "单位：m/s²，分辨率：1e-2；设备确认修正原表的 m/s。",
       "group": "过载"
     },
     {
@@ -335,14 +350,436 @@
       "byte_offset": 84,
       "value_type": "uint8",
       "description": "0~255",
-      "group": "帧信息"
+      "group": "帧信息",
+      "scale": 1
     },
     {
       "name": "校验",
       "byte_offset": 85,
       "value_type": "uint8",
       "description": "第 3 至 85 字节累加和的低 8 位，由分帧器验证",
-      "group": "帧信息"
+      "group": "帧信息",
+      "scale": 1
+    },
+    {
+      "name": "系统状态1_导航运行",
+      "byte_offset": 10,
+      "value_type": "uint8",
+      "bit_offset": 0,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "系统状态1 第0位；0=初始对准；1=正在导航。按自然数 0/1 显示。",
+      "group": "状态与诊断/系统状态1位"
+    },
+    {
+      "name": "系统状态1_GNSS航向角有效",
+      "byte_offset": 10,
+      "value_type": "uint8",
+      "bit_offset": 1,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "系统状态1 第1位；0=无效；1=有效。按自然数 0/1 显示。",
+      "group": "状态与诊断/系统状态1位"
+    },
+    {
+      "name": "系统状态1_GNSS航迹角有效",
+      "byte_offset": 10,
+      "value_type": "uint8",
+      "bit_offset": 2,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "系统状态1 第2位；0=无效；1=有效。按自然数 0/1 显示。",
+      "group": "状态与诊断/系统状态1位"
+    },
+    {
+      "name": "系统状态1_导航模式",
+      "byte_offset": 10,
+      "value_type": "uint8",
+      "bit_offset": 3,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "系统状态1 第3位；0=惯性；1=组合。按自然数 0/1 显示。",
+      "group": "状态与诊断/系统状态1位"
+    },
+    {
+      "name": "系统状态1_加速度超限",
+      "byte_offset": 10,
+      "value_type": "uint8",
+      "bit_offset": 4,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "系统状态1 第4位；0=正常；1=超限。按自然数 0/1 显示。",
+      "group": "状态与诊断/系统状态1位"
+    },
+    {
+      "name": "系统状态1_角速度超限",
+      "byte_offset": 10,
+      "value_type": "uint8",
+      "bit_offset": 5,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "系统状态1 第5位；0=正常；1=超限。按自然数 0/1 显示。",
+      "group": "状态与诊断/系统状态1位"
+    },
+    {
+      "name": "系统状态1_差分有效",
+      "byte_offset": 10,
+      "value_type": "uint8",
+      "bit_offset": 6,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "系统状态1 第6位；0=无效；1=有效。按自然数 0/1 显示。",
+      "group": "状态与诊断/系统状态1位"
+    },
+    {
+      "name": "系统状态1_姿态超限",
+      "byte_offset": 10,
+      "value_type": "uint8",
+      "bit_offset": 7,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "系统状态1 第7位；0=正常；1=超限。按自然数 0/1 显示。",
+      "group": "状态与诊断/系统状态1位"
+    },
+    {
+      "name": "系统状态2_导航状态码",
+      "byte_offset": 11,
+      "value_type": "uint8",
+      "bit_offset": 0,
+      "bit_width": 4,
+      "scale": 1,
+      "description": "系统状态2 低半字节；0 初始化、1 粗对准、2 精对准、3 GPS定位、4 GPS定向、5 RTK、6 DMI组合、7 DMI标定、8 纯惯性、9 零速修正、10 VG模式、11 GPS定位定向、12 GPS RTK定位、13 GPS RTK定位定向。按自然数显示。",
+      "group": "状态与诊断/系统状态2位段"
+    },
+    {
+      "name": "系统状态2_定位状态码",
+      "byte_offset": 11,
+      "value_type": "uint8",
+      "bit_offset": 4,
+      "bit_width": 4,
+      "scale": 1,
+      "description": "系统状态2 高半字节；0 未定位、1 单点、2 伪距差分、3 原表未定义、4 固定解RTK、5 浮点解RTK。按自然数显示。",
+      "group": "状态与诊断/系统状态2位段"
+    },
+    {
+      "name": "告警字_滚转角",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 0,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第0位：滚转角；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_滚转角",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 0,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第0位：原表描述为滚转角告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_俯仰角",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 1,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第1位：俯仰角；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_俯仰角",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 1,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第1位：原表描述为俯仰角告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_偏航角",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 2,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第2位：偏航角；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_偏航角",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 2,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第2位：原表描述为偏航角告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_四元素",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 3,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第3位：四元素；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_四元素",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 3,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第3位：原表描述为四元素告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_滚转速率",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 4,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第4位：滚转速率；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_滚转速率",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 4,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第4位：原表描述为滚转速率告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_俯仰速率",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 5,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第5位：俯仰速率；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_俯仰速率",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 5,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第5位：原表描述为俯仰速率告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_偏航速率",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 6,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第6位：偏航速率；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_偏航速率",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 6,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第6位：原表描述为偏航速率告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_轴向过载",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 7,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第7位：轴向过载；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_轴向过载",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 7,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第7位：原表描述为轴向过载告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_侧向过载",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 8,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第8位：侧向过载；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_侧向过载",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 8,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第8位：原表描述为侧向过载告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_法向过载",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 9,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第9位：法向过载；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_法向过载",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 9,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第9位：原表描述为法向过载告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_经度",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 10,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第10位：经度；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_经度",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 10,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第10位：原表描述为经度告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_纬度",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 11,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第11位：纬度；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_纬度",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 11,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第11位：原表描述为纬度告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_高度",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 12,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第12位：高度；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_高度",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 12,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第12位：原表描述为高度告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_东向速度",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 13,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第13位：东向速度；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_东向速度",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 13,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第13位：原表描述为东向速度告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_北向速度",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 14,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第14位：北向速度；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_北向速度",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 14,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第14位：原表描述为北向速度告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
+    },
+    {
+      "name": "告警字_天向速度",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "bit_offset": 15,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "告警字第15位：天向速度；0=正常，1=告警。触发条件原表未定义。",
+      "group": "状态与诊断/告警位"
+    },
+    {
+      "name": "故障字_天向速度",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "bit_offset": 15,
+      "bit_width": 1,
+      "scale": 1,
+      "description": "故障字第15位：原表描述为天向速度告警；0=正常，1=告警。故障判定规则原表未定义。",
+      "group": "状态与诊断/故障位"
     }
   ]
 }

@@ -77,6 +77,26 @@ bool ParseSignal(const QJsonObject& obj,
         return false;
     }
 
+    const bool hasBitOffset = obj.contains(QStringLiteral("bit_offset"));
+    const bool hasBitWidth = obj.contains(QStringLiteral("bit_width"));
+    if (hasBitOffset != hasBitWidth) {
+        errorMessage = QStringLiteral("signal '%1' 的 bit_offset 和 bit_width 必须同时填写").arg(outSignal.name);
+        return false;
+    }
+    if (hasBitOffset) {
+        outSignal.bitOffset = obj.value(QStringLiteral("bit_offset")).toInt(-1);
+        outSignal.bitWidth = obj.value(QStringLiteral("bit_width")).toInt(-1);
+        const int bits = size * 8;
+        if (!(outSignal.valueType == QStringLiteral("uint8")
+              || outSignal.valueType == QStringLiteral("uint16")
+              || outSignal.valueType == QStringLiteral("uint32"))
+            || outSignal.bitOffset < 0 || outSignal.bitOffset >= bits
+            || outSignal.bitWidth <= 0 || outSignal.bitWidth > bits - outSignal.bitOffset) {
+            errorMessage = QStringLiteral("signal '%1' 的位段范围非法或类型不支持").arg(outSignal.name);
+            return false;
+        }
+    }
+
     outSignal.scale = obj.value(QStringLiteral("scale")).toDouble(1.0);
     outSignal.bias = obj.value(QStringLiteral("bias")).toDouble(0.0);
     double timeScale = obj.value(QStringLiteral("time_scale")).toDouble(1.0);

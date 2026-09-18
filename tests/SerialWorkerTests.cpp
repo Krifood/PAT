@@ -112,7 +112,7 @@ void SerialWorkerTests::cp01B3PseudoTerminalCapture() {
         samples += qvariant_cast<QVector<pat::LiveSample>>(batch.at(0));
     }
     QCOMPARE(samples.size(), 2);
-    QCOMPARE(samples[0].values.size(), 40);
+    QCOMPARE(samples[0].values.size(), 82);
     QCOMPARE(samples[0].values[0], -12.34);
     QCOMPARE(samples[1].index, quint64(1));
     QFile raw(started.first().at(0).toString());

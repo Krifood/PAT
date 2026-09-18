@@ -11,6 +11,8 @@ struct SignalFormat {
     QString name;
     int byteOffset = 0;
     QString valueType;  // int16, uint16, int32, uint32, float32, float64
+    int bitOffset = 0;  // Optional bit slice of an unsigned integer, bit 0 is the least significant bit.
+    int bitWidth = 0;
     double scale = 1.0;
     double bias = 0.0;
     double timeScale = 1.0;
