@@ -59,6 +59,7 @@ private:
     void HandleMergeRequested(const QVector<int>& indices);
     void HandleReorderRequested(int fromIndex, int toIndex);
     void HandleHideSignalsRequested(const QVector<int>& indices);
+    void HandleSplitRequested(const QVector<int>& indices);
 #ifdef PAT_ENABLE_SERIAL
     void SetupSerialDock();
     void RefreshSerialPorts();
@@ -95,6 +96,7 @@ private:
     QPushButton* pauseDisplayButton_ = nullptr;
     QCheckBox* followLatestCheck_ = nullptr;
     QTableWidget* liveFrameTable_ = nullptr;
+    QLabel* captureStatsLabel_ = nullptr;
     QThread* serialThread_ = nullptr;
     pat::SerialCaptureWorker* serialWorker_ = nullptr;
     bool captureRunning_ = false;

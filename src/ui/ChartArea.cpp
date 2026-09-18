@@ -8,6 +8,11 @@
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QFontMetricsF>
+#include <QHash>
+#include <QPalette>
+#include <QTimer>
+#include <QStringList>
 #include <QMimeData>
 #include <QResizeEvent>
 #include <QScrollArea>
@@ -41,7 +46,14 @@ ChartArea::ChartArea(QWidget* parent) : QWidget(parent) {
 
     scrollArea_ = new QScrollArea(this);
     scrollArea_->setWidgetResizable(true);
+    scrollArea_->setFrameShape(QFrame::NoFrame);
+    QPalette canvasPalette = scrollArea_->palette();
+    canvasPalette.setColor(QPalette::Window, QColor(26, 33, 40));
+    scrollArea_->viewport()->setPalette(canvasPalette);
+    scrollArea_->viewport()->setAutoFillBackground(true);
     container_ = new QWidget(scrollArea_);
+    container_->setPalette(canvasPalette);
+    container_->setAutoFillBackground(true);
     auto* containerLayout = new QVBoxLayout(container_);
     containerLayout->setContentsMargins(0, 0, 0, 0);
     splitter_ = new QSplitter(Qt::Vertical, container_);
@@ -115,6 +127,7 @@ void ChartArea::RefreshLiveData(bool followLatest) {
             chart->SetYAxisRange(minY, maxY);
         }
     }
+    AlignYAxisMargins();
     if (followLatest) {
         const double maxX = std::max(1.0, stats_.maxX);
         ApplyXRange(std::max(0.0, maxX - 2000.0), maxX);
@@ -141,6 +154,9 @@ void ChartArea::RefreshCharts() {
 }
 
 bool ChartArea::eventFilter(QObject* obj, QEvent* event) {
+    if (obj == scrollArea_->viewport() && event->type() == QEvent::Resize) {
+        QTimer::singleShot(0, this, [this]() { UpdateChartHeights(); });
+    }
     if (obj == scrollArea_->viewport() || obj == container_) {
         auto* widget = qobject_cast<QWidget*>(obj);
         if (!widget) return QWidget::eventFilter(obj, event);
@@ -319,6 +335,15 @@ void ChartArea::HandleHideSignalsRequested(const QVector<int>& indices) {
 }
 
 void ChartArea::BuildCharts() {
+    const auto guideKey = [](const QVector<int>& indices) {
+        QStringList parts;
+        for (int idx : indices) parts.append(QString::number(idx));
+        return parts.join(',');
+    };
+    QHash<QString, QVector<GuideLine>> savedGuides;
+    for (const auto* chart : charts_) {
+        if (chart) savedGuides.insert(guideKey(chart->SeriesIndices()), chart->GuideLines());
+    }
     ClearCharts();
 
     if (!series_ || groups_.isEmpty() || !splitter_) return;
@@ -327,6 +352,17 @@ void ChartArea::BuildCharts() {
     const double viewMinX = hasCurrentRange_ ? currentMinX_ : 0.0;
     const double viewMaxX = hasCurrentRange_ ? currentMaxX_ : std::max(1.0, stats_.maxX);
     const auto palette = SeriesPalette();
+    const QFontMetricsF axisMetrics(font());
+    qreal commonLeftMargin = 68.0;
+    for (const auto& group : groups_) {
+        double groupMinY = -1.0;
+        double groupMaxY = 1.0;
+        ComputeGroupRange(group.signalIndices, groupMinY, groupMaxY);
+        commonLeftMargin = std::max(commonLeftMargin,
+                                    axisMetrics.horizontalAdvance(QString::number(groupMinY, 'f', 1)) + 32.0);
+        commonLeftMargin = std::max(commonLeftMargin,
+                                    axisMetrics.horizontalAdvance(QString::number(groupMaxY, 'f', 1)) + 32.0);
+    }
 
     for (int groupIndex = 0; groupIndex < groups_.size(); ++groupIndex) {
         const auto& group = groups_[groupIndex];
@@ -362,6 +398,9 @@ void ChartArea::BuildCharts() {
                         viewMinX,
                         viewMaxX,
                         groupIndex);
+        view->SetXAxisVisible(groupIndex == groups_.size() - 1);
+        view->SetPlotLeftMargin(commonLeftMargin);
+        view->SetGuideLines(savedGuides.value(guideKey(group.signalIndices)));
 
         connect(view, &SignalChartView::CursorMoved, this, &ChartArea::HandleCursorMoved);
         connect(view, &SignalChartView::CursorLeft, this, &ChartArea::HandleCursorLeft);
@@ -371,6 +410,7 @@ void ChartArea::BuildCharts() {
         connect(view, &SignalChartView::ChartMergeRequested, this, &ChartArea::HandleChartMergeRequested);
         connect(view, &SignalChartView::ReorderRequested, this, &ChartArea::HandleReorderRequested);
         connect(view, &SignalChartView::HideSignalsRequested, this, &ChartArea::HandleHideSignalsRequested);
+        connect(view, &SignalChartView::SplitRequested, this, &ChartArea::SplitRequested);
 
         splitter_->addWidget(view);
         splitter_->setStretchFactor(splitter_->indexOf(view), 1);
@@ -378,6 +418,7 @@ void ChartArea::BuildCharts() {
     }
 
     UpdateChartHeights();
+    AlignYAxisMargins();
     ApplyXRange(viewMinX, viewMaxX);
 }
 
@@ -566,5 +607,15 @@ void ChartArea::UpdateRangeContext() {
 
     for (auto* chart : charts_) {
         if (chart) chart->SetRangeContext(context);
+    }
+}
+
+void ChartArea::AlignYAxisMargins() {
+    qreal commonMargin = 68.0;
+    for (const auto* chart : charts_) {
+        if (chart) commonMargin = std::max(commonMargin, chart->YLabelWidth() + 32.0);
+    }
+    for (auto* chart : charts_) {
+        if (chart) chart->SetPlotLeftMargin(commonMargin);
     }
 }

@@ -31,6 +31,12 @@ struct ChartRangeContext {
     bool hasCurrentRange = false;
 };
 
+enum class GuideOrientation { Horizontal, Vertical };
+struct GuideLine {
+    GuideOrientation orientation = GuideOrientation::Horizontal;
+    double value = 0.0;
+};
+
 class SignalChartView : public QChartView {
     Q_OBJECT
 
@@ -60,8 +66,13 @@ public:
     void SetCursorX(double cursorX);
     void HideCursor();
     void SetViewIndex(int index);
+    void SetXAxisVisible(bool visible);
+    void SetPlotLeftMargin(qreal margin);
+    qreal YLabelWidth() const;
     int ViewIndex() const { return viewIndex_; }
     const QVector<int>& SeriesIndices() const { return seriesIndices_; }
+    QVector<GuideLine> GuideLines() const;
+    void SetGuideLines(const QVector<GuideLine>& guides);
 
 signals:
     void CursorMoved(double cursorX);
@@ -72,6 +83,7 @@ signals:
     void ChartMergeRequested(int fromIndex, int toIndex);
     void ReorderRequested(int fromIndex, int toIndex);
     void HideSignalsRequested(const QVector<int>& indices);
+    void SplitRequested(const QVector<int>& indices);
 
 protected:
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -93,6 +105,18 @@ private:
     void UpdateHeaderLayout();
     void StartReorderDrag();
     void UpdateCursor(double cursorX);
+    void UpdateAlignedPlotArea();
+    void UpdateGuides();
+    int GuideAt(const QPoint& viewPos) const;
+    void AddGuide(GuideOrientation orientation, double value);
+    QString GuideTooltip(int index, double cursorX) const;
+
+    struct GuideVisual {
+        GuideLine guide;
+        QGraphicsLineItem* item = nullptr;
+    };
+    QVector<GuideVisual> guides_;
+    int draggingGuide_ = -1;
 
     QVector<QLineSeries*> series_;
     QVector<int> seriesIndices_;
@@ -117,4 +141,5 @@ private:
     bool reorderArmed_ = false;
     QPoint reorderStartPos_;
     int viewIndex_ = -1;
+    qreal plotLeftMargin_ = 80.0;
 };

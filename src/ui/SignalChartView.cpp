@@ -26,6 +26,8 @@
 #include <QResizeEvent>
 #include <QWheelEvent>
 #include <QSizeF>
+#include <QToolTip>
+#include <QStringList>
 
 #include <QtCharts/QChart>
 #include <QtCharts/QLineSeries>
@@ -34,6 +36,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 
@@ -133,6 +136,7 @@ void SignalChartView::Configure(const QString& title,
 
     auto* axisY = new QValueAxis(chart);
     axisY->setRange(minY, maxY);
+    axisY->setLabelFormat("%.1f");
     axisY->setTitleBrush(QBrush(AXIS_TEXT_COLOR));
     axisY->setLabelsColor(AXIS_TEXT_COLOR);
     axisY->setLinePenColor(AXIS_LINE_COLOR);
@@ -143,6 +147,11 @@ void SignalChartView::Configure(const QString& title,
     }
 
     setChart(chart);
+    connect(chart, &QChart::plotAreaChanged, this, [this](const QRectF&) {
+        UpdateHeaderLayout();
+        UpdateZeroLine();
+        UpdateGuides();
+    });
 
     headerTitleText_ = title.trimmed();
     headerDescText_ = unit.trimmed();
@@ -152,11 +161,11 @@ void SignalChartView::Configure(const QString& title,
     if (headerFont.pointSize() > 0) {
         const int boosted = std::max(14, headerFont.pointSize() + 3);
         const int reduced = std::max(8, static_cast<int>(std::round(boosted * 0.5)));
-        headerFont.setPointSize(reduced);
+        headerFont.setPointSize(std::max(11, static_cast<int>(std::round(reduced * 1.3))));
     } else if (headerFont.pixelSize() > 0) {
         const int boosted = std::max(16, headerFont.pixelSize() + 3);
         const int reduced = std::max(10, static_cast<int>(std::round(boosted * 0.5)));
-        headerFont.setPixelSize(reduced);
+        headerFont.setPixelSize(std::max(13, static_cast<int>(std::round(reduced * 1.3))));
     }
     headerTitle_->setFont(headerFont);
     headerDesc_->setFont(headerFont);
@@ -204,6 +213,7 @@ void SignalChartView::Configure(const QString& title,
     }
 
     UpdateZeroLine();
+    UpdateAlignedPlotArea();
 }
 
 void SignalChartView::SetSeriesSamples(const QVector<QVector<QPointF>>& seriesSamples) {
@@ -212,6 +222,19 @@ void SignalChartView::SetSeriesSamples(const QVector<QVector<QPointF>>& seriesSa
             series_[i]->replace(seriesSamples[i]);
         }
     }
+}
+
+QVector<GuideLine> SignalChartView::GuideLines() const {
+    QVector<GuideLine> result;
+    result.reserve(guides_.size());
+    for (const auto& visual : guides_) result.append(visual.guide);
+    return result;
+}
+
+void SignalChartView::SetGuideLines(const QVector<GuideLine>& guides) {
+    for (const auto& visual : guides_) delete visual.item;
+    guides_.clear();
+    for (const auto& guide : guides) AddGuide(guide.orientation, guide.value);
 }
 
 void SignalChartView::SetRangeContext(const ChartRangeContext& context) {
@@ -225,6 +248,7 @@ void SignalChartView::SetXAxisRange(double minX, double maxX) {
     axisX->setRange(minX, maxX);
     UpdateZeroLine();
     UpdateHeaderLayout();
+    UpdateGuides();
 }
 
 void SignalChartView::SetYAxisRange(double minY, double maxY) {
@@ -232,8 +256,10 @@ void SignalChartView::SetYAxisRange(double minY, double maxY) {
     auto* axisY = qobject_cast<QValueAxis*>(chart()->axes(Qt::Vertical, series_.first()).value(0));
     if (!axisY) return;
     axisY->setRange(minY, maxY);
+    UpdateAlignedPlotArea();
     UpdateZeroLine();
     UpdateHeaderLayout();
+    UpdateGuides();
 }
 
 void SignalChartView::SetCursorX(double cursorX) {
@@ -253,7 +279,47 @@ void SignalChartView::SetViewIndex(int index) {
     viewIndex_ = index;
 }
 
+void SignalChartView::SetXAxisVisible(bool visible) {
+    if (!chart() || series_.isEmpty()) return;
+    auto* axis = qobject_cast<QValueAxis*>(chart()->axes(Qt::Horizontal, series_.first()).value(0));
+    if (!axis) return;
+    axis->setLabelsVisible(visible);
+    axis->setTitleVisible(visible);
+    UpdateAlignedPlotArea();
+}
+
+void SignalChartView::SetPlotLeftMargin(qreal margin) {
+    if (qFuzzyCompare(plotLeftMargin_, margin)) return;
+    plotLeftMargin_ = margin;
+    UpdateAlignedPlotArea();
+}
+
+qreal SignalChartView::YLabelWidth() const {
+    if (!chart() || series_.isEmpty()) return 0.0;
+    auto* axis = qobject_cast<QValueAxis*>(chart()->axes(Qt::Vertical, series_.first()).value(0));
+    if (!axis) return 0.0;
+    const QFontMetricsF metrics(axis->labelsFont());
+    return std::max(metrics.horizontalAdvance(QString::number(axis->min(), 'f', 1)),
+                    metrics.horizontalAdvance(QString::number(axis->max(), 'f', 1)));
+}
+
 void SignalChartView::mouseMoveEvent(QMouseEvent* event) {
+    if (draggingGuide_ >= 0 && draggingGuide_ < guides_.size()
+        && (event->buttons() & Qt::LeftButton)) {
+        const QPointF point = MapToValue(event->position().toPoint());
+        auto& guide = guides_[draggingGuide_].guide;
+        if (guide.orientation == GuideOrientation::Horizontal) {
+            auto* axis = qobject_cast<QValueAxis*>(chart()->axes(Qt::Vertical, series_.first()).value(0));
+            if (axis) guide.value = std::clamp(point.y(), axis->min(), axis->max());
+        } else {
+            auto* axis = qobject_cast<QValueAxis*>(chart()->axes(Qt::Horizontal, series_.first()).value(0));
+            if (axis) guide.value = std::clamp(point.x(), axis->min(), axis->max());
+        }
+        UpdateGuides();
+        QToolTip::hideText();
+        return;
+    }
+
     if (reorderArmed_ && (event->buttons() & Qt::LeftButton)) {
         const QPoint viewPos = event->position().toPoint();
         if ((viewPos - reorderStartPos_).manhattanLength() >= QApplication::startDragDistance()) {
@@ -293,6 +359,16 @@ void SignalChartView::mouseMoveEvent(QMouseEvent* event) {
 
     if (!series_.isEmpty() && chart()) {
         const QPoint viewPos = event->position().toPoint();
+        const int guideIndex = GuideAt(viewPos);
+        if (guideIndex >= 0) {
+            setCursor(Qt::SizeAllCursor);
+            emit CursorLeft();
+            QToolTip::showText(event->globalPosition().toPoint(),
+                               GuideTooltip(guideIndex, MapToValue(viewPos).x()), this);
+            return;
+        }
+        unsetCursor();
+        QToolTip::hideText();
         const QPointF plotPoint = MapToValue(viewPos);
         double minX = rangeContext_.hasCurrentRange ? rangeContext_.currentMinX : rangeContext_.globalMinX;
         double maxX = rangeContext_.hasCurrentRange ? rangeContext_.currentMaxX : rangeContext_.globalMaxX;
@@ -307,6 +383,32 @@ void SignalChartView::mousePressEvent(QMouseEvent* event) {
     if (event->button() != Qt::LeftButton || !chart()) return;
 
     const QPoint viewPos = event->position().toPoint();
+    const int guideIndex = GuideAt(viewPos);
+    if (guideIndex >= 0) {
+        draggingGuide_ = guideIndex;
+        emit CursorLeft();
+        return;
+    }
+    const QPointF chartPos = chart()->mapFromScene(mapToScene(viewPos));
+    const QRectF plot = chart()->plotArea();
+    if (!series_.isEmpty() && chartPos.x() >= plot.left() && chartPos.x() <= plot.right()
+        && chartPos.y() > plot.bottom() && chartPos.y() <= chart()->size().height()) {
+        auto* axis = qobject_cast<QValueAxis*>(chart()->axes(Qt::Vertical, series_.first()).value(0));
+        if (axis) {
+            AddGuide(GuideOrientation::Horizontal, axis->min());
+            draggingGuide_ = guides_.size() - 1;
+            return;
+        }
+    }
+    if (!series_.isEmpty() && chartPos.y() >= plot.top() && chartPos.y() <= plot.bottom()
+        && chartPos.x() < plot.left() && chartPos.x() >= 0) {
+        auto* axis = qobject_cast<QValueAxis*>(chart()->axes(Qt::Horizontal, series_.first()).value(0));
+        if (axis) {
+            AddGuide(GuideOrientation::Vertical, axis->min());
+            draggingGuide_ = guides_.size() - 1;
+            return;
+        }
+    }
     if (IsHeaderDragZone(viewPos)) {
         reorderArmed_ = true;
         reorderStartPos_ = viewPos;
@@ -331,6 +433,10 @@ void SignalChartView::mousePressEvent(QMouseEvent* event) {
 
 void SignalChartView::mouseReleaseEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
+        if (draggingGuide_ >= 0) {
+            draggingGuide_ = -1;
+            return;
+        }
         reorderArmed_ = false;
         panning_ = false;
 
@@ -385,6 +491,8 @@ void SignalChartView::wheelEvent(QWheelEvent* event) {
 
 void SignalChartView::leaveEvent(QEvent* event) {
     Q_UNUSED(event)
+    QToolTip::hideText();
+    unsetCursor();
     emit CursorLeft();
 }
 
@@ -399,14 +507,180 @@ bool SignalChartView::viewportEvent(QEvent* event) {
 
 void SignalChartView::resizeEvent(QResizeEvent* event) {
     QChartView::resizeEvent(event);
+    UpdateAlignedPlotArea();
     UpdateHeaderLayout();
     UpdateZeroLine();
+    UpdateGuides();
+}
+
+void SignalChartView::UpdateAlignedPlotArea() {
+    if (!chart() || series_.isEmpty()) return;
+    const qreal ownWidth = YLabelWidth();
+    const qreal extra = std::max(0.0, plotLeftMargin_ - ownWidth - 32.0);
+    chart()->setMargins(QMargins(static_cast<int>(std::ceil(4.0 + extra)), 0, 4, 2));
+    UpdateGuides();
+}
+
+void SignalChartView::AddGuide(GuideOrientation orientation, double value) {
+    if (!chart() || series_.isEmpty()) return;
+    auto* item = new QGraphicsLineItem(chart());
+    QPen pen(QColor(85, 205, 205));
+    pen.setWidthF(1.8);
+    pen.setStyle(Qt::DashLine);
+    item->setPen(pen);
+    item->setZValue(960);
+    guides_.append({{orientation, value}, item});
+    UpdateGuides();
+}
+
+void SignalChartView::UpdateGuides() {
+    if (!chart() || series_.isEmpty()) return;
+    const QRectF plot = chart()->plotArea();
+    auto* axisX = qobject_cast<QValueAxis*>(chart()->axes(Qt::Horizontal, series_.first()).value(0));
+    auto* axisY = qobject_cast<QValueAxis*>(chart()->axes(Qt::Vertical, series_.first()).value(0));
+    if (!axisX || !axisY || plot.isEmpty()) return;
+    for (auto& visual : guides_) {
+        if (!visual.item) continue;
+        if (visual.guide.orientation == GuideOrientation::Horizontal) {
+            const double y = visual.guide.value;
+            const bool visible = y >= axisY->min() && y <= axisY->max();
+            visual.item->setVisible(visible);
+            if (visible) {
+                const qreal py = chart()->mapToPosition(QPointF(axisX->min(), y), series_.first()).y();
+                visual.item->setLine(QLineF(plot.left(), py, plot.right(), py));
+            }
+        } else {
+            const double x = visual.guide.value;
+            const bool visible = x >= axisX->min() && x <= axisX->max();
+            visual.item->setVisible(visible);
+            if (visible) {
+                const qreal px = chart()->mapToPosition(QPointF(x, axisY->min()), series_.first()).x();
+                visual.item->setLine(QLineF(px, plot.top(), px, plot.bottom()));
+            }
+        }
+    }
+}
+
+int SignalChartView::GuideAt(const QPoint& viewPos) const {
+    if (!chart()) return -1;
+    const QPointF chartPos = chart()->mapFromScene(mapToScene(viewPos));
+    const QRectF plot = chart()->plotArea().adjusted(-6, -6, 6, 6);
+    if (!plot.contains(chartPos)) return -1;
+    for (int i = guides_.size() - 1; i >= 0; --i) {
+        const auto& visual = guides_[i];
+        if (!visual.item || !visual.item->isVisible()) continue;
+        const QLineF line = visual.item->line();
+        const qreal distance = visual.guide.orientation == GuideOrientation::Horizontal
+                                   ? std::abs(chartPos.y() - line.y1())
+                                   : std::abs(chartPos.x() - line.x1());
+        if (distance <= 6.0) return i;
+    }
+    return -1;
+}
+
+QString SignalChartView::GuideTooltip(int index, double cursorX) const {
+    if (index < 0 || index >= guides_.size() || !sourceSeries_) return {};
+    const GuideLine guide = guides_[index].guide;
+    QStringList rows;
+    rows.append(guide.orientation == GuideOrientation::Horizontal
+                    ? tr("横向辅助线 val=%1").arg(guide.value, 0, 'f', 4)
+                    : tr("纵向辅助线 key=%1").arg(guide.value, 0, 'f', 2));
+    const double visibleMinX = rangeContext_.hasCurrentRange ? rangeContext_.currentMinX : rangeContext_.globalMinX;
+    const double visibleMaxX = rangeContext_.hasCurrentRange ? rangeContext_.currentMaxX : rangeContext_.globalMaxX;
+    for (int idx : seriesIndices_) {
+        if (idx < 0 || idx >= sourceSeries_->size()) continue;
+        const auto& data = sourceSeries_->at(idx);
+        const auto& samples = data.samples;
+        if (samples.isEmpty()) {
+            rows.append(tr("%1：无交点").arg(data.name));
+            continue;
+        }
+        double foundX = 0.0;
+        double foundY = 0.0;
+        bool found = false;
+        if (guide.orientation == GuideOrientation::Vertical) {
+            const double x = guide.value;
+            if (x >= samples.first().x() && x <= samples.last().x()) {
+                auto it = std::lower_bound(samples.begin(), samples.end(), x,
+                                           [](const QPointF& point, double key) { return point.x() < key; });
+                if (it != samples.end()) {
+                    foundX = x;
+                    if (it == samples.begin()) foundY = it->y();
+                    else {
+                        const QPointF p0 = *(it - 1);
+                        const QPointF p1 = *it;
+                        const double dx = p1.x() - p0.x();
+                        foundY = dx == 0.0 ? p1.y() : p0.y() + (p1.y() - p0.y()) * (x - p0.x()) / dx;
+                    }
+                    found = true;
+                }
+            }
+        } else {
+            double bestDistance = std::numeric_limits<double>::infinity();
+            const double y = guide.value;
+            if (samples.size() == 1 && samples.first().x() >= visibleMinX
+                && samples.first().x() <= visibleMaxX && qFuzzyCompare(samples.first().y(), y)) {
+                foundX = samples.first().x();
+                foundY = y;
+                found = true;
+            }
+            for (qsizetype i = 1; i < samples.size(); ++i) {
+                const QPointF p0 = samples[i - 1];
+                const QPointF p1 = samples[i];
+                if (p1.x() < visibleMinX || p0.x() > visibleMaxX) continue;
+                if (y < std::min(p0.y(), p1.y()) || y > std::max(p0.y(), p1.y())) continue;
+                const double dy = p1.y() - p0.y();
+                const double x = dy == 0.0 ? std::clamp(cursorX, p0.x(), p1.x())
+                                           : p0.x() + (y - p0.y()) * (p1.x() - p0.x()) / dy;
+                if (x < visibleMinX || x > visibleMaxX) continue;
+                const double distance = std::abs(x - cursorX);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    foundX = x;
+                    foundY = y;
+                    found = true;
+                }
+            }
+        }
+        rows.append(found ? tr("%1：key=%2  val=%3 %4")
+                                .arg(data.name)
+                                .arg(foundX, 0, 'f', 2)
+                                .arg(foundY, 0, 'f', 4)
+                                .arg(data.unit)
+                          : tr("%1：无交点").arg(data.name));
+    }
+    return rows.join('\n');
 }
 
 void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
     QMenu menu(this);
+    const int guideIndex = GuideAt(mapFromGlobal(event->globalPos()));
+    if (guideIndex >= 0) {
+        menu.addAction(tr("删除辅助线"), this, [this, guideIndex]() {
+            delete guides_[guideIndex].item;
+            guides_.removeAt(guideIndex);
+            QToolTip::hideText();
+        });
+        menu.addSeparator();
+    }
+    const QPointF value = MapToValue(mapFromGlobal(event->globalPos()));
+    menu.addAction(tr("添加横向辅助线"), this, [this, value]() {
+        AddGuide(GuideOrientation::Horizontal, value.y());
+    });
+    menu.addAction(tr("添加纵向辅助线"), this, [this, value]() {
+        AddGuide(GuideOrientation::Vertical, value.x());
+    });
+    if (!guides_.isEmpty()) {
+        menu.addAction(tr("清除本图辅助线"), this, [this]() { SetGuideLines({}); });
+    }
+    menu.addSeparator();
     auto* resetAction = menu.addAction(tr("还原横轴"));
     connect(resetAction, &QAction::triggered, this, &SignalChartView::ResetXRangeRequested);
+    if (seriesIndices_.size() > 1) {
+        menu.addAction(tr("打散组合画布"), this, [this]() {
+            emit SplitRequested(seriesIndices_);
+        });
+    }
     if (!seriesIndices_.isEmpty()) {
         menu.addAction(tr("取消显示本图信号"), this, [this]() {
             emit HideSignalsRequested(seriesIndices_);
@@ -656,7 +930,7 @@ void SignalChartView::UpdateCursor(double cursorX) {
 
         auto* label = valueLabels_[i];
         if (!label) continue;
-        label->setText(QStringLiteral("t=%1  val=%2").arg(cursorX, 0, 'f', 2).arg(value, 0, 'f', 4));
+        label->setText(QStringLiteral("key=%1\nval=%2").arg(cursorX, 0, 'f', 2).arg(value, 0, 'f', 4));
         auto* seriesRef = series_.value(i);
         if (!seriesRef) seriesRef = series_.first();
         const QPointF valuePoint = chart()->mapToPosition(QPointF(cursorX, value), seriesRef);

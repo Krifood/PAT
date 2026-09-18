@@ -115,6 +115,7 @@ MainWindow::~MainWindow() {
 
 void MainWindow::SetupUi() {
     setWindowTitle(tr("PAT 飞参解析工具"));
+    resize(1280, 800);
 
     auto* openFormatAction = new QAction(tr("打开格式..."), this);
     auto* newFormatAction = new QAction(tr("新建格式..."), this);
@@ -155,6 +156,7 @@ void MainWindow::SetupUi() {
     fileMenu->addAction(exitAction);
 
     auto* central = new QWidget(this);
+    central->setObjectName(QStringLiteral("mainCentral"));
     auto* layout = new QHBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
 
@@ -162,10 +164,12 @@ void MainWindow::SetupUi() {
     splitter->setChildrenCollapsible(false);
 
     auto* leftPane = new QWidget(splitter);
+    leftPane->setObjectName(QStringLiteral("signalPane"));
     auto* leftLayout = new QVBoxLayout(leftPane);
     leftLayout->setContentsMargins(4, 4, 4, 4);
     auto* listLabel = new QLabel(tr("信号选择"), leftPane);
     signalTree_ = new SignalTreeWidget(leftPane);
+    signalTree_->setObjectName(QStringLiteral("signalTree"));
     signalTree_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     signalTree_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(signalTree_, &QTreeWidget::itemChanged, this, &MainWindow::HandleSignalTreeItemChanged);
@@ -177,6 +181,7 @@ void MainWindow::SetupUi() {
     signalTreeController_ = std::make_unique<SignalTreeController>(signalTree_);
 
     auto* rightPane = new QWidget(splitter);
+    rightPane->setObjectName(QStringLiteral("chartPane"));
     auto* rightLayout = new QVBoxLayout(rightPane);
     rightLayout->setContentsMargins(4, 4, 4, 4);
 #ifdef PAT_ENABLE_QT_CHARTS
@@ -185,6 +190,7 @@ void MainWindow::SetupUi() {
     connect(chartArea_, &ChartArea::MergeRequested, this, &MainWindow::HandleMergeRequested);
     connect(chartArea_, &ChartArea::ReorderRequested, this, &MainWindow::HandleReorderRequested);
     connect(chartArea_, &ChartArea::HideSignalsRequested, this, &MainWindow::HandleHideSignalsRequested);
+    connect(chartArea_, &ChartArea::SplitRequested, this, &MainWindow::HandleSplitRequested);
     rightLayout->addWidget(chartArea_, /*stretch=*/1);
 #else
     auto* placeholder = new QLabel(tr("Qt Charts 未启用，无法显示曲线"), this);
@@ -194,15 +200,41 @@ void MainWindow::SetupUi() {
 
     statusLabel_ = new QLabel(tr("请先加载格式文件"), this);
     rightLayout->addWidget(statusLabel_);
+#ifdef PAT_ENABLE_SERIAL
+    captureStatsLabel_ = new QLabel(tr("串口：未采集"), this);
+    captureStatsLabel_->setObjectName(QStringLiteral("captureStatsLabel"));
+    rightLayout->addWidget(captureStatsLabel_);
+#endif
     rightPane->setLayout(rightLayout);
 
     splitter->addWidget(leftPane);
     splitter->addWidget(rightPane);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 3);
+    splitter->setSizes({300, 980});
     layout->addWidget(splitter);
 
     setCentralWidget(central);
+    setStyleSheet(QStringLiteral(R"(
+        QWidget#mainCentral { background: #171c22; }
+        QWidget#signalPane { background: #202b37; }
+        QWidget#chartPane { background: #1a2128; }
+        QWidget#serialPanel { background: #203139; color: #dbe8eb; }
+        QTreeWidget#signalTree { background: #17232e; color: #dce7ee;
+                                  alternate-background-color: #1d2b37; border: 1px solid #354958;
+                                  selection-background-color: #315d70; }
+        QTreeWidget#signalTree QHeaderView::section { background: #2a3b48; color: #e5eef2;
+                                                      border: 0; padding: 4px; }
+        QLabel { color: #dbe5eb; }
+        QDockWidget { color: #dbe8eb; }
+        QWidget#serialPanel QComboBox, QWidget#serialPanel QSpinBox,
+        QWidget#serialPanel QLineEdit, QWidget#serialPanel QTableWidget {
+            background: #17252c; color: #e3edf0; border: 1px solid #48606a;
+        }
+        QWidget#serialPanel QPushButton { background: #2d4b57; color: #edf4f5;
+                                         border: 1px solid #53717b; border-radius: 4px; padding: 4px 8px; }
+        QWidget#serialPanel QPushButton:hover { background: #386170; }
+    )"));
 #ifdef PAT_ENABLE_SERIAL
     SetupSerialDock();
 #endif
@@ -732,11 +764,17 @@ void MainWindow::HandleHideSignalsRequested(const QVector<int>& indices) {
     UpdateCharts();
 }
 
+void MainWindow::HandleSplitRequested(const QVector<int>& indices) {
+    displayGroupManager_.UnmergeSignals(indices);
+    UpdateCharts();
+}
+
 #ifdef PAT_ENABLE_SERIAL
 void MainWindow::SetupSerialDock() {
     auto* dock = new QDockWidget(tr("串口采集"), this);
     dock->setObjectName(QStringLiteral("serialCaptureDock"));
     auto* panel = new QWidget(dock);
+    panel->setObjectName(QStringLiteral("serialPanel"));
     auto* form = new QFormLayout(panel);
 
     portCombo_ = new QComboBox(panel);
@@ -841,6 +879,9 @@ void MainWindow::SetupSerialDock() {
 
     dock->setWidget(panel);
     addDockWidget(Qt::RightDockWidgetArea, dock);
+    auto* viewMenu = menuBar()->addMenu(tr("视图"));
+    viewMenu->addAction(dock->toggleViewAction());
+    dock->hide();
     RefreshSerialPorts();
 }
 
@@ -915,6 +956,13 @@ void MainWindow::StartSerialCapture() {
             });
     connect(serialWorker_, &pat::SerialCaptureWorker::SamplesReady,
             this, &MainWindow::HandleSerialSamples);
+    connect(serialWorker_, &pat::SerialCaptureWorker::Progress, this,
+            [this](quint64 bytes, quint64 frames, quint64 skipped) {
+                if (captureStatsLabel_) {
+                    captureStatsLabel_->setText(tr("已收到 %1 字节；已解析 %2 帧；跳过 %3 字节")
+                                                     .arg(bytes).arg(frames).arg(skipped));
+                }
+            });
     connect(serialWorker_, &pat::SerialCaptureWorker::Status,
             this, [this](const QString& message) { UpdateStatus(message); });
     connect(serialWorker_, &pat::SerialCaptureWorker::Error,
@@ -934,6 +982,7 @@ void MainWindow::StartSerialCapture() {
         thread->deleteLater();
     });
     captureRunning_ = true;
+    if (captureStatsLabel_) captureStatsLabel_->setText(tr("已收到 0 字节；已解析 0 帧；跳过 0 字节"));
     startCaptureButton_->setEnabled(false);
     stopCaptureButton_->setEnabled(true);
     pauseDisplayButton_->setEnabled(true);

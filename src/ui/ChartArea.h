@@ -32,6 +32,7 @@ signals:
     void MergeRequested(const QVector<int>& indices);
     void ReorderRequested(int fromIndex, int toIndex);
     void HideSignalsRequested(const QVector<int>& indices);
+    void SplitRequested(const QVector<int>& indices);
 
 protected:
     bool eventFilter(QObject* obj, QEvent* event) override;
@@ -59,6 +60,7 @@ private:
     bool ComputeGroupRange(const QVector<int>& indices, double& outMinY, double& outMaxY) const;
     void UpdateChartHeights();
     void UpdateRangeContext();
+    void AlignYAxisMargins();
 
     QScrollArea* scrollArea_ = nullptr;
     QWidget* container_ = nullptr;

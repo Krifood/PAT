@@ -3,10 +3,21 @@
 #include "ui/SignalChartView.h"
 
 #include <QComboBox>
+#include <QAction>
+#include <QDockWidget>
 #include <QFile>
+#include <QFontMetricsF>
+#include <QGraphicsSimpleTextItem>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
+#include <QPushButton>
+#include <QSplitter>
 #include <QTemporaryDir>
+#include <QtCharts/QChart>
+#include <QtCharts/QLineSeries>
+#include <QtCharts/QValueAxis>
+#include <cmath>
 #include <QtTest>
 
 #if defined(Q_OS_MACOS)
@@ -21,6 +32,7 @@ class UiTests : public QObject {
 
 private slots:
     void liveChartsAppearBeforeFirstFrame();
+    void chartGroupsGuidesAndAxes();
 };
 
 void UiTests::liveChartsAppearBeforeFirstFrame() {
@@ -40,6 +52,11 @@ void UiTests::liveChartsAppearBeforeFirstFrame() {
     window.signalTreeController_->SetSignalsChecked({0}, true);
     window.UpdateCharts();
     window.show();
+    auto* dock = window.findChild<QDockWidget*>(QStringLiteral("serialCaptureDock"));
+    QVERIFY(dock);
+    QVERIFY(!dock->isVisible());
+    dock->toggleViewAction()->trigger();
+    QTRY_VERIFY(dock->isVisible());
     QCOMPARE(window.chartArea_->findChildren<SignalChartView*>().size(), 1);
     QVERIFY(!window.liveSession_.HasData());
 
@@ -58,12 +75,129 @@ void UiTests::liveChartsAppearBeforeFirstFrame() {
     const QByteArray frame = QByteArray::fromHex(sample.readAll());
     QCOMPARE(::write(master, frame.constData(), static_cast<size_t>(frame.size())), ssize_t(frame.size()));
     QTRY_VERIFY_WITH_TIMEOUT(window.liveSession_.HasData(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(window.captureStatsLabel_->text().contains(QStringLiteral("已解析 1 帧")), 3000);
     QCOMPARE(window.chartArea_->findChildren<SignalChartView*>().size(), 1);
     QCOMPARE(window.liveSession_.SeriesData()[0].samples.size(), 1);
+    const auto& signalFormats = window.formatDocument_.Format().signalFormats;
+    const auto findSignal = [&signalFormats](const QString& name) {
+        for (int i = 0; i < static_cast<int>(signalFormats.size()); ++i) {
+            if (signalFormats[static_cast<size_t>(i)].name == name) return i;
+        }
+        return -1;
+    };
+    const int activeBit = findSignal(QStringLiteral("系统状态1_导航运行"));
+    const int inactiveBit = findSignal(QStringLiteral("系统状态1_GNSS航迹角有效"));
+    QVERIFY(activeBit >= 0);
+    QVERIFY(inactiveBit >= 0);
+    QCOMPARE(window.liveSession_.SeriesData()[activeBit].samples.first().y(), 1.0);
+    QCOMPARE(window.liveSession_.SeriesData()[inactiveBit].samples.first().y(), 0.0);
+
+    auto* view = window.chartArea_->findChild<SignalChartView*>();
+    QVERIFY(view);
+    auto* plotted = qobject_cast<QLineSeries*>(view->chart()->series().first());
+    QVERIFY(plotted);
+    QTRY_COMPARE(plotted->points().size(), 1);
+    window.pauseDisplayButton_->click();
+    QCOMPARE(::write(master, frame.constData(), static_cast<size_t>(frame.size())), ssize_t(frame.size()));
+    QTRY_VERIFY_WITH_TIMEOUT(window.captureStatsLabel_->text().contains(QStringLiteral("已解析 2 帧")), 3000);
+    QCOMPARE(window.liveSession_.SeriesData()[0].samples.size(), 2);
+    QCOMPARE(plotted->points().size(), 1);
+    window.pauseDisplayButton_->click();
+    QTRY_COMPARE(plotted->points().size(), 2);
 
     window.StopSerialCapture();
     QTRY_VERIFY_WITH_TIMEOUT(!window.captureRunning_, 3000);
     ::close(master);
+}
+
+void UiTests::chartGroupsGuidesAndAxes() {
+    MainWindow window;
+    QString error;
+    const QString root = QString::fromUtf8(PAT_SOURCE_DIR);
+    QVERIFY2(window.formatDocument_.LoadFromFile(root + QStringLiteral("/samples/cp01_b3_navigation.json"), error),
+             qPrintable(error));
+    QVERIFY2(window.dataSession_.Load(root + QStringLiteral("/samples/cp01_b3_synthetic.hex"),
+                                      window.formatDocument_.Format(), error), qPrintable(error));
+    window.BuildSignalTree();
+    window.signalTreeController_->SetSignalsChecked({0, 7}, true);
+    window.UpdateCharts();
+    window.show();
+    QTest::qWait(100);
+    auto* mainSplitter = window.centralWidget()->findChild<QSplitter*>(QString(), Qt::FindDirectChildrenOnly);
+    QVERIFY(mainSplitter);
+    QVERIFY(mainSplitter->sizes().first() < mainSplitter->sizes().last() / 2);
+    auto views = window.chartArea_->findChildren<SignalChartView*>();
+    QCOMPARE(views.size(), 2);
+    QVERIFY(std::abs(views[0]->chart()->plotArea().left() - views[1]->chart()->plotArea().left()) < 2.0);
+    for (auto* view : views) {
+        auto* yAxis = qobject_cast<QValueAxis*>(view->chart()->axes(Qt::Vertical).first());
+        auto* xAxis = qobject_cast<QValueAxis*>(view->chart()->axes(Qt::Horizontal).first());
+        QVERIFY(yAxis);
+        QVERIFY(xAxis);
+        QCOMPARE(yAxis->labelFormat(), QStringLiteral("%.1f"));
+        QCOMPARE(xAxis->labelsVisible(), view->ViewIndex() == 1);
+    }
+    views[0]->SetCursorX(0.0);
+    bool sawTwoLineValue = false;
+    for (auto* item : views[0]->chart()->scene()->items()) {
+        auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item);
+        if (!label || !label->text().startsWith(QStringLiteral("key="))) continue;
+        QVERIFY(label->text().contains(QStringLiteral("\nval=")));
+        QVERIFY(label->boundingRect().height() > QFontMetricsF(label->font()).height() * 1.5);
+        sawTwoLineValue = true;
+    }
+    QVERIFY(sawTwoLineValue);
+
+    views[0]->SetGuideLines({{GuideOrientation::Horizontal, -12.34},
+                             {GuideOrientation::Vertical, 0.0}});
+    QCOMPARE(views[0]->GuideLines().size(), 2);
+    window.UpdateCharts();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    views = window.chartArea_->findChildren<SignalChartView*>();
+    QCOMPARE(views.size(), 2);
+    QCOMPARE(views[0]->GuideLines().size(), 2);
+
+    window.HandleMergeRequested({0, 7});
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    views = window.chartArea_->findChildren<SignalChartView*>();
+    QCOMPARE(views.size(), 1);
+    QCOMPARE(views[0]->SeriesIndices().size(), 2);
+    window.HandleSplitRequested({0, 7});
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    views = window.chartArea_->findChildren<SignalChartView*>();
+    QCOMPARE(views.size(), 2);
+    QVERIFY(window.signalTreeController_->CollectCheckedSignalIndices().contains(0));
+    QVERIFY(window.signalTreeController_->CollectCheckedSignalIndices().contains(7));
+
+    auto* bottomView = views[1];
+    QTest::qWait(20);
+    const QRectF plot = bottomView->chart()->plotArea();
+    const QPoint from = bottomView->mapFromScene(bottomView->chart()->mapToScene(
+        QPointF(plot.center().x(), plot.bottom() + 12.0)));
+    const QPoint to = bottomView->mapFromScene(bottomView->chart()->mapToScene(plot.center()));
+    QTest::mousePress(bottomView->viewport(), Qt::LeftButton, Qt::NoModifier, from);
+    QMouseEvent drag(QEvent::MouseMove, QPointF(to), QPointF(bottomView->viewport()->mapToGlobal(to)),
+                     Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(bottomView->viewport(), &drag);
+    QTest::mouseRelease(bottomView->viewport(), Qt::LeftButton, Qt::NoModifier, to);
+    QCOMPARE(bottomView->GuideLines().size(), 1);
+    QCOMPARE(bottomView->GuideLines().first().orientation, GuideOrientation::Horizontal);
+    auto* bottomYAxis = qobject_cast<QValueAxis*>(bottomView->chart()->axes(Qt::Vertical).first());
+    QVERIFY(bottomYAxis);
+    QVERIFY(bottomView->GuideLines().first().value > bottomYAxis->min());
+
+    const QPoint verticalFrom = bottomView->mapFromScene(bottomView->chart()->mapToScene(
+        QPointF(plot.left() - 12.0, plot.center().y())));
+    QTest::mousePress(bottomView->viewport(), Qt::LeftButton, Qt::NoModifier, verticalFrom);
+    QMouseEvent verticalDrag(QEvent::MouseMove, QPointF(to),
+                             QPointF(bottomView->viewport()->mapToGlobal(to)),
+                             Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(bottomView->viewport(), &verticalDrag);
+    QTest::mouseRelease(bottomView->viewport(), Qt::LeftButton, Qt::NoModifier, to);
+    QCOMPARE(bottomView->GuideLines().size(), 2);
+    QCOMPARE(bottomView->GuideLines().last().orientation, GuideOrientation::Vertical);
+    bottomView->SetGuideLines({});
+    QVERIFY(bottomView->GuideLines().isEmpty());
 }
 
 QTEST_MAIN(UiTests)

@@ -34,6 +34,7 @@ signals:
     void Stopped();
     void Error(const QString& message);
     void Status(const QString& message);
+    void Progress(quint64 receivedBytes, quint64 parsedFrames, quint64 skippedBytes);
     void SamplesReady(const QVector<pat::LiveSample>& samples, quint64 skippedBytes);
 
 private:
