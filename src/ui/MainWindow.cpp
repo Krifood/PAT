@@ -251,7 +251,9 @@ void MainWindow::OpenFormatFile() {
     const QString path = QFileDialog::getOpenFileName(this,
                                                       tr("选择格式文件"),
                                                       QString(),
-                                                      tr("JSON (*.json);;所有文件 (*)"));
+                                                      tr("JSON (*.json);;所有文件 (*)"),
+                                                      nullptr,
+                                                      QFileDialog::DontUseNativeDialog);
     if (path.isEmpty()) return;
 
     QString error;

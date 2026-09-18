@@ -4,16 +4,21 @@
 
 #include <QComboBox>
 #include <QAction>
+#include <QApplication>
 #include <QDockWidget>
 #include <QFile>
+#include <QFileDialog>
 #include <QFontMetricsF>
 #include <QGraphicsSimpleTextItem>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenuBar>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSplitter>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QtCharts/QChart>
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
@@ -31,9 +36,56 @@ class UiTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void openFormatMenuLoadsFile();
     void liveChartsAppearBeforeFirstFrame();
     void chartGroupsGuidesAndAxes();
 };
+
+void UiTests::openFormatMenuLoadsFile() {
+    MainWindow window;
+    window.show();
+    QAction* openAction = nullptr;
+    for (auto* menuAction : window.menuBar()->actions()) {
+        if (!menuAction->menu()) continue;
+        for (auto* action : menuAction->menu()->actions()) {
+            if (action->text().startsWith(QStringLiteral("打开格式"))) openAction = action;
+        }
+    }
+    QVERIFY(openAction);
+
+    const QString formatPath = QString::fromUtf8(PAT_SOURCE_DIR)
+                               + QStringLiteral("/samples/cp01_b3_navigation.json");
+    bool dialogSeen = false;
+    QTimer poll;
+    poll.setInterval(20);
+    QObject::connect(&poll, &QTimer::timeout, &window, [&]() {
+        for (auto* widget : QApplication::topLevelWidgets()) {
+            auto* dialog = qobject_cast<QFileDialog*>(widget);
+            if (!dialog || !dialog->isVisible()) continue;
+            dialogSeen = true;
+            poll.stop();
+            QTimer::singleShot(100, dialog, [dialog, formatPath]() {
+                auto* fileNameEdit = dialog->findChild<QLineEdit*>(QStringLiteral("fileNameEdit"));
+                if (!fileNameEdit) return;
+                fileNameEdit->setText(formatPath);
+                QMetaObject::invokeMethod(dialog, "accept");
+            });
+            return;
+        }
+    });
+    poll.start();
+    QTimer::singleShot(5000, &window, [&]() {
+        poll.stop();
+        for (auto* widget : QApplication::topLevelWidgets()) {
+            if (auto* dialog = qobject_cast<QDialog*>(widget)) dialog->reject();
+        }
+    });
+    openAction->trigger();
+    QVERIFY(dialogSeen);
+    QVERIFY(window.formatDocument_.HasFormat());
+    QCOMPARE(window.formatDocument_.Format().templateId, QStringLiteral("cp01_b3_navigation_output_v2"));
+    QVERIFY(window.statusLabel_->text().contains(QStringLiteral("格式已加载")));
+}
 
 void UiTests::liveChartsAppearBeforeFirstFrame() {
     int master = -1;

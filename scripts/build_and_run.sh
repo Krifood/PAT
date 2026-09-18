@@ -1,64 +1,75 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-# 允许在任意目录调用脚本
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$REPO_ROOT"
 
-BUILD_DIR="${BUILD_DIR:-build}"
+BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build/local}"
+if [[ "$BUILD_DIR" != /* ]]; then
+  BUILD_DIR="$REPO_ROOT/$BUILD_DIR"
+fi
 CONFIG="${CONFIG:-Release}"
-CLEAN="${CLEAN:-0}"
+RUN="${RUN:-1}"
+PACKAGE="${PACKAGE:-0}"
 
 detect_qt_root() {
   if [[ -n "${QT_ROOT:-}" ]]; then
-    echo "$QT_ROOT"
-    return
-  fi
-  if [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
-    echo "$CMAKE_PREFIX_PATH"
-    return
-  fi
-  if command -v brew >/dev/null 2>&1; then
-    local brew_qt
-    brew_qt="$(brew --prefix qt 2>/dev/null || true)"
-    if [[ -n "$brew_qt" && -d "$brew_qt" ]]; then
-      echo "$brew_qt"
-      return
-    fi
+    printf '%s\n' "$QT_ROOT"
+  elif [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
+    printf '%s\n' "$CMAKE_PREFIX_PATH"
+  elif command -v brew >/dev/null 2>&1; then
+    brew --prefix qt 2>/dev/null || true
   fi
 }
 
-QT_ROOT="$(detect_qt_root || true)"
-if [[ -z "$QT_ROOT" ]]; then
-  echo "未找到 Qt 安装路径，请设置 QT_ROOT 或 CMAKE_PREFIX_PATH（包含 lib/cmake/Qt6Core）" >&2
+QT_PREFIX="$(detect_qt_root)"
+
+if [[ "${CLEAN:-0}" == "1" ]]; then
+  if [[ "$BUILD_DIR" == "$REPO_ROOT" || "$BUILD_DIR" == "/" ]]; then
+    echo "拒绝清理项目根目录或系统根目录" >&2
+    exit 1
+  fi
+  rm -f -- "$BUILD_DIR/CMakeCache.txt"
+  rm -rf -- "$BUILD_DIR/CMakeFiles"
+fi
+
+cmake_args=(
+  -S "$REPO_ROOT" -B "$BUILD_DIR"
+)
+if [[ -n "$QT_PREFIX" ]]; then
+  cmake_args+=("-DCMAKE_PREFIX_PATH=$QT_PREFIX")
+fi
+cmake "${cmake_args[@]}" \
+  -DCMAKE_BUILD_TYPE="$CONFIG" \
+  -DPAT_BUILD_GUI=ON \
+  -DPAT_ENABLE_SERIAL="${PAT_ENABLE_SERIAL:-ON}" \
+  -DPAT_BUILD_TESTS="${PAT_BUILD_TESTS:-OFF}"
+
+cmake --build "$BUILD_DIR" --config "$CONFIG" --target pat_app --parallel "${JOBS:-4}"
+
+APP_ROOT="$BUILD_DIR"
+if [[ "$PACKAGE" == "1" ]]; then
+  APP_ROOT="$BUILD_DIR/stage"
+  cmake --install "$BUILD_DIR" --prefix "$APP_ROOT"
+fi
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  APP_PATH="$APP_ROOT/pat_app.app"
+  EXE_PATH="$APP_PATH/Contents/MacOS/pat_app"
+else
+  if [[ "$PACKAGE" == "1" ]]; then
+    APP_ROOT="$APP_ROOT/bin"
+  fi
+  APP_PATH="$APP_ROOT/pat_app"
+  EXE_PATH="$APP_PATH"
+fi
+
+if [[ ! -x "$EXE_PATH" ]]; then
+  echo "构建完成，但未找到程序：$EXE_PATH" >&2
   exit 1
 fi
+printf '构建完成：%s\n' "$APP_PATH"
 
-export PATH="$QT_ROOT/bin:$PATH"
-
-if [[ "$CLEAN" == "1" ]]; then
-  rm -rf "$BUILD_DIR"
+if [[ "$RUN" == "1" ]]; then
+  exec "$EXE_PATH"
 fi
-
-CMAKE_CXX_COMPILER_PARA="$(brew --prefix llvm)/bin/clang++"
-CMAKE_C_COMPILER_PARA="$(brew --prefix llvm)/bin/clang"
-
-cmake -S "$REPO_ROOT" -B "$BUILD_DIR" \
-  -DPAT_ENABLE_QT_CHARTS=ON \
-  -DPAT_STRICT_WARNINGS=ON \
-  -DCMAKE_PREFIX_PATH="$QT_ROOT" \
-  -DCMAKE_BUILD_TYPE="$CONFIG" \
-  -DCMAKE_CXX_STANDARD=20 \
-  -DCMAKE_CXX_STANDARD_REQUIRED=ON \
-  -DCMAKE_CXX_EXTENSIONS=OFF \
-  -DCMAKE_CXX_COMPILER="$CMAKE_CXX_COMPILER_PARA" \
-  -DCMAKE_C_COMPILER="$CMAKE_C_COMPILER_PARA"
-
-cmake --build "$BUILD_DIR" --config "$CONFIG"
-
-exe="$BUILD_DIR/pat_app"
-if [[ -f "$BUILD_DIR/pat_app.exe" ]]; then
-  exe="$BUILD_DIR/pat_app.exe"
-fi
-"$exe"
