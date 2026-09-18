@@ -170,11 +170,35 @@ bool LoadFormatFromJsonData(const QByteArray& data, FormatDefinition& outFormat,
         return false;
     }
     if (outFormat.HasFraming()) {
-        const int frameLength = root.value(QStringLiteral("framing")).toObject()
-                                    .value(QStringLiteral("frame_length")).toInt(0);
+        const auto framing = root.value(QStringLiteral("framing")).toObject();
+        const int frameLength = framing.value(QStringLiteral("frame_length")).toInt(0);
         if (frameLength != outFormat.recordSize || frameLength < outFormat.frameHeader.size()) {
             errorMessage = QStringLiteral("framing.frame_length 必须等于 record_size 且不小于帧头长度");
             return false;
+        }
+        if (framing.contains(QStringLiteral("checksum"))) {
+            if (!framing.value(QStringLiteral("checksum")).isObject()) {
+                errorMessage = QStringLiteral("framing.checksum 必须为对象");
+                return false;
+            }
+            const auto checksum = framing.value(QStringLiteral("checksum")).toObject();
+            if (checksum.value(QStringLiteral("kind")).toString() != QStringLiteral("sum8")) {
+                errorMessage = QStringLiteral("framing.checksum.kind 仅支持 sum8");
+                return false;
+            }
+            outFormat.checksumStartByte = checksum.value(QStringLiteral("start_byte")).toInt(-1);
+            outFormat.checksumEndByte = checksum.value(QStringLiteral("end_byte")).toInt(-1);
+            outFormat.checksumByteOffset = checksum.value(QStringLiteral("byte_offset")).toInt(-1);
+            if (outFormat.checksumStartByte < 0
+                || outFormat.checksumEndByte < outFormat.checksumStartByte
+                || outFormat.checksumEndByte >= outFormat.recordSize
+                || outFormat.checksumByteOffset < 0
+                || outFormat.checksumByteOffset >= outFormat.recordSize
+                || (outFormat.checksumByteOffset >= outFormat.checksumStartByte
+                    && outFormat.checksumByteOffset <= outFormat.checksumEndByte)) {
+                errorMessage = QStringLiteral("framing.checksum 字节范围非法或包含校验字节");
+                return false;
+            }
         }
     }
 

@@ -1,0 +1,348 @@
+{
+  "schema_version": 2,
+  "template_id": "cp01_b3_navigation_output_v1",
+  "record_size": 86,
+  "endianness": "little",
+  "framing": {
+    "kind": "fixed_header",
+    "header_hex": "EB901A56",
+    "frame_length": 86,
+    "checksum": {
+      "kind": "sum8",
+      "start_byte": 2,
+      "end_byte": 84,
+      "byte_offset": 85
+    }
+  },
+  "signals": [
+    {
+      "name": "滚转角",
+      "byte_offset": 24,
+      "value_type": "int16",
+      "scale": 0.01,
+      "unit": "°",
+      "description": "单位：º，分辨率：1e-2\n范围：[-180：180]",
+      "group": "姿态"
+    },
+    {
+      "name": "俯仰角",
+      "byte_offset": 26,
+      "value_type": "int16",
+      "scale": 0.01,
+      "unit": "°",
+      "description": "单位：º，分辨率：1e-2\n范围：[-90：90]",
+      "group": "姿态"
+    },
+    {
+      "name": "偏航角",
+      "byte_offset": 28,
+      "value_type": "uint16",
+      "scale": 0.01,
+      "unit": "°",
+      "description": "单位：º，分辨率：1e-2\n范围：[0：360]",
+      "group": "姿态"
+    },
+    {
+      "name": "组合海拔高度",
+      "byte_offset": 74,
+      "value_type": "int32",
+      "scale": 0.01,
+      "unit": "m",
+      "description": "单位：m，分辨率：1e-2\n范围：[-21474836.48：21474836.47]",
+      "group": "组合导航/位置"
+    },
+    {
+      "name": "帧号",
+      "byte_offset": 2,
+      "value_type": "uint8",
+      "description": "固定帧号 0x1A",
+      "group": "帧信息"
+    },
+    {
+      "name": "长度",
+      "byte_offset": 3,
+      "value_type": "uint8",
+      "description": "固定帧长 0x56，即 86 字节",
+      "group": "帧信息"
+    },
+    {
+      "name": "GPS周",
+      "byte_offset": 4,
+      "value_type": "uint16",
+      "unit": "周",
+      "description": "GPS 周",
+      "group": "时间"
+    },
+    {
+      "name": "GPS周秒",
+      "byte_offset": 6,
+      "value_type": "uint32",
+      "description": "协议未说明周秒字段的时间分辨率；按原始整数显示",
+      "group": "时间"
+    },
+    {
+      "name": "系统状态1",
+      "byte_offset": 10,
+      "value_type": "uint8",
+      "description": "原始整数，位定义见源协议表。\n第0位：0-初始对准，1-正在导航\n第1位：GNSS 航向角，0-无效，1 有效\n第2位：GNSS 航迹角，0-无效，1- 有效\n第3位：导航模式，0-惯性，1-组合 \n第4位：加速度：0 正常；1-超限 \n第5位：角速度：0-正常；1-超限\n 第6位：差分状态，0-无效，1-有效\n 第7位：姿态：0-正常；1-超限",
+      "group": "状态与诊断"
+    },
+    {
+      "name": "系统状态2",
+      "byte_offset": 11,
+      "value_type": "uint8",
+      "description": "原始整数，位定义见源协议表。\n系统状态：\n低半字节二进制：\n0：初始化\n1：粗对准\n2：精对准\n3：GPS定位\n4：GPS定向\n5：RTK\n6：DMI（轮速里程计）组合\n7：DMI（轮速里程计）标定\n8：纯惯性\n9：零速修正\nA：VG模式（垂直陀螺）\nB：GPS  定位， 定向\nC：GPS RTK 定位 \nD：GPS RTK 定位，定向\n高半字节二进制：\n0：未定位\n1：单点\n2：伪距差分\n3：3有吗？文档里没有3的描述\n4：固定解RTK\n5：浮点解RTK",
+      "group": "状态与诊断"
+    },
+    {
+      "name": "表决航姿源ID",
+      "byte_offset": 12,
+      "value_type": "uint8",
+      "description": "当前使用航姿数据源ID\n请补充有哪些源，且不同值分别代表了哪些源",
+      "group": "状态与诊断"
+    },
+    {
+      "name": "表决惯导源ID",
+      "byte_offset": 13,
+      "value_type": "uint8",
+      "description": "当前使用惯导数据源ID\n请补充有哪些源，且不同值分别代表了哪些源",
+      "group": "状态与诊断"
+    },
+    {
+      "name": "表决高度源ID",
+      "byte_offset": 14,
+      "value_type": "uint8",
+      "description": "当前使用高度数据源ID\n请补充有哪些源，且不同值分别代表了哪些源",
+      "group": "状态与诊断"
+    },
+    {
+      "name": "表决大气数据源ID",
+      "byte_offset": 15,
+      "value_type": "uint8",
+      "description": "当前使用大气数据源ID\n请补充有哪些源，且不同值分别代表了哪些源",
+      "group": "状态与诊断"
+    },
+    {
+      "name": "告警字",
+      "byte_offset": 16,
+      "value_type": "uint32",
+      "description": "原始整数，位定义见源协议表。\n第0位：滚转角告警\n第1位：俯仰角告警\n第2位：偏航角告警\n第3位：四元素告警\n第4位：滚转速率告警\n第5位：俯仰速率告警\n 第6位：偏航速率告警\n 第7位：轴向过载告警\n第8位：侧向过载告警\n第9位：法向过载告警\n第10位：经度告警\n第11位：纬度告警\n第12位：高度告警\n第13位：东向速度告警\n第14位：北向速度告警\n第15位：天向速度告警\n其他位：预留。默认值为0\n\n值说明\n0：正常  1：告警\n请补充告警逻辑，什么条件触发告警",
+      "group": "状态与诊断"
+    },
+    {
+      "name": "故障字",
+      "byte_offset": 20,
+      "value_type": "uint32",
+      "description": "原始整数，位定义见源协议表。\n第0位：滚转角告警\n第1位：俯仰角告警\n第2位：偏航角告警\n第3位：四元素告警\n第4位：滚转速率告警\n第5位：俯仰速率告警\n 第6位：偏航速率告警\n 第7位：轴向过载告警\n第8位：侧向过载告警\n第9位：法向过载告警\n第10位：经度告警\n第11位：纬度告警\n第12位：高度告警\n第13位：东向速度告警\n第14位：北向速度告警\n第15位：天向速度告警\n其他位：预留。默认值为0\n\n值说明\n0：正常  1：告警\n故障字内容描述为什么是XX告警？故障字逻辑是什么，什么条件触发，请补充",
+      "group": "状态与诊断"
+    },
+    {
+      "name": "GNSS经度",
+      "byte_offset": 30,
+      "value_type": "int32",
+      "scale": 1e-07,
+      "unit": "°",
+      "description": "单位：°，分辨率：1e-7\n范围：[-180：180]",
+      "group": "GNSS/位置"
+    },
+    {
+      "name": "GNSS纬度",
+      "byte_offset": 34,
+      "value_type": "int32",
+      "scale": 1e-07,
+      "unit": "°",
+      "description": "单位：°，分辨率：1e-7\n范围：[-90：90]",
+      "group": "GNSS/位置"
+    },
+    {
+      "name": "GNSS海拔高",
+      "byte_offset": 38,
+      "value_type": "int32",
+      "scale": 0.01,
+      "unit": "m",
+      "description": "单位：m，分辨率：1e-2\n范围：[-21474836.48：21474836.47]",
+      "group": "GNSS/位置"
+    },
+    {
+      "name": "GNSS高程异常值",
+      "byte_offset": 42,
+      "value_type": "int16",
+      "scale": 0.01,
+      "unit": "m",
+      "description": "单位：m，分辨率：1e-2\n范围：[-327.67：327.68]\nGNSS椭球高=GNSS海拔高+GNSS高程异常值",
+      "group": "GNSS/位置"
+    },
+    {
+      "name": "GNSS东向速度",
+      "byte_offset": 44,
+      "value_type": "int16",
+      "scale": 0.01,
+      "unit": "m/s",
+      "description": "单位：m/s，分辨率：1e-2\n范围：[-327.67：327.68]",
+      "group": "GNSS/速度"
+    },
+    {
+      "name": "GNSS北向速度",
+      "byte_offset": 46,
+      "value_type": "int16",
+      "scale": 0.01,
+      "unit": "m/s",
+      "description": "单位：m/s，分辨率：1e-2\n范围：[-327.67：327.68]",
+      "group": "GNSS/速度"
+    },
+    {
+      "name": "GNSS天向速度",
+      "byte_offset": 48,
+      "value_type": "int16",
+      "scale": 0.01,
+      "unit": "m/s",
+      "description": "单位：m/s，分辨率：1e-2\n范围：[-327.67：327.68]",
+      "group": "GNSS/速度"
+    },
+    {
+      "name": "前天线卫星数",
+      "byte_offset": 50,
+      "value_type": "uint8",
+      "unit": "颗",
+      "description": "单位：颗（定位天线GNSS2）",
+      "group": "GNSS/质量"
+    },
+    {
+      "name": "后天线卫星数",
+      "byte_offset": 51,
+      "value_type": "uint8",
+      "unit": "颗",
+      "description": "单位：颗（定向天线GNSS1）",
+      "group": "GNSS/质量"
+    },
+    {
+      "name": "GNSS1_PDOP",
+      "byte_offset": 52,
+      "value_type": "uint8",
+      "scale": 0.1,
+      "description": "定义：定向天线，分辨率：0.1\n范围：[0：25.5]",
+      "group": "GNSS/质量"
+    },
+    {
+      "name": "GNSS2_PDOP",
+      "byte_offset": 53,
+      "value_type": "uint8",
+      "scale": 0.1,
+      "description": "定义：定位天线，分辨率：0.1\n范围：[0：25.5]",
+      "group": "GNSS/质量"
+    },
+    {
+      "name": "滚转速率",
+      "byte_offset": 54,
+      "value_type": "int16",
+      "scale": 0.05,
+      "unit": "°/s",
+      "description": "单位：°/s，分辨率：5e-2\n范围：[-1638.35：1638.35]",
+      "group": "角速率"
+    },
+    {
+      "name": "俯仰速率",
+      "byte_offset": 56,
+      "value_type": "int16",
+      "scale": 0.05,
+      "unit": "°/s",
+      "description": "单位：°/s，分辨率：5e-2\n范围：[-1638.35：1638.35]",
+      "group": "角速率"
+    },
+    {
+      "name": "偏航速率",
+      "byte_offset": 58,
+      "value_type": "int16",
+      "scale": 0.05,
+      "unit": "°/s",
+      "description": "单位：°/s，分辨率：5e-2\n范围：[-1638.35：1638.35]",
+      "group": "角速率"
+    },
+    {
+      "name": "轴向过载",
+      "byte_offset": 60,
+      "value_type": "int16",
+      "scale": 0.01,
+      "unit": "m/s",
+      "description": "单位：m/s，分辨率：1e-2\n范围：[-327.67：327.68]\n原文单位为 m/s；过载量纲是否应为 m/s² 待确认。",
+      "group": "过载"
+    },
+    {
+      "name": "侧向过载",
+      "byte_offset": 62,
+      "value_type": "int16",
+      "scale": 0.01,
+      "unit": "m/s",
+      "description": "单位：m/s，分辨率：1e-2\n范围：[-327.67：327.68]\n原文单位为 m/s；过载量纲是否应为 m/s² 待确认。",
+      "group": "过载"
+    },
+    {
+      "name": "法向过载",
+      "byte_offset": 64,
+      "value_type": "int16",
+      "scale": 0.01,
+      "unit": "m/s",
+      "description": "单位：m/s，分辨率：1e-2\n范围：[-327.67：327.68]\n原文单位为 m/s；过载量纲是否应为 m/s² 待确认。",
+      "group": "过载"
+    },
+    {
+      "name": "组合经度",
+      "byte_offset": 66,
+      "value_type": "int32",
+      "scale": 1e-07,
+      "unit": "°",
+      "description": "单位：°，分辨率：1e-7\n范围：[-180：180]",
+      "group": "组合导航/位置"
+    },
+    {
+      "name": "组合纬度",
+      "byte_offset": 70,
+      "value_type": "int32",
+      "scale": 1e-07,
+      "unit": "°",
+      "description": "单位：°，分辨率：1e-7\n范围：[-90：90]",
+      "group": "组合导航/位置"
+    },
+    {
+      "name": "东向速度",
+      "byte_offset": 78,
+      "value_type": "int16",
+      "scale": 0.01,
+      "unit": "m/s",
+      "description": "单位：m/s，分辨率：1e-2\n范围：[-327.67：327.68]",
+      "group": "组合导航/速度"
+    },
+    {
+      "name": "北向速度",
+      "byte_offset": 80,
+      "value_type": "int16",
+      "scale": 0.01,
+      "unit": "m/s",
+      "description": "单位：m/s，分辨率：1e-2\n范围：[-327.67：327.68]",
+      "group": "组合导航/速度"
+    },
+    {
+      "name": "天向速度",
+      "byte_offset": 82,
+      "value_type": "int16",
+      "scale": 0.01,
+      "unit": "m/s",
+      "description": "单位：m/s，分辨率：1e-2\n范围：[-327.67：327.68]",
+      "group": "组合导航/速度"
+    },
+    {
+      "name": "帧计数",
+      "byte_offset": 84,
+      "value_type": "uint8",
+      "description": "0~255",
+      "group": "帧信息"
+    },
+    {
+      "name": "校验",
+      "byte_offset": 85,
+      "value_type": "uint8",
+      "description": "第 3 至 85 字节累加和的低 8 位，由分帧器验证",
+      "group": "帧信息"
+    }
+  ]
+}

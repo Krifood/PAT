@@ -7,6 +7,7 @@
 #include "core/FrameExporter.h"
 #include "core/InputReader.h"
 #include "core/RecordDecoder.h"
+#include "core/SerialFrameAssembler.h"
 
 #include <QAction>
 #include <QAbstractItemView>
@@ -387,10 +388,12 @@ void MainWindow::PreviewFrame() {
                                  .arg(raw.size()).arg(formatDocument_.Format().recordSize));
         return;
     }
-    if (formatDocument_.Format().HasFraming()
-        && !raw.startsWith(formatDocument_.Format().frameHeader)) {
-        QMessageBox::warning(this, tr("预览失败"), tr("输入帧头与模板不匹配"));
-        return;
+    if (formatDocument_.Format().HasFraming()) {
+        pat::SerialFrameAssembler assembler({formatDocument_.Format()});
+        if (assembler.Feed(raw).size() != 1) {
+            QMessageBox::warning(this, tr("预览失败"), tr("输入帧头或校验与模板不匹配"));
+            return;
+        }
     }
     pat::RecordDecoder decoder(formatDocument_.Format());
     QVector<double> values;

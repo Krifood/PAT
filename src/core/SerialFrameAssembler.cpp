@@ -4,6 +4,18 @@
 #include <utility>
 
 namespace pat {
+namespace {
+
+bool ChecksumMatches(const FormatDefinition& format, QByteArrayView frame) {
+    if (!format.HasSum8Checksum()) return true;
+    quint8 sum = 0;
+    for (int i = format.checksumStartByte; i <= format.checksumEndByte; ++i) {
+        sum = static_cast<quint8>(sum + static_cast<quint8>(frame[i]));
+    }
+    return sum == static_cast<quint8>(frame[format.checksumByteOffset]);
+}
+
+}  // namespace
 
 SerialFrameAssembler::SerialFrameAssembler(QVector<FormatDefinition> formats)
     : formats_(std::move(formats)) {
@@ -59,6 +71,13 @@ QVector<MatchedFrame> SerialFrameAssembler::Feed(const QByteArray& bytes) {
         }
         const int frameLength = formats_[matchIndex].recordSize;
         if (pending_.size() < frameLength) break;
+
+        if (!ChecksumMatches(formats_[matchIndex], QByteArrayView(pending_).first(frameLength))) {
+            // Rescan from the next byte; a valid frame can begin inside the rejected candidate.
+            ++skippedBytes_;
+            pending_.remove(0, 1);
+            continue;
+        }
 
         frames.append({matchIndex, pending_.left(frameLength)});
         pending_.remove(0, frameLength);

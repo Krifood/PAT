@@ -35,6 +35,7 @@ private slots:
     void framedAcrossChunks();
     void replayUsesSameDecoder();
     void invalidFraming();
+    void cp01B3NavigationChecksum();
     void hexTextAndExport();
     void longContinuousHexText();
     void liveBufferBounded();
@@ -135,6 +136,113 @@ void CoreTests::invalidFraming() {
                                                               "\"frame_length\": 5");
     QVERIFY(!pat::LoadFormatFromJsonData(invalid, format, error));
     QVERIFY(error.contains(QStringLiteral("frame_length")));
+}
+
+void CoreTests::cp01B3NavigationChecksum() {
+    pat::FormatDefinition format;
+    QString error;
+    const QString templatePath = QString::fromUtf8(PAT_SOURCE_DIR)
+                                 + QStringLiteral("/samples/cp01_b3_navigation.json");
+    QVERIFY2(pat::LoadFormatFromJson(templatePath, format, error), qPrintable(error));
+    QCOMPARE(format.recordSize, 86);
+    QCOMPARE(format.signalFormats.size(), size_t(40));
+    QCOMPARE(format.frameHeader.toHex(), QByteArray("eb901a56"));
+    QVERIFY(format.HasSum8Checksum());
+    QFile templateFile(templatePath);
+    QVERIFY(templateFile.open(QIODevice::ReadOnly));
+    const QByteArray originalTemplate = templateFile.readAll();
+    QByteArray invalidTemplate = originalTemplate;
+    QVERIFY(invalidTemplate.replace("\"byte_offset\": 85", "\"byte_offset\": 84")
+                != originalTemplate);
+    pat::FormatDefinition rejected;
+    QVERIFY(!pat::LoadFormatFromJsonData(invalidTemplate, rejected, error));
+    QVERIFY(error.contains(QStringLiteral("checksum")));
+
+    QByteArray frame(86, '\0');
+    frame.replace(0, 4, QByteArray::fromHex("eb901a56"));
+    auto put16 = [&](int offset, quint16 value) {
+        frame[offset] = static_cast<char>(value & 0xff);
+        frame[offset + 1] = static_cast<char>(value >> 8);
+    };
+    auto put32 = [&](int offset, quint32 value) {
+        for (int i = 0; i < 4; ++i) frame[offset + i] = static_cast<char>((value >> (8 * i)) & 0xff);
+    };
+    put16(4, 2300);                          // GPS week
+    put32(6, 123456789);                     // Raw GPS week seconds
+    put16(24, static_cast<quint16>(-1234));  // Roll = -12.34 degrees
+    put16(26, 250);                          // Pitch = 2.50 degrees
+    put16(28, 9000);                         // Yaw = 90.00 degrees
+    put32(30, 1163971287);                  // GNSS longitude = 116.3971287 degrees
+    put32(34, 399165278);                   // GNSS latitude = 39.9165278 degrees
+    put32(74, 12345);                       // Combined altitude = 123.45 m
+    frame[84] = 7;
+    quint8 sum = 0;
+    for (int i = 2; i <= 84; ++i) sum = static_cast<quint8>(sum + static_cast<quint8>(frame[i]));
+    frame[85] = static_cast<char>(sum);
+    QFile sample(QString::fromUtf8(PAT_SOURCE_DIR)
+                 + QStringLiteral("/samples/cp01_b3_synthetic.hex"));
+    QVERIFY(sample.open(QIODevice::ReadOnly));
+    QCOMPARE(QByteArray::fromHex(sample.readAll().trimmed()), frame);
+
+    pat::RecordDecoder decoder(format);
+    QVector<double> values;
+    QVERIFY2(decoder.Decode(frame, values, error), qPrintable(error));
+    QCOMPARE(values[0], -12.34);
+    QCOMPARE(values[1], 2.5);
+    QCOMPARE(values[2], 90.0);
+    QCOMPARE(values[3], 123.45);
+    const auto valueFor = [&](const QString& name) {
+        for (size_t i = 0; i < format.signalFormats.size(); ++i) {
+            if (format.signalFormats[i].name == name) return values[static_cast<qsizetype>(i)];
+        }
+        return qQNaN();
+    };
+    QCOMPARE(valueFor(QStringLiteral("GPS周")), 2300.0);
+    QVERIFY(qAbs(valueFor(QStringLiteral("GNSS经度")) - 116.3971287) < 1e-9);
+    QVERIFY(qAbs(valueFor(QStringLiteral("GNSS纬度")) - 39.9165278) < 1e-9);
+    QCOMPARE(valueFor(QStringLiteral("校验")), static_cast<double>(sum));
+
+    QByteArray corrupt = frame;
+    corrupt[24] = static_cast<char>(corrupt[24] ^ 1);
+    pat::SerialFrameAssembler assembler({format});
+    QVERIFY(assembler.ConfigurationError().isEmpty());
+    QVERIFY(assembler.Feed(frame.left(30)).isEmpty());
+    const auto first = assembler.Feed(frame.mid(30) + corrupt + frame);
+    QCOMPARE(first.size(), 2);
+    QCOMPARE(first[0].bytes, frame);
+    QCOMPARE(first[1].bytes, frame);
+    QCOMPARE(assembler.SkippedBytes(), quint64(86));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    pat::CaptureSession capture(format);
+    QVERIFY2(capture.Start(dir.path(), error), qPrintable(error));
+    QVector<pat::LiveSample> liveSamples;
+    QVERIFY2(capture.Feed(frame + corrupt + frame, liveSamples, error), qPrintable(error));
+    QCOMPARE(liveSamples.size(), 2);
+    QCOMPARE(liveSamples[0].values[0], -12.34);
+    QCOMPARE(liveSamples[1].index, quint64(1));
+    QCOMPARE(capture.SkippedBytes(), quint64(86));
+    QVERIFY2(capture.Stop(error), qPrintable(error));
+    QFile capturedRaw(capture.RawPath());
+    QVERIFY(capturedRaw.open(QIODevice::ReadOnly));
+    QCOMPARE(capturedRaw.readAll(), frame + corrupt + frame);
+    QFile capturedCsv(capture.CsvPath());
+    QVERIFY(capturedCsv.open(QIODevice::ReadOnly));
+    QCOMPARE(capturedCsv.readAll().count('\n'), qsizetype(3));
+
+    const QString rawPath = dir.filePath(QStringLiteral("cp01.bin"));
+    QFile raw(rawPath);
+    QVERIFY(raw.open(QIODevice::WriteOnly));
+    QCOMPARE(raw.write(frame + corrupt + frame), qint64(258));
+    raw.close();
+    pat::RecordParser parser(format);
+    QVector<pat::Series> series;
+    QVERIFY2(parser.ParseFile(rawPath, series, error), qPrintable(error));
+    QCOMPARE(series.size(), 40);
+    QCOMPARE(series[0].samples.size(), 2);
+    QCOMPARE(series[0].samples[0].y(), -12.34);
+    QCOMPARE(series[0].samples[1].x(), 1.0);
 }
 
 void CoreTests::hexTextAndExport() {

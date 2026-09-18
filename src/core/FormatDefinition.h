@@ -26,11 +26,16 @@ struct FormatDefinition {
     int recordSize = 0;
     QString endianness = QStringLiteral("little");
     QByteArray frameHeader;
+    // Optional sum of inclusive byte range, stored as its low eight bits.
+    int checksumStartByte = -1;
+    int checksumEndByte = -1;
+    int checksumByteOffset = -1;
     std::vector<SignalFormat> signalFormats;
     QHash<QString, QString> groupDescriptions;
     QString timeAxisUnit = QStringLiteral("s");
 
     bool HasFraming() const { return !frameHeader.isEmpty(); }
+    bool HasSum8Checksum() const { return checksumByteOffset >= 0; }
 };
 
 bool LoadFormatFromJson(const QString& path, FormatDefinition& outFormat, QString& errorMessage);
