@@ -8,12 +8,12 @@
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
-#include <QFontMetricsF>
 #include <QHash>
 #include <QPalette>
 #include <QTimer>
 #include <QStringList>
 #include <QMimeData>
+#include <QPainter>
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QSizePolicy>
@@ -21,6 +21,7 @@
 #include <QVBoxLayout>
 
 #include <QtGlobal>
+#include <QtCharts/QChart>
 
 #include <algorithm>
 #include <cmath>
@@ -58,7 +59,8 @@ ChartArea::ChartArea(QWidget* parent) : QWidget(parent) {
     containerLayout->setContentsMargins(0, 0, 0, 0);
     splitter_ = new QSplitter(Qt::Vertical, container_);
     splitter_->setChildrenCollapsible(false);
-    splitter_->setHandleWidth(3);
+    splitter_->setHandleWidth(6);
+    splitter_->setStyleSheet(QStringLiteral("QSplitter::handle:vertical { background: #516979; }"));
     containerLayout->addWidget(splitter_);
     container_->setLayout(containerLayout);
     scrollArea_->setWidget(container_);
@@ -120,18 +122,12 @@ void ChartArea::RefreshLiveData(bool followLatest) {
         BuildCharts();
         if (!followLatest) return;
     }
-    for (auto* chart : charts_) {
-        double minY = -1.0;
-        double maxY = 1.0;
-        if (chart && ComputeGroupRange(chart->SeriesIndices(), minY, maxY)) {
-            chart->SetYAxisRange(minY, maxY);
-        }
-    }
-    AlignYAxisMargins();
+    const double maxX = followLatest ? std::max(1.0, stats_.maxX) : currentMaxX_;
+    const double minX = followLatest ? std::max(0.0, maxX - 2000.0) : currentMinX_;
     if (followLatest) {
-        const double maxX = std::max(1.0, stats_.maxX);
-        ApplyXRange(std::max(0.0, maxX - 2000.0), maxX);
+        ApplyXRange(minX, maxX);
     } else if (hasCurrentRange_) {
+        UpdateVisibleYRanges(currentMinX_, currentMaxX_);
         RefreshVisibleSeries(currentMinX_, currentMaxX_);
     }
 }
@@ -352,36 +348,13 @@ void ChartArea::BuildCharts() {
     const double viewMinX = hasCurrentRange_ ? currentMinX_ : 0.0;
     const double viewMaxX = hasCurrentRange_ ? currentMaxX_ : std::max(1.0, stats_.maxX);
     const auto palette = SeriesPalette();
-    const QFontMetricsF axisMetrics(font());
-    qreal commonLeftMargin = 68.0;
-    for (const auto& group : groups_) {
-        double groupMinY = -1.0;
-        double groupMaxY = 1.0;
-        ComputeGroupRange(group.signalIndices, groupMinY, groupMaxY);
-        commonLeftMargin = std::max(commonLeftMargin,
-                                    axisMetrics.horizontalAdvance(QString::number(groupMinY, 'f', 1)) + 32.0);
-        commonLeftMargin = std::max(commonLeftMargin,
-                                    axisMetrics.horizontalAdvance(QString::number(groupMaxY, 'f', 1)) + 32.0);
-    }
 
     for (int groupIndex = 0; groupIndex < groups_.size(); ++groupIndex) {
         const auto& group = groups_[groupIndex];
         double groupMinY = -1.0;
         double groupMaxY = 1.0;
-        if (!ComputeGroupRange(group.signalIndices, groupMinY, groupMaxY)) {
-            groupMinY = -1.0;
-            groupMaxY = 1.0;
-        }
 
-        QVector<QVector<QPointF>> seriesSamples;
-        seriesSamples.reserve(group.signalIndices.size());
-        for (int idx : group.signalIndices) {
-            if (!series_ || idx < 0 || idx >= series_->size()) {
-                seriesSamples.append(QVector<QPointF>{});
-                continue;
-            }
-            seriesSamples.append(DecimateSamples(series_->at(idx).samples, viewMinX, viewMaxX, maxVisiblePoints_));
-        }
+        QVector<QVector<QPointF>> seriesSamples(group.signalIndices.size());
 
         auto* view = new SignalChartView(splitter_);
         view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -399,7 +372,8 @@ void ChartArea::BuildCharts() {
                         viewMaxX,
                         groupIndex);
         view->SetXAxisVisible(groupIndex == groups_.size() - 1);
-        view->SetPlotLeftMargin(commonLeftMargin);
+        if (groups_.size() > 8) view->setRenderHint(QPainter::Antialiasing, false);
+        view->SetPlotLeftMargin(84.0);
         view->SetGuideLines(savedGuides.value(guideKey(group.signalIndices)));
 
         connect(view, &SignalChartView::CursorMoved, this, &ChartArea::HandleCursorMoved);
@@ -418,7 +392,6 @@ void ChartArea::BuildCharts() {
     }
 
     UpdateChartHeights();
-    AlignYAxisMargins();
     ApplyXRange(viewMinX, viewMaxX);
 }
 
@@ -465,6 +438,7 @@ void ChartArea::ApplyXRange(double minX, double maxX) {
         if (chart) chart->SetXAxisRange(minX, maxX);
     }
 
+    UpdateVisibleYRanges(minX, maxX);
     RefreshVisibleSeries(minX, maxX);
     UpdateRangeContext();
 
@@ -475,6 +449,17 @@ void ChartArea::ApplyXRange(double minX, double maxX) {
             if (chart) chart->SetCursorX(sharedCursorX_);
         }
     }
+}
+
+void ChartArea::UpdateVisibleYRanges(double minX, double maxX) {
+    for (auto* chart : charts_) {
+        double minY = -1.0;
+        double maxY = 1.0;
+        if (chart && ComputeGroupRange(chart->SeriesIndices(), minY, maxY, minX, maxX)) {
+            chart->SetYAxisRange(minY, maxY);
+        }
+    }
+    AlignYAxisMargins();
 }
 
 void ChartArea::RefreshVisibleSeries(double minX, double maxX) {
@@ -491,7 +476,9 @@ void ChartArea::RefreshVisibleSeries(double minX, double maxX) {
                 samples.append(QVector<QPointF>{});
                 continue;
             }
-            samples.append(DecimateSamples(series_->at(idx).samples, minX, maxX, maxVisiblePoints_));
+            const int widthLimit = std::max(200, static_cast<int>(chart->chart()->plotArea().width() * 1.5));
+            samples.append(DecimateSamples(series_->at(idx).samples, minX, maxX,
+                                           std::min(maxVisiblePoints_, widthLimit)));
         }
         chart->SetSeriesSamples(samples);
     }
@@ -547,7 +534,8 @@ QVector<QPointF> ChartArea::DecimateSamples(const QVector<QPointF>& samples,
     return out;
 }
 
-bool ChartArea::ComputeGroupRange(const QVector<int>& indices, double& outMinY, double& outMaxY) const {
+bool ChartArea::ComputeGroupRange(const QVector<int>& indices, double& outMinY, double& outMaxY,
+                                  double minX, double maxX) const {
     if (!series_) return false;
     bool hasRange = false;
     outMinY = -1.0;
@@ -556,7 +544,12 @@ bool ChartArea::ComputeGroupRange(const QVector<int>& indices, double& outMinY, 
     for (int idx : indices) {
         if (idx < 0 || idx >= series_->size()) continue;
         const auto& series = series_->at(idx);
-        for (const auto& pt : series.samples) {
+        const auto begin = std::lower_bound(series.samples.begin(), series.samples.end(), minX,
+                                            [](const QPointF& point, double x) { return point.x() < x; });
+        const auto end = std::upper_bound(begin, series.samples.end(), maxX,
+                                          [](double x, const QPointF& point) { return x < point.x(); });
+        for (auto it = begin; it != end; ++it) {
+            const auto& pt = *it;
             if (!hasRange) {
                 outMinY = outMaxY = pt.y();
                 hasRange = true;
@@ -579,7 +572,7 @@ bool ChartArea::ComputeGroupRange(const QVector<int>& indices, double& outMinY, 
 void ChartArea::UpdateChartHeights() {
     if (!splitter_ || !scrollArea_) return;
     const int viewportHeight = scrollArea_->viewport()->height();
-    minChartHeight_ = std::max(80, viewportHeight / 6);
+    minChartHeight_ = std::max(150, viewportHeight / 5);
     maxChartHeight_ = std::max(minChartHeight_, viewportHeight);
     chartHeight_ = std::clamp(chartHeight_, minChartHeight_, maxChartHeight_);
 
@@ -611,9 +604,9 @@ void ChartArea::UpdateRangeContext() {
 }
 
 void ChartArea::AlignYAxisMargins() {
-    qreal commonMargin = 68.0;
+    qreal commonMargin = 84.0;
     for (const auto* chart : charts_) {
-        if (chart) commonMargin = std::max(commonMargin, chart->YLabelWidth() + 32.0);
+        if (chart) commonMargin = std::max(commonMargin, chart->YLabelWidth() + 48.0);
     }
     for (auto* chart : charts_) {
         if (chart) chart->SetPlotLeftMargin(commonMargin);

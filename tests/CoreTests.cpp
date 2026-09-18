@@ -43,7 +43,36 @@ private slots:
     void captureLogsAreIndependentOfDisplay();
     void oneHourSimulatedStream();
     void legacyFileRegression();
+    void jsonGuideExampleDecodes();
 };
+
+void CoreTests::jsonGuideExampleDecodes() {
+    QFile guide(QString::fromUtf8(PAT_SOURCE_DIR)
+                + QStringLiteral("/docs/协议模板JSON编辑指南.md"));
+    QVERIFY(guide.open(QIODevice::ReadOnly));
+    const QByteArray content = guide.readAll();
+    const qsizetype start = content.indexOf("```json\n");
+    QVERIFY(start >= 0);
+    const qsizetype jsonStart = start + qsizetype(sizeof("```json\n") - 1);
+    const qsizetype end = content.indexOf("\n```", jsonStart);
+    QVERIFY(end > jsonStart);
+
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY2(pat::LoadFormatFromJsonData(content.mid(jsonStart, end - jsonStart), format, error),
+             qPrintable(error));
+    pat::SerialFrameAssembler assembler({format});
+    const QByteArray frame = QByteArray::fromHex("aa5590010596");
+    const auto frames = assembler.Feed(frame);
+    QCOMPARE(frames.size(), 1);
+    pat::RecordDecoder decoder(format);
+    QVector<double> values;
+    QVERIFY2(decoder.Decode(frames.first().bytes, values, error), qPrintable(error));
+    QCOMPARE(values.size(), 3);
+    QCOMPARE(values[0], 0.0);
+    QCOMPARE(values[1], 5.0);
+    QCOMPARE(values[2], 1.0);
+}
 
 void CoreTests::legacyAndEndian() {
     pat::FormatDefinition format;

@@ -52,12 +52,14 @@ private:
     void BuildCharts();
     void ClearCharts();
     void ApplyXRange(double minX, double maxX);
+    void UpdateVisibleYRanges(double minX, double maxX);
     void RefreshVisibleSeries(double minX, double maxX);
     QVector<QPointF> DecimateSamples(const QVector<QPointF>& samples,
                                      double minX,
                                      double maxX,
                                      int maxPoints) const;
-    bool ComputeGroupRange(const QVector<int>& indices, double& outMinY, double& outMaxY) const;
+    bool ComputeGroupRange(const QVector<int>& indices, double& outMinY, double& outMaxY,
+                           double minX, double maxX) const;
     void UpdateChartHeights();
     void UpdateRangeContext();
     void AlignYAxisMargins();

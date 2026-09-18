@@ -10,6 +10,7 @@
 #include <QFileDialog>
 #include <QFontMetricsF>
 #include <QGraphicsSimpleTextItem>
+#include <QGraphicsLineItem>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenuBar>
@@ -19,9 +20,11 @@
 #include <QSplitter>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QToolTip>
 #include <QtCharts/QChart>
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
+#include <algorithm>
 #include <cmath>
 #include <QtTest>
 
@@ -39,6 +42,9 @@ private slots:
     void openFormatMenuLoadsFile();
     void liveChartsAppearBeforeFirstFrame();
     void chartGroupsGuidesAndAxes();
+    void guideShowsAllCrossingsAndKeepsCursor();
+    void liveChartsLimitVisibleWork();
+    void axisLabelsDistinguishSmallDeltas();
 };
 
 void UiTests::openFormatMenuLoadsFile() {
@@ -186,9 +192,13 @@ void UiTests::chartGroupsGuidesAndAxes() {
         auto* xAxis = qobject_cast<QValueAxis*>(view->chart()->axes(Qt::Horizontal).first());
         QVERIFY(yAxis);
         QVERIFY(xAxis);
-        QCOMPARE(yAxis->labelFormat(), QStringLiteral("%.1f"));
-        QCOMPARE(xAxis->labelsVisible(), view->ViewIndex() == 1);
+        if (view->ViewIndex() == 0) QCOMPARE(yAxis->labelFormat(), QStringLiteral("%.1f"));
+        else QVERIFY(yAxis->labelFormat().endsWith(QLatin1Char('e')));
+        QCOMPARE(xAxis->isVisible(), view->ViewIndex() == 1);
+        QVERIFY(!xAxis->isTitleVisible());
     }
+    QVERIFY(views[0]->chart()->backgroundBrush().color() != views[1]->chart()->backgroundBrush().color());
+    QVERIFY(views[0]->minimumHeight() >= 150);
     views[0]->SetCursorX(0.0);
     bool sawTwoLineValue = false;
     for (auto* item : views[0]->chart()->scene()->items()) {
@@ -250,6 +260,108 @@ void UiTests::chartGroupsGuidesAndAxes() {
     QCOMPARE(bottomView->GuideLines().last().orientation, GuideOrientation::Vertical);
     bottomView->SetGuideLines({});
     QVERIFY(bottomView->GuideLines().isEmpty());
+}
+
+void UiTests::guideShowsAllCrossingsAndKeepsCursor() {
+    QVector<pat::Series> source(2);
+    source[0].name = QStringLiteral("波形");
+    source[0].unit = QStringLiteral("V");
+    source[0].samples = {{0, 0}, {1, 2}, {2, 0}, {3, 2}, {4, 0}};
+    source[1].name = QStringLiteral("斜线");
+    source[1].samples = {{0, 2}, {4, 0}};
+
+    SignalChartView view;
+    view.resize(800, 300);
+    view.Configure(QStringLiteral("测试"), QString(), QStringLiteral("采样序号"), true,
+                   {QColor(Qt::cyan), QColor(Qt::green)}, {0, 1},
+                   {source[0].samples, source[1].samples}, &source,
+                   -1.0, 3.0, 0.0, 4.0, 0);
+    view.SetRangeContext({0.0, 4.0, 0.0, 4.0, 0.01, true});
+    view.SetGuideLines({{GuideOrientation::Horizontal, 1.0}});
+    view.show();
+    QTest::qWait(50);
+
+    QGraphicsLineItem* guideItem = nullptr;
+    for (auto* item : view.chart()->scene()->items()) {
+        auto* line = dynamic_cast<QGraphicsLineItem*>(item);
+        if (line && line->pen().color() == QColor(255, 227, 90)) guideItem = line;
+    }
+    QVERIFY(guideItem);
+    QVERIFY(guideItem->pen().widthF() >= 2.5);
+    const QPointF chartPoint(view.chart()->plotArea().center().x(), guideItem->line().y1());
+    const QPoint viewPoint = view.mapFromScene(view.chart()->mapToScene(chartPoint));
+    QSignalSpy moved(&view, &SignalChartView::CursorMoved);
+    QSignalSpy left(&view, &SignalChartView::CursorLeft);
+    QMouseEvent move(QEvent::MouseMove, QPointF(viewPoint),
+                     QPointF(view.viewport()->mapToGlobal(viewPoint)),
+                     Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(view.viewport(), &move);
+    QVERIFY(moved.count() > 0);
+    QCOMPARE(left.count(), 0);
+    const QString tooltip = QToolTip::text();
+    QVERIFY2(tooltip.contains(QStringLiteral("key=0.5")), qPrintable(tooltip));
+    QVERIFY2(tooltip.contains(QStringLiteral("key=1.5")), qPrintable(tooltip));
+    QVERIFY2(tooltip.contains(QStringLiteral("key=2.5")), qPrintable(tooltip));
+    QVERIFY2(tooltip.contains(QStringLiteral("key=3.5")), qPrintable(tooltip));
+    QVERIFY2(tooltip.contains(QStringLiteral("斜线")), qPrintable(tooltip));
+    QToolTip::hideText();
+}
+
+void UiTests::liveChartsLimitVisibleWork() {
+    QVector<pat::Series> source(3);
+    QVector<DisplayGroup> groups;
+    for (int signal = 0; signal < source.size(); ++signal) {
+        source[signal].name = QStringLiteral("信号%1").arg(signal);
+        groups.append({{signal}, source[signal].name, QString(), false});
+        for (int sample = 0; sample < 4000; ++sample) {
+            const double value = signal == 0 && sample == 0 ? 1e7 : double((sample + signal) % 20);
+            source[signal].samples.append(QPointF(sample, value));
+        }
+    }
+    ChartArea area;
+    area.resize(800, 600);
+    area.SetSeries(&source);
+    area.SetDisplayGroups(groups);
+    pat::SeriesStatistics stats;
+    stats.maxX = 3999;
+    stats.minStep = 1;
+    stats.hasRange = true;
+    area.SetStatistics(stats);
+    area.RefreshCharts();
+    area.show();
+    QTest::qWait(30);
+    area.RefreshLiveData(true);
+
+    const auto views = area.findChildren<SignalChartView*>();
+    QCOMPARE(views.size(), 3);
+    for (auto* view : views) {
+        auto* yAxis = qobject_cast<QValueAxis*>(view->chart()->axes(Qt::Vertical).first());
+        QVERIFY(yAxis);
+        QVERIFY(yAxis->max() < 100.0);
+        auto* line = qobject_cast<QLineSeries*>(view->chart()->series().first());
+        QVERIFY(line);
+        const int widthLimit = std::max(200, int(view->chart()->plotArea().width() * 1.5));
+        QVERIFY(line->points().size() <= widthLimit + 2);
+    }
+}
+
+void UiTests::axisLabelsDistinguishSmallDeltas() {
+    QVector<pat::Series> source(1);
+    source[0].name = QStringLiteral("精密值");
+    source[0].samples = {{0, 1000000.0}, {1, 1000000.1}};
+    SignalChartView view;
+    view.Configure(QStringLiteral("精密值"), QString(), QStringLiteral("采样序号"), false,
+                   {QColor(Qt::cyan)}, {0}, {source[0].samples}, &source,
+                   1000000.0, 1000000.1, 0.0, 1.0, 0);
+    auto* axis = qobject_cast<QValueAxis*>(view.chart()->axes(Qt::Vertical).first());
+    QVERIFY(axis);
+    const QByteArray format = axis->labelFormat().toLatin1();
+    QVERIFY(QString::asprintf(format.constData(), axis->min())
+            != QString::asprintf(format.constData(), axis->max()));
+    view.SetYAxisRange(-1e-8, 1e-8);
+    const QByteArray tinyFormat = axis->labelFormat().toLatin1();
+    QVERIFY(QString::asprintf(tinyFormat.constData(), axis->min())
+            != QString::asprintf(tinyFormat.constData(), axis->max()));
 }
 
 QTEST_MAIN(UiTests)

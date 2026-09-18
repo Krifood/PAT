@@ -109,11 +109,12 @@ private:
     void UpdateGuides();
     int GuideAt(const QPoint& viewPos) const;
     void AddGuide(GuideOrientation orientation, double value);
-    QString GuideTooltip(int index, double cursorX) const;
+    QString GuideTooltip(int index, int maxEntries = 40) const;
 
     struct GuideVisual {
         GuideLine guide;
         QGraphicsLineItem* item = nullptr;
+        QGraphicsLineItem* outline = nullptr;
     };
     QVector<GuideVisual> guides_;
     int draggingGuide_ = -1;
