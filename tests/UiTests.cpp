@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 #include "ui/AboutDialog.h"
+#include "ui/AppTheme.h"
 #include "ui/ChartArea.h"
 #include "ui/SignalChartView.h"
 #include "ui/TrajectoryView.h"
@@ -19,6 +20,8 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QScopeGuard>
+#include <QSettings>
 #include <QSplitter>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -39,6 +42,25 @@
 #endif
 #include <unistd.h>
 
+namespace {
+
+double RelativeLuminance(const QColor& color) {
+    const auto linear = [](double component) {
+        return component <= 0.04045 ? component / 12.92
+                                    : std::pow((component + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * linear(color.redF()) + 0.7152 * linear(color.greenF())
+        + 0.0722 * linear(color.blueF());
+}
+
+double ContrastRatio(const QColor& first, const QColor& second) {
+    const double a = RelativeLuminance(first);
+    const double b = RelativeLuminance(second);
+    return (std::max(a, b) + 0.05) / (std::min(a, b) + 0.05);
+}
+
+}  // namespace
+
 class UiTests : public QObject {
     Q_OBJECT
 
@@ -52,7 +74,86 @@ private slots:
     void axisLabelsDistinguishSmallDeltas();
     void trajectoryTabPlotsOfflineCoordinates();
     void displayProcessingWorksWithLiveMergedCharts();
+    void themesUpdateControlsAndCharts();
 };
+
+void UiTests::themesUpdateControlsAndCharts() {
+    QCOMPARE(AvailableThemeIds().size(), 3);
+    QCOMPARE(ThemeIdFromKey(QStringLiteral("unknown")), AppThemeId::IndoorDark);
+    for (AppThemeId id : AvailableThemeIds()) {
+        const auto& theme = ThemeFor(id);
+        QVERIFY(ContrastRatio(theme.text, theme.windowBackground) >= 7.0);
+        QCOMPARE(theme.seriesColors.size(), 8);
+        for (const auto& color : theme.seriesColors) {
+            QVERIFY(ContrastRatio(color, theme.plotBackgroundEven) >= 4.0);
+            QVERIFY(ContrastRatio(color, theme.plotBackgroundOdd) >= 4.0);
+        }
+    }
+
+    QSettings settings(QStringLiteral("PAT"), QStringLiteral("PAT"));
+    const bool hadStoredTheme = settings.contains(QStringLiteral("appearance/theme"));
+    const QVariant storedTheme = settings.value(QStringLiteral("appearance/theme"));
+    const auto restoreSettings = qScopeGuard([&settings, hadStoredTheme, storedTheme]() {
+        if (hadStoredTheme) settings.setValue(QStringLiteral("appearance/theme"), storedTheme);
+        else settings.remove(QStringLiteral("appearance/theme"));
+        settings.sync();
+    });
+    Q_UNUSED(restoreSettings)
+
+    MainWindow window;
+    QString error;
+    const QString root = QString::fromUtf8(PAT_SOURCE_DIR);
+    QVERIFY2(window.formatDocument_.LoadFromFile(
+                 root + QStringLiteral("/samples/cp01_b3_navigation.json"), error),
+             qPrintable(error));
+    window.BuildSignalTree();
+    QVERIFY2(window.dataSession_.Load(root + QStringLiteral("/samples/cp01_b3_synthetic.hex"),
+                                     window.formatDocument_.Format(), error), qPrintable(error));
+    window.signalTreeController_->SetSignalsChecked({0}, true);
+    window.UpdateCharts();
+    window.show();
+
+    window.ApplyTheme(AppThemeId::OutdoorHighContrast, false);
+    const auto& outdoor = ThemeFor(AppThemeId::OutdoorHighContrast);
+    QCOMPARE(window.currentThemeId_, AppThemeId::OutdoorHighContrast);
+    auto* outdoorAction = window.findChild<QAction*>(
+        QStringLiteral("themeAction_outdoor_high_contrast"));
+    QVERIFY(outdoorAction);
+    QVERIFY(outdoorAction->isChecked());
+    QVERIFY(window.styleSheet().contains(outdoor.windowBackground.name()));
+    window.ApplyTheme(AppThemeId::OutdoorHighContrast, true);
+    settings.sync();
+    QCOMPARE(settings.value(QStringLiteral("appearance/theme")).toString(),
+             ThemeKey(AppThemeId::OutdoorHighContrast));
+    MainWindow restoredWindow;
+    QCOMPARE(restoredWindow.currentThemeId_, AppThemeId::OutdoorHighContrast);
+
+    auto views = window.chartArea_->findChildren<SignalChartView*>();
+    QCOMPARE(views.size(), 1);
+    QCOMPARE(views.first()->chart()->backgroundBrush().color(), outdoor.chartBackgroundEven);
+    auto* line = qobject_cast<QLineSeries*>(views.first()->chart()->series().first());
+    QVERIFY(line);
+    QCOMPARE(line->pen().color(), outdoor.seriesColors.first());
+    QCOMPARE(line->pen().widthF(), outdoor.seriesLineWidth);
+    auto* yAxis = qobject_cast<QValueAxis*>(views.first()->chart()->axes(Qt::Vertical).first());
+    QVERIFY(yAxis);
+    QCOMPARE(yAxis->labelsColor(), outdoor.axisText);
+
+    auto* trajectoryChart = window.findChild<QChartView*>(QStringLiteral("trajectoryChart"));
+    QVERIFY(trajectoryChart);
+    QCOMPARE(trajectoryChart->chart()->plotAreaBackgroundBrush().color(),
+             outdoor.plotBackgroundEven);
+
+    window.ApplyTheme(AppThemeId::IndoorLight, false);
+    const auto& indoorLight = ThemeFor(AppThemeId::IndoorLight);
+    views = window.chartArea_->findChildren<SignalChartView*>();
+    QCOMPARE(views.size(), 1);
+    QCOMPARE(views.first()->chart()->backgroundBrush().color(),
+             indoorLight.chartBackgroundEven);
+    auto* lightAction = window.findChild<QAction*>(QStringLiteral("themeAction_indoor_light"));
+    QVERIFY(lightAction);
+    QVERIFY(lightAction->isChecked());
+}
 
 void UiTests::displayProcessingWorksWithLiveMergedCharts() {
     MainWindow window;

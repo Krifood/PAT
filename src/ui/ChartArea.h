@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "core/DataSession.h"
+#include "ui/AppTheme.h"
 #include "ui/DisplayGroupManager.h"
 #include "ui/SignalChartView.h"
 
@@ -18,6 +19,7 @@ public:
     explicit ChartArea(QWidget* parent = nullptr);
 
     void SetSeries(const QVector<pat::Series>* series);
+    void SetTheme(const AppTheme& theme);
     void SetDerivedSeries(const QVector<pat::Series>* series);
     void SetDisplayTransforms(const QHash<int, pat::DisplayTransform>& transforms);
     void SetDisplayGroups(const QVector<DisplayGroup>& groups);
@@ -67,6 +69,7 @@ private:
     void UpdateChartHeights();
     void UpdateRangeContext();
     void AlignYAxisMargins();
+    void ApplyThemeSurface();
     const pat::Series* ResolveSeries(int displayIndex) const;
     pat::DisplayTransform ResolveTransform(int displayIndex) const;
     QVector<QPointF> ApplyTransform(const QVector<QPointF>& samples,
@@ -76,6 +79,7 @@ private:
     QWidget* container_ = nullptr;
     QSplitter* splitter_ = nullptr;
     QVector<SignalChartView*> charts_;
+    AppTheme theme_ = ThemeFor(AppThemeId::IndoorDark);
 
     const QVector<pat::Series>* series_ = nullptr;
     const QVector<pat::Series>* derivedSeries_ = nullptr;

@@ -26,21 +26,6 @@
 #include <algorithm>
 #include <cmath>
 
-namespace {
-
-QVector<QColor> SeriesPalette() {
-    return {
-        QColor(90, 200, 255),
-        QColor(255, 140, 0),
-        QColor(120, 220, 120),
-        QColor(220, 120, 220),
-        QColor(255, 90, 90),
-        QColor(120, 160, 255)
-    };
-}
-
-}  // namespace
-
 ChartArea::ChartArea(QWidget* parent) : QWidget(parent) {
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -48,19 +33,14 @@ ChartArea::ChartArea(QWidget* parent) : QWidget(parent) {
     scrollArea_ = new QScrollArea(this);
     scrollArea_->setWidgetResizable(true);
     scrollArea_->setFrameShape(QFrame::NoFrame);
-    QPalette canvasPalette = scrollArea_->palette();
-    canvasPalette.setColor(QPalette::Window, QColor(26, 33, 40));
-    scrollArea_->viewport()->setPalette(canvasPalette);
     scrollArea_->viewport()->setAutoFillBackground(true);
     container_ = new QWidget(scrollArea_);
-    container_->setPalette(canvasPalette);
     container_->setAutoFillBackground(true);
     auto* containerLayout = new QVBoxLayout(container_);
     containerLayout->setContentsMargins(0, 0, 0, 0);
     splitter_ = new QSplitter(Qt::Vertical, container_);
     splitter_->setChildrenCollapsible(false);
     splitter_->setHandleWidth(6);
-    splitter_->setStyleSheet(QStringLiteral("QSplitter::handle:vertical { background: #516979; }"));
     containerLayout->addWidget(splitter_);
     container_->setLayout(containerLayout);
     scrollArea_->setWidget(container_);
@@ -78,10 +58,28 @@ ChartArea::ChartArea(QWidget* parent) : QWidget(parent) {
         chartHeight_ = sizes.value(widgetIndex);
         UpdateChartHeights();
     });
+    ApplyThemeSurface();
 }
 
 void ChartArea::SetSeries(const QVector<pat::Series>* series) {
     series_ = series;
+}
+
+void ChartArea::SetTheme(const AppTheme& theme) {
+    theme_ = theme;
+    ApplyThemeSurface();
+    RefreshCharts();
+}
+
+void ChartArea::ApplyThemeSurface() {
+    if (!scrollArea_ || !container_ || !splitter_) return;
+    QPalette canvasPalette = scrollArea_->palette();
+    canvasPalette.setColor(QPalette::Window, theme_.canvasBackground);
+    scrollArea_->viewport()->setPalette(canvasPalette);
+    container_->setPalette(canvasPalette);
+    splitter_->setStyleSheet(
+        QStringLiteral("QSplitter::handle:vertical { background: %1; }")
+            .arg(theme_.splitter.name(QColor::HexRgb)));
 }
 
 void ChartArea::SetDerivedSeries(const QVector<pat::Series>* series) {
@@ -361,7 +359,7 @@ void ChartArea::BuildCharts() {
 
     const double viewMinX = hasCurrentRange_ ? currentMinX_ : 0.0;
     const double viewMaxX = hasCurrentRange_ ? currentMaxX_ : std::max(1.0, stats_.maxX);
-    const auto palette = SeriesPalette();
+    const auto& palette = theme_.seriesColors;
 
     for (int groupIndex = 0; groupIndex < groups_.size(); ++groupIndex) {
         const auto& group = groups_[groupIndex];
@@ -372,6 +370,7 @@ void ChartArea::BuildCharts() {
 
         auto* view = new SignalChartView(splitter_);
         view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        view->SetTheme(theme_);
         view->Configure(group.title,
                         group.unit,
                         axisTitle_,

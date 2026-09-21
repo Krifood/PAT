@@ -13,6 +13,7 @@
 #include "core/SerialFrameAssembler.h"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QAbstractItemView>
 #include <QComboBox>
 #include <QCheckBox>
@@ -29,6 +30,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -159,6 +161,21 @@ void MainWindow::SetupUi() {
     fileMenu->addSeparator();
     fileMenu->addAction(exitAction);
 
+    viewMenu_ = menuBar()->addMenu(tr("视图"));
+    auto* themeMenu = viewMenu_->addMenu(tr("显示主题"));
+    auto* themeGroup = new QActionGroup(this);
+    themeGroup->setExclusive(true);
+    for (AppThemeId id : AvailableThemeIds()) {
+        auto* action = themeMenu->addAction(ThemeDisplayName(id));
+        action->setCheckable(true);
+        action->setData(ThemeKey(id));
+        action->setObjectName(QStringLiteral("themeAction_%1").arg(ThemeKey(id)));
+        themeGroup->addAction(action);
+    }
+    connect(themeGroup, &QActionGroup::triggered, this, [this](QAction* action) {
+        if (action) ApplyTheme(ThemeIdFromKey(action->data().toString()));
+    });
+
     auto* central = new QWidget(this);
     central->setObjectName(QStringLiteral("mainCentral"));
     auto* layout = new QHBoxLayout(central);
@@ -233,33 +250,38 @@ void MainWindow::SetupUi() {
     layout->addWidget(splitter);
 
     setCentralWidget(central);
-    setStyleSheet(QStringLiteral(R"(
-        QWidget#mainCentral { background: #171c22; }
-        QWidget#signalPane { background: #202b37; }
-        QWidget#chartPane { background: #1a2128; }
-        QWidget#serialPanel { background: #203139; color: #dbe8eb; }
-        QTreeWidget#signalTree { background: #17232e; color: #dce7ee;
-                                  alternate-background-color: #1d2b37; border: 1px solid #354958;
-                                  selection-background-color: #315d70; }
-        QTreeWidget#signalTree QHeaderView::section { background: #2a3b48; color: #e5eef2;
-                                                      border: 0; padding: 4px; }
-        QLabel { color: #dbe5eb; }
-        QDockWidget { color: #dbe8eb; }
-        QWidget#serialPanel QComboBox, QWidget#serialPanel QSpinBox,
-        QWidget#serialPanel QLineEdit, QWidget#serialPanel QTableWidget {
-            background: #17252c; color: #e3edf0; border: 1px solid #48606a;
-        }
-        QWidget#serialPanel QPushButton { background: #2d4b57; color: #edf4f5;
-                                         border: 1px solid #53717b; border-radius: 4px; padding: 4px 8px; }
-        QWidget#serialPanel QPushButton:hover { background: #386170; }
-    )"));
 #ifdef PAT_ENABLE_SERIAL
     SetupSerialDock();
 #endif
     auto* helpMenu = menuBar()->addMenu(tr("帮助"));
     helpMenu->addAction(tr("版本信息..."), this, &MainWindow::ShowVersionInfo);
     helpMenu->addAction(tr("更新日志..."), this, &MainWindow::ShowChangelog);
+    QSettings settings(QStringLiteral("PAT"), QStringLiteral("PAT"));
+    ApplyTheme(ThemeIdFromKey(settings.value(QStringLiteral("appearance/theme"),
+                                               ThemeKey(AppThemeId::IndoorDark)).toString()),
+               false);
     statusBar()->showMessage(tr("就绪"));
+}
+
+void MainWindow::ApplyTheme(AppThemeId id, bool persist) {
+    currentThemeId_ = id;
+    const auto& theme = ThemeFor(id);
+    setStyleSheet(BuildApplicationStyleSheet(theme));
+    if (chartArea_) chartArea_->SetTheme(theme);
+    if (trajectoryView_) trajectoryView_->SetTheme(theme);
+    if (viewMenu_) {
+        const auto actions = viewMenu_->findChildren<QAction*>();
+        for (auto* action : actions) {
+            if (action && action->objectName().startsWith(QStringLiteral("themeAction_"))) {
+                action->setChecked(action->data().toString() == ThemeKey(id));
+            }
+        }
+    }
+    if (persist) {
+        QSettings settings(QStringLiteral("PAT"), QStringLiteral("PAT"));
+        settings.setValue(QStringLiteral("appearance/theme"), ThemeKey(id));
+        statusBar()->showMessage(tr("已切换为%1主题").arg(ThemeDisplayName(id)), 3000);
+    }
 }
 
 void MainWindow::ShowVersionInfo() {
@@ -1008,8 +1030,10 @@ void MainWindow::SetupSerialDock() {
 
     dock->setWidget(panel);
     addDockWidget(Qt::RightDockWidgetArea, dock);
-    auto* viewMenu = menuBar()->addMenu(tr("视图"));
-    viewMenu->addAction(dock->toggleViewAction());
+    if (viewMenu_) {
+        viewMenu_->addSeparator();
+        viewMenu_->addAction(dock->toggleViewAction());
+    }
     dock->hide();
     RefreshSerialPorts();
 }

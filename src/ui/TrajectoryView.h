@@ -2,6 +2,7 @@
 
 #include "core/FormatDefinition.h"
 #include "core/TrajectoryData.h"
+#include "ui/AppTheme.h"
 
 #include <QWidget>
 
@@ -21,6 +22,7 @@ class TrajectoryView : public QWidget {
 public:
     explicit TrajectoryView(QWidget* parent = nullptr);
 
+    void SetTheme(const AppTheme& theme);
     void ConfigureSignals(const pat::FormatDefinition& format);
     void SetDataSource(const QVector<pat::Series>* series, pat::TrajectoryPairing pairing);
     void SetPaused(bool paused);
@@ -43,6 +45,7 @@ private:
     QValueAxis* xAxis_ = nullptr;
     QValueAxis* yAxis_ = nullptr;
     QTimer* refreshTimer_ = nullptr;
+    AppTheme theme_ = ThemeFor(AppThemeId::IndoorDark);
     const QVector<pat::Series>* source_ = nullptr;
     pat::TrajectoryPairing pairing_ = pat::TrajectoryPairing::RecordOrder;
     bool paused_ = false;

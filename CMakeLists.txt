@@ -63,6 +63,7 @@ endif()
 
 if(PAT_BUILD_GUI)
   set(PAT_UI_SOURCES
+    src/ui/AppTheme.cpp
     src/ui/AboutDialog.cpp
     src/ui/MainWindow.cpp
     src/ui/ChartArea.cpp

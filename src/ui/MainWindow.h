@@ -4,6 +4,7 @@
 #include "core/FormatDocument.h"
 #include "core/LiveDataSession.h"
 #include "core/SeriesProcessing.h"
+#include "ui/AppTheme.h"
 #include "ui/DisplayGroupManager.h"
 #include "ui/SignalTreeController.h"
 #ifdef PAT_ENABLE_SERIAL
@@ -22,6 +23,7 @@ class AboutDialog;
 class TrajectoryView;
 class QTabWidget;
 class QTreeWidgetItem;
+class QMenu;
 #ifdef PAT_ENABLE_SERIAL
 class QComboBox;
 class QSpinBox;
@@ -69,6 +71,7 @@ private:
     void ShowSignalTransformDialog(int signalIndex);
     void ShowDifferenceDialog(const QVector<int>& suggestedSignals);
     bool CreateDifference(int leftSignal, int rightSignal, QString& errorMessage);
+    void ApplyTheme(AppThemeId id, bool persist = true);
 #ifdef PAT_ENABLE_SERIAL
     void SetupSerialDock();
     void RefreshSerialPorts();
@@ -89,12 +92,14 @@ private:
     ChartArea* chartArea_ = nullptr;
     TrajectoryView* trajectoryView_ = nullptr;
     QTabWidget* dataViewTabs_ = nullptr;
+    QMenu* viewMenu_ = nullptr;
     AboutDialog* infoDialog_ = nullptr;
     QLabel* statusLabel_ = nullptr;
 
     int maxVisiblePoints_ = 5000;
     bool signalTreeUpdating_ = false;
     bool liveMode_ = false;
+    AppThemeId currentThemeId_ = AppThemeId::IndoorDark;
 #ifdef PAT_ENABLE_SERIAL
     QComboBox* portCombo_ = nullptr;
     QComboBox* dataBitsCombo_ = nullptr;

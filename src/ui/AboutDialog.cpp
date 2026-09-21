@@ -13,14 +13,6 @@ AboutDialog::AboutDialog(QWidget* parent) : QDialog(parent) {
     setObjectName(QStringLiteral("applicationInfoDialog"));
     setWindowTitle(tr("关于 PAT"));
     resize(680, 520);
-    setStyleSheet(QStringLiteral(R"(
-        QDialog#applicationInfoDialog { background: #1a2128; color: #dbe5eb; }
-        QDialog#applicationInfoDialog QLabel { color: #dbe5eb; }
-        QDialog#applicationInfoDialog QTabWidget::pane { border: 1px solid #354958; }
-        QDialog#applicationInfoDialog QTextBrowser {
-            background: #17232e; color: #dbe5eb; border: 0; padding: 12px;
-        }
-    )"));
 
     auto* layout = new QVBoxLayout(this);
     tabs_ = new QTabWidget(this);

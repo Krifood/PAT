@@ -41,13 +41,6 @@
 
 namespace {
 
-const QColor AXIS_TEXT_COLOR(210, 210, 210);
-const QColor AXIS_LINE_COLOR(140, 140, 140);
-const QColor GRID_LINE_COLOR(60, 60, 60);
-const QColor CURSOR_LINE_COLOR(255, 48, 48);
-const QColor CURSOR_VALUE_COLOR(255, 215, 0);
-const QColor ASSIST_LINE_COLOR(90, 90, 90);
-
 QString YAxisLabelFormat(double minY, double maxY) {
     const double magnitude = std::max(std::abs(minY), std::abs(maxY));
     const double step = (maxY - minY) / 2.0;
@@ -72,6 +65,10 @@ SignalChartView::SignalChartView(QWidget* parent) : QChartView(parent) {
         viewport()->setAcceptDrops(true);
         viewport()->setMouseTracking(true);
     }
+}
+
+void SignalChartView::SetTheme(const AppTheme& theme) {
+    theme_ = theme;
 }
 
 void SignalChartView::Configure(const QString& title,
@@ -101,21 +98,22 @@ void SignalChartView::Configure(const QString& title,
 
     auto* chart = new QChart();
     chart->setTitle(QString());
-    chart->setBackgroundBrush(viewIndex % 2 == 0 ? QColor(25, 37, 46) : QColor(30, 43, 50));
-    chart->setBackgroundPen(QPen(viewIndex % 2 == 0 ? QColor(77, 109, 126)
-                                                : QColor(92, 117, 123), 1.5));
+    chart->setBackgroundBrush(viewIndex % 2 == 0 ? theme_.chartBackgroundEven
+                                                  : theme_.chartBackgroundOdd);
+    chart->setBackgroundPen(QPen(viewIndex % 2 == 0 ? theme_.chartBorderEven
+                                                     : theme_.chartBorderOdd, 1.5));
     chart->setPlotAreaBackgroundVisible(true);
-    chart->setPlotAreaBackgroundBrush(viewIndex % 2 == 0 ? QColor(20, 29, 36)
-                                                      : QColor(24, 33, 39));
-    chart->setTitleBrush(QBrush(AXIS_TEXT_COLOR));
+    chart->setPlotAreaBackgroundBrush(viewIndex % 2 == 0 ? theme_.plotBackgroundEven
+                                                          : theme_.plotBackgroundOdd);
+    chart->setTitleBrush(QBrush(theme_.axisText));
     auto* legend = chart->legend();
-    legend->setLabelColor(AXIS_TEXT_COLOR);
+    legend->setLabelColor(theme_.axisText);
     legend->setVisible(showLegend);
     if (showLegend) {
         legend->detachFromChart();
         legend->setBackgroundVisible(true);
-        legend->setBrush(QBrush(QColor(20, 20, 22, 180)));
-        legend->setPen(QPen(QColor(90, 90, 90, 200)));
+        legend->setBrush(QBrush(theme_.legendBackground));
+        legend->setPen(QPen(theme_.legendBorder));
     }
     QFont titleFont = chart->titleFont();
     if (titleFont.pointSize() > 0) {
@@ -129,7 +127,7 @@ void SignalChartView::Configure(const QString& title,
         auto* line = new QLineSeries(chart);
         const int colorIndex = palette.isEmpty() ? 0 : (i % palette.size());
         QPen pen(palette.isEmpty() ? Qt::white : palette[colorIndex]);
-        pen.setWidthF(1.5);
+        pen.setWidthF(theme_.seriesLineWidth);
         line->setPen(pen);
         const int dataIndex = seriesIndices[i];
         if (sourceSeries_ && dataIndex >= 0 && dataIndex < sourceSeries_->size()) {
@@ -148,10 +146,10 @@ void SignalChartView::Configure(const QString& title,
     auto* axisX = new QValueAxis(chart);
     axisX->setTitleText(timeUnit);
     axisX->setRange(minX, maxX);
-    axisX->setTitleBrush(QBrush(AXIS_TEXT_COLOR));
-    axisX->setLabelsColor(AXIS_TEXT_COLOR);
-    axisX->setLinePenColor(AXIS_LINE_COLOR);
-    axisX->setGridLineColor(GRID_LINE_COLOR);
+    axisX->setTitleBrush(QBrush(theme_.axisText));
+    axisX->setLabelsColor(theme_.axisText);
+    axisX->setLinePenColor(theme_.axisLine);
+    axisX->setGridLineColor(theme_.gridLine);
     chart->addAxis(axisX, Qt::AlignBottom);
     for (auto* line : series_) {
         line->attachAxis(axisX);
@@ -161,10 +159,10 @@ void SignalChartView::Configure(const QString& title,
     axisY->setRange(minY, maxY);
     axisY->setTickCount(3);
     axisY->setLabelFormat(YAxisLabelFormat(minY, maxY));
-    axisY->setTitleBrush(QBrush(AXIS_TEXT_COLOR));
-    axisY->setLabelsColor(AXIS_TEXT_COLOR);
-    axisY->setLinePenColor(AXIS_LINE_COLOR);
-    axisY->setGridLineColor(GRID_LINE_COLOR);
+    axisY->setTitleBrush(QBrush(theme_.axisText));
+    axisY->setLabelsColor(theme_.axisText);
+    axisY->setLinePenColor(theme_.axisLine);
+    axisY->setGridLineColor(theme_.gridLine);
     chart->addAxis(axisY, Qt::AlignLeft);
     for (auto* line : series_) {
         line->attachAxis(axisY);
@@ -193,8 +191,8 @@ void SignalChartView::Configure(const QString& title,
     }
     headerTitle_->setFont(headerFont);
     headerDesc_->setFont(headerFont);
-    headerTitle_->setBrush(QBrush(AXIS_TEXT_COLOR));
-    headerDesc_->setBrush(QBrush(AXIS_TEXT_COLOR));
+    headerTitle_->setBrush(QBrush(theme_.axisText));
+    headerDesc_->setBrush(QBrush(theme_.axisText));
     headerTitle_->setZValue(900);
     headerDesc_->setZValue(900);
     if (legend && legend->isVisible()) {
@@ -204,7 +202,7 @@ void SignalChartView::Configure(const QString& title,
 
     if (!crosshair_) {
         crosshair_ = new QGraphicsLineItem();
-        QPen cursorPen(CURSOR_LINE_COLOR);
+        QPen cursorPen(theme_.cursorLine);
         cursorPen.setStyle(Qt::DashLine);
         crosshair_->setPen(cursorPen);
         crosshair_->setZValue(1000);
@@ -214,7 +212,7 @@ void SignalChartView::Configure(const QString& title,
 
     if (!zeroLine_) {
         zeroLine_ = new QGraphicsLineItem();
-        QPen assistPen(ASSIST_LINE_COLOR);
+        QPen assistPen(theme_.zeroLine);
         assistPen.setStyle(Qt::DashLine);
         zeroLine_->setPen(assistPen);
         zeroLine_->setZValue(500);
@@ -225,7 +223,7 @@ void SignalChartView::Configure(const QString& title,
     valueLabels_.clear();
     for (int i = 0; i < series_.size(); ++i) {
         auto* label = new QGraphicsSimpleTextItem(chart);
-        label->setBrush(CURSOR_VALUE_COLOR);
+        label->setBrush(theme_.cursorValue);
         label->setZValue(1001 + i);
         label->setVisible(false);
         valueLabels_.append(label);
@@ -582,13 +580,13 @@ void SignalChartView::UpdateAlignedPlotArea() {
 void SignalChartView::AddGuide(GuideOrientation orientation, double value) {
     if (!chart() || series_.isEmpty()) return;
     auto* outline = new QGraphicsLineItem(chart());
-    QPen outlinePen(QColor(9, 16, 22));
-    outlinePen.setWidthF(5.0);
+    QPen outlinePen(theme_.guideOutline);
+    outlinePen.setWidthF(theme_.guideLineWidth + 2.5);
     outline->setPen(outlinePen);
     outline->setZValue(959);
     auto* item = new QGraphicsLineItem(chart());
-    QPen pen(QColor(255, 227, 90));
-    pen.setWidthF(2.5);
+    QPen pen(theme_.guideLine);
+    pen.setWidthF(theme_.guideLineWidth);
     item->setPen(pen);
     item->setZValue(960);
     guides_.append({{orientation, value}, item, outline});

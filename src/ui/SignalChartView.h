@@ -2,6 +2,7 @@
 
 #include "core/RecordParser.h"
 #include "core/SeriesProcessing.h"
+#include "ui/AppTheme.h"
 
 #include <QtCharts/QChartView>
 
@@ -46,6 +47,7 @@ public:
 
     explicit SignalChartView(QWidget* parent = nullptr);
 
+    void SetTheme(const AppTheme& theme);
     void Configure(const QString& title,
                    const QString& unit,
                    const QString& timeUnit,
@@ -124,6 +126,7 @@ private:
     int draggingGuide_ = -1;
 
     QVector<QLineSeries*> series_;
+    AppTheme theme_ = ThemeFor(AppThemeId::IndoorDark);
     QVector<int> seriesIndices_;
     const QVector<pat::Series>* sourceSeries_ = nullptr;
     QVector<const pat::Series*> displaySources_;

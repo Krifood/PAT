@@ -5,6 +5,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
+#include <QPen>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QTimer>
@@ -62,14 +63,6 @@ void SetPaddedRange(QValueAxis* axis, double minimum, double maximum) {
 
 TrajectoryView::TrajectoryView(QWidget* parent) : QWidget(parent) {
     setObjectName(QStringLiteral("trajectoryView"));
-    setStyleSheet(QStringLiteral(R"(
-        QWidget#trajectoryView { background: #1a2128; }
-        QWidget#trajectoryView QLabel, QWidget#trajectoryView QCheckBox { color: #dbe5eb; }
-        QWidget#trajectoryView QComboBox {
-            background: #203139; color: #dbe5eb; border: 1px solid #48606a;
-            min-width: 130px; padding: 3px;
-        }
-    )"));
 
     auto* layout = new QVBoxLayout(this);
     auto* controls = new QHBoxLayout;
@@ -89,19 +82,15 @@ TrajectoryView::TrajectoryView(QWidget* parent) : QWidget(parent) {
     layout->addLayout(controls);
 
     auto* chart = new QChart;
-    chart->setBackgroundBrush(QColor(23, 35, 46));
-    chart->setPlotAreaBackgroundBrush(QColor(26, 33, 40));
     chart->setPlotAreaBackgroundVisible(true);
     chart->legend()->hide();
     chart->setMargins(QMargins(8, 8, 8, 8));
 
     pathSeries_ = new QLineSeries(chart);
     pathSeries_->setName(tr("轨迹"));
-    pathSeries_->setColor(QColor(90, 200, 255));
     chart->addSeries(pathSeries_);
     currentSeries_ = new QScatterSeries(chart);
     currentSeries_->setName(tr("当前位置"));
-    currentSeries_->setColor(QColor(255, 170, 55));
     currentSeries_->setMarkerSize(11.0);
     chart->addSeries(currentSeries_);
 
@@ -139,6 +128,32 @@ TrajectoryView::TrajectoryView(QWidget* parent) : QWidget(parent) {
     connect(autoRange_, &QCheckBox::toggled, this, [this](bool enabled) {
         if (enabled) RefreshNow();
     });
+    SetTheme(theme_);
+}
+
+void TrajectoryView::SetTheme(const AppTheme& theme) {
+    theme_ = theme;
+    if (!chartView_ || !chartView_->chart()) return;
+    auto* chart = chartView_->chart();
+    chart->setBackgroundBrush(theme_.chartBackgroundEven);
+    chart->setBackgroundPen(QPen(theme_.chartBorderEven, 1.5));
+    chart->setPlotAreaBackgroundBrush(theme_.plotBackgroundEven);
+    if (pathSeries_) {
+        QPen pathPen(theme_.seriesColors.value(0, theme_.axisText));
+        pathPen.setWidthF(theme_.seriesLineWidth);
+        pathSeries_->setPen(pathPen);
+    }
+    if (currentSeries_) {
+        currentSeries_->setColor(theme_.seriesColors.value(1, theme_.cursorLine));
+        currentSeries_->setBorderColor(theme_.guideOutline);
+    }
+    for (auto* axis : {xAxis_, yAxis_}) {
+        if (!axis) continue;
+        axis->setTitleBrush(QBrush(theme_.axisText));
+        axis->setLabelsColor(theme_.axisText);
+        axis->setLinePenColor(theme_.axisLine);
+        axis->setGridLineColor(theme_.gridLine);
+    }
 }
 
 void TrajectoryView::ConfigureSignals(const pat::FormatDefinition& format) {
