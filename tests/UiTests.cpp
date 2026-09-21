@@ -2,6 +2,7 @@
 #include "ui/AboutDialog.h"
 #include "ui/ChartArea.h"
 #include "ui/SignalChartView.h"
+#include "ui/TrajectoryView.h"
 
 #include <QComboBox>
 #include <QAction>
@@ -49,7 +50,55 @@ private slots:
     void guideShowsAllCrossingsAndKeepsCursor();
     void liveChartsLimitVisibleWork();
     void axisLabelsDistinguishSmallDeltas();
+    void trajectoryTabPlotsOfflineCoordinates();
 };
+
+void UiTests::trajectoryTabPlotsOfflineCoordinates() {
+    MainWindow window;
+    QString error;
+    const QString root = QString::fromUtf8(PAT_SOURCE_DIR);
+    QVERIFY2(window.formatDocument_.LoadFromFile(
+                 root + QStringLiteral("/samples/cp01_b3_navigation.json"), error),
+             qPrintable(error));
+    window.BuildSignalTree();
+    QVERIFY2(window.dataSession_.Load(root + QStringLiteral("/samples/cp01_b3_synthetic.hex"),
+                                      window.formatDocument_.Format(), error), qPrintable(error));
+    window.UpdateCharts();
+    window.show();
+
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("dataViewTabs"));
+    QVERIFY(tabs);
+    tabs->setCurrentIndex(1);
+    auto* view = window.findChild<TrajectoryView*>(QStringLiteral("trajectoryView"));
+    QVERIFY(view);
+    auto* xCombo = view->findChild<QComboBox*>(QStringLiteral("trajectoryXCombo"));
+    auto* yCombo = view->findChild<QComboBox*>(QStringLiteral("trajectoryYCombo"));
+    QVERIFY(xCombo);
+    QVERIFY(yCombo);
+    QCOMPARE(xCombo->currentText(), QStringLiteral("组合经度 (°)"));
+    QCOMPARE(yCombo->currentText(), QStringLiteral("组合纬度 (°)"));
+
+    auto* chartView = view->findChild<QChartView*>(QStringLiteral("trajectoryChart"));
+    QVERIFY(chartView);
+    auto* path = qobject_cast<QLineSeries*>(chartView->chart()->series().first());
+    QVERIFY(path);
+    QTRY_COMPARE(path->points().size(), 1);
+    const int xIndex = xCombo->currentData().toInt();
+    const int yIndex = yCombo->currentData().toInt();
+    QCOMPARE(path->points().first().x(), window.dataSession_.Series()[xIndex].samples.first().y());
+    QCOMPARE(path->points().first().y(), window.dataSession_.Series()[yIndex].samples.first().y());
+
+    const int gnssX = xCombo->findText(QStringLiteral("GNSS经度 (°)"));
+    const int gnssY = yCombo->findText(QStringLiteral("GNSS纬度 (°)"));
+    QVERIFY(gnssX >= 0);
+    QVERIFY(gnssY >= 0);
+    xCombo->setCurrentIndex(gnssX);
+    yCombo->setCurrentIndex(gnssY);
+    QCOMPARE(path->points().first().x(),
+             window.dataSession_.Series()[xCombo->currentData().toInt()].samples.first().y());
+    QCOMPARE(path->points().first().y(),
+             window.dataSession_.Series()[yCombo->currentData().toInt()].samples.first().y());
+}
 
 void UiTests::informationMenuShowsVersionAndBundledChangelog() {
     MainWindow window;
@@ -205,6 +254,27 @@ void UiTests::liveChartsAppearBeforeFirstFrame() {
     QCOMPARE(plotted->points().size(), 1);
     window.pauseDisplayButton_->click();
     QTRY_COMPARE(plotted->points().size(), 2);
+
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("dataViewTabs"));
+    QVERIFY(tabs);
+    tabs->setCurrentIndex(1);
+    auto* trajectory = window.findChild<TrajectoryView*>(QStringLiteral("trajectoryView"));
+    QVERIFY(trajectory);
+    auto* trajectoryChart = trajectory->findChild<QChartView*>(QStringLiteral("trajectoryChart"));
+    QVERIFY(trajectoryChart);
+    auto* track = qobject_cast<QLineSeries*>(trajectoryChart->chart()->series().first());
+    QVERIFY(track);
+    QTRY_COMPARE(track->points().size(), 2);
+    QCOMPARE(::write(master, frame.constData(), static_cast<size_t>(frame.size())), ssize_t(frame.size()));
+    QTRY_COMPARE(track->points().size(), 3);
+    window.pauseDisplayButton_->click();
+    QCOMPARE(::write(master, frame.constData(), static_cast<size_t>(frame.size())), ssize_t(frame.size()));
+    QTRY_VERIFY_WITH_TIMEOUT(window.captureStatsLabel_->text().contains(QStringLiteral("已解析 4 帧")), 3000);
+    QCOMPARE(track->points().size(), 3);
+    window.pauseDisplayButton_->click();
+    QTRY_COMPARE(track->points().size(), 4);
+    tabs->setCurrentIndex(0);
+    QTRY_COMPARE(plotted->points().size(), 4);
 
     window.StopSerialCapture();
     QTRY_VERIFY_WITH_TIMEOUT(!window.captureRunning_, 3000);

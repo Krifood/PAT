@@ -6,6 +6,7 @@
 #include "core/RecordDecoder.h"
 #include "core/RecordParser.h"
 #include "core/SerialFrameAssembler.h"
+#include "core/TrajectoryData.h"
 
 #include <QFile>
 #include <QBuffer>
@@ -44,7 +45,31 @@ private slots:
     void oneHourSimulatedStream();
     void legacyFileRegression();
     void jsonGuideExampleDecodes();
+    void trajectoryPairsByRecordOrSampleIndex();
 };
+
+void CoreTests::trajectoryPairsByRecordOrSampleIndex() {
+    pat::Series longitude, latitude;
+    longitude.samples = {{0, 116.0}, {1, 116.1}, {2, 116.2}};
+    latitude.samples = {{0, 39.0}, {2, 39.2}};
+
+    const auto live = pat::PairTrajectorySamples(longitude, latitude,
+                                                pat::TrajectoryPairing::SampleIndex);
+    QCOMPARE(live, (QVector<QPointF>{{116.0, 39.0}, {116.2, 39.2}}));
+
+    latitude.samples = {{0, 39.0}, {0.5, 39.1}, {1.0, 39.2}};
+    const auto offline = pat::PairTrajectorySamples(longitude, latitude,
+                                                   pat::TrajectoryPairing::RecordOrder);
+    QCOMPARE(offline, (QVector<QPointF>{{116.0, 39.0}, {116.1, 39.1}, {116.2, 39.2}}));
+
+    QVector<QPointF> path;
+    for (int i = 0; i < 100; ++i) path.append({double(i), i == 50 ? 1000.0 : 0.0});
+    const auto reduced = pat::DecimateTrajectory(path, 18);
+    QVERIFY(reduced.size() <= 18);
+    QCOMPARE(reduced.first(), path.first());
+    QCOMPARE(reduced.last(), path.last());
+    QVERIFY(reduced.contains(path[50]));
+}
 
 void CoreTests::jsonGuideExampleDecodes() {
     QFile guide(QString::fromUtf8(PAT_SOURCE_DIR)

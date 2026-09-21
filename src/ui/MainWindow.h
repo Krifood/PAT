@@ -18,6 +18,8 @@ class SignalTreeWidget;
 class SignalTreeController;
 class ChartArea;
 class AboutDialog;
+class TrajectoryView;
+class QTabWidget;
 class QTreeWidgetItem;
 #ifdef PAT_ENABLE_SERIAL
 class QComboBox;
@@ -80,6 +82,8 @@ private:
     SignalTreeWidget* signalTree_ = nullptr;
     std::unique_ptr<SignalTreeController> signalTreeController_;
     ChartArea* chartArea_ = nullptr;
+    TrajectoryView* trajectoryView_ = nullptr;
+    QTabWidget* dataViewTabs_ = nullptr;
     AboutDialog* infoDialog_ = nullptr;
     QLabel* statusLabel_ = nullptr;
 

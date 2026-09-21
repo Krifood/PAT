@@ -5,6 +5,7 @@
 #include "ui/FormatEditorDialog.h"
 #include "ui/SignalTreeController.h"
 #include "ui/SignalTreeWidget.h"
+#include "ui/TrajectoryView.h"
 #include "core/FrameExporter.h"
 #include "core/InputReader.h"
 #include "core/RecordDecoder.h"
@@ -31,6 +32,7 @@
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QTableWidget>
+#include <QTabWidget>
 #include <QHBoxLayout>
 #include <QSplitter>
 #include <QStringList>
@@ -186,13 +188,26 @@ void MainWindow::SetupUi() {
     auto* rightLayout = new QVBoxLayout(rightPane);
     rightLayout->setContentsMargins(4, 4, 4, 4);
 #ifdef PAT_ENABLE_QT_CHARTS
-    chartArea_ = new ChartArea(this);
+    dataViewTabs_ = new QTabWidget(rightPane);
+    dataViewTabs_->setObjectName(QStringLiteral("dataViewTabs"));
+    chartArea_ = new ChartArea(dataViewTabs_);
     connect(chartArea_, &ChartArea::SignalsDropped, this, &MainWindow::HandleSignalsDropped);
     connect(chartArea_, &ChartArea::MergeRequested, this, &MainWindow::HandleMergeRequested);
     connect(chartArea_, &ChartArea::ReorderRequested, this, &MainWindow::HandleReorderRequested);
     connect(chartArea_, &ChartArea::HideSignalsRequested, this, &MainWindow::HandleHideSignalsRequested);
     connect(chartArea_, &ChartArea::SplitRequested, this, &MainWindow::HandleSplitRequested);
-    rightLayout->addWidget(chartArea_, /*stretch=*/1);
+    trajectoryView_ = new TrajectoryView(dataViewTabs_);
+    dataViewTabs_->addTab(chartArea_, tr("时序曲线"));
+    dataViewTabs_->addTab(trajectoryView_, tr("二维轨迹"));
+    rightLayout->addWidget(dataViewTabs_, /*stretch=*/1);
+#ifdef PAT_ENABLE_SERIAL
+    connect(dataViewTabs_, &QTabWidget::currentChanged, this, [this](int index) {
+        if (index != 0 || !liveMode_ || displayPaused_ || !liveSession_.HasData()) return;
+        liveSession_.UpdateStatistics();
+        chartArea_->SetStatistics(liveSession_.Statistics());
+        chartArea_->RefreshLiveData(followLatestCheck_->isChecked());
+    });
+#endif
 #else
     auto* placeholder = new QLabel(tr("Qt Charts 未启用，无法显示曲线"), this);
     placeholder->setAlignment(Qt::AlignCenter);
@@ -330,6 +345,7 @@ void MainWindow::OpenDataFile() {
     }
 
     liveMode_ = false;
+    if (trajectoryView_) trajectoryView_->SetPaused(false);
     if (chartArea_) chartArea_->ResetSessionView();
 
 #ifdef PAT_ENABLE_QT_CHARTS
@@ -635,6 +651,12 @@ void MainWindow::UpdateCharts() {
 #ifdef PAT_ENABLE_QT_CHARTS
     if (!chartArea_) return;
     const bool hasData = liveMode_ ? liveSession_.HasData() : dataSession_.HasData();
+    if (trajectoryView_) {
+        trajectoryView_->SetDataSource(liveMode_ ? &liveSession_.SeriesData()
+                                                 : &dataSession_.Series(),
+                                       liveMode_ ? pat::TrajectoryPairing::SampleIndex
+                                                 : pat::TrajectoryPairing::RecordOrder);
+    }
     // Framed signals can show empty axes before capture and while waiting for a valid frame.
     if (!formatDocument_.HasFormat()
         || (!liveMode_ && !hasData && !formatDocument_.Format().HasFraming())) {
@@ -670,6 +692,10 @@ void MainWindow::UpdateStatus(const QString& text) {
 void MainWindow::BuildSignalTree() {
     if (!signalTreeController_) return;
     signalTreeController_->Build(formatDocument_.Format());
+    if (trajectoryView_) {
+        trajectoryView_->SetPaused(false);
+        trajectoryView_->ConfigureSignals(formatDocument_.Format());
+    }
 }
 
 void MainWindow::ShowSignalTreeMenu(const QPoint& pos) {
@@ -882,8 +908,10 @@ void MainWindow::SetupSerialDock() {
     connect(stopCaptureButton_, &QPushButton::clicked, this, &MainWindow::StopSerialCapture);
     connect(pauseDisplayButton_, &QPushButton::clicked, this, [this]() {
         displayPaused_ = !displayPaused_;
+        if (trajectoryView_) trajectoryView_->SetPaused(displayPaused_);
         pauseDisplayButton_->setText(displayPaused_ ? tr("恢复显示") : tr("暂停显示"));
-        if (!displayPaused_ && liveSession_.HasData() && chartArea_) {
+        if (!displayPaused_ && liveSession_.HasData() && chartArea_
+            && dataViewTabs_ && dataViewTabs_->currentIndex() == 0) {
             liveSession_.UpdateStatistics();
             chartArea_->SetStatistics(liveSession_.Statistics());
             if (!liveChartsInitialized_) {
@@ -894,7 +922,8 @@ void MainWindow::SetupSerialDock() {
         }
     });
     connect(followLatestCheck_, &QCheckBox::toggled, this, [this](bool enabled) {
-        if (enabled && !displayPaused_ && liveMode_ && liveSession_.HasData() && chartArea_) {
+        if (enabled && !displayPaused_ && liveMode_ && liveSession_.HasData() && chartArea_
+            && dataViewTabs_ && dataViewTabs_->currentIndex() == 0) {
             chartArea_->RefreshLiveData(true);
         }
     });
@@ -943,6 +972,7 @@ void MainWindow::StartSerialCapture() {
     liveSession_.Reset(formatDocument_.Format());
     liveMode_ = true;
     displayPaused_ = false;
+    if (trajectoryView_) trajectoryView_->SetPaused(false);
     liveChartsInitialized_ = false;
     pauseDisplayButton_->setText(tr("暂停显示"));
     followLatestCheck_->setChecked(true);
@@ -1036,7 +1066,8 @@ void MainWindow::HandleSerialSamples(const QVector<pat::LiveSample>& samples, qu
     if (liveFrameTable_) liveFrameTable_->scrollToBottom();
     UpdateStatus(tr("已解析 %1 帧；跳过 %2 字节")
                      .arg(samples.last().index + 1).arg(skippedBytes));
-    if (displayPaused_) return;
+    if (trajectoryView_) trajectoryView_->RequestRefresh();
+    if (displayPaused_ || (dataViewTabs_ && dataViewTabs_->currentIndex() != 0)) return;
     liveSession_.UpdateStatistics();
     if (chartArea_) {
         chartArea_->SetStatistics(liveSession_.Statistics());
