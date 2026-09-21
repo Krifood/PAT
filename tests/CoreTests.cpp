@@ -6,6 +6,7 @@
 #include "core/RecordDecoder.h"
 #include "core/RecordParser.h"
 #include "core/SerialFrameAssembler.h"
+#include "core/SeriesProcessing.h"
 #include "core/TrajectoryData.h"
 
 #include <QFile>
@@ -46,7 +47,46 @@ private slots:
     void legacyFileRegression();
     void jsonGuideExampleDecodes();
     void trajectoryPairsByRecordOrSampleIndex();
+    void displayTransformAndDifferenceSeries();
 };
+
+void CoreTests::displayTransformAndDifferenceSeries() {
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY2(pat::LoadFormatFromJsonData(R"({
+      "record_size":6,"signals":[
+        {"name":"A","byte_offset":0,"value_type":"int16","unit":"m/s"},
+        {"name":"B","byte_offset":2,"value_type":"int16","unit":"m/s"},
+        {"name":"C","byte_offset":4,"value_type":"int16","unit":"°"}
+      ]})", format, error), qPrintable(error));
+
+    pat::SeriesProcessing processing;
+    processing.Reset(format);
+    processing.SetTransform(0, {0.5, 10.0});
+    QCOMPARE(processing.Transform(0).Apply(4.0), 12.0);
+    QVERIFY(!processing.Transform(0).IsIdentity());
+
+    QVERIFY2(processing.AddDifference(0, 1, error), qPrintable(error));
+    QVERIFY(!processing.AddDifference(0, 2, error));
+    QVERIFY(error.contains(QStringLiteral("单位不同")));
+
+    QVector<pat::Series> source(3);
+    source[0].samples = {{0, 10}, {1, 15}, {2, 18}};
+    source[1].samples = {{0, 3}, {2, 8}};
+    processing.RebuildDerived(source);
+    QCOMPARE(processing.DerivedSeries().size(), 1);
+    QCOMPARE(processing.DerivedSeries()[0].samples,
+             (QVector<QPointF>{{0, 7}, {2, 10}}));
+
+    processing.ClearDerivedSamples();
+    processing.AppendLive(7, {20, 6, 0}, 2);
+    processing.AppendLive(8, {24, 5, 0}, 2);
+    processing.AppendLive(9, {30, 8, 0}, 2);
+    QCOMPARE(processing.DerivedSeries()[0].samples,
+             (QVector<QPointF>{{8, 19}, {9, 22}}));
+    processing.ResetTransform(0);
+    QVERIFY(processing.Transform(0).IsIdentity());
+}
 
 void CoreTests::trajectoryPairsByRecordOrSampleIndex() {
     pat::Series longitude, latitude;

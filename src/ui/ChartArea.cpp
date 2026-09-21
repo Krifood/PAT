@@ -84,6 +84,14 @@ void ChartArea::SetSeries(const QVector<pat::Series>* series) {
     series_ = series;
 }
 
+void ChartArea::SetDerivedSeries(const QVector<pat::Series>* series) {
+    derivedSeries_ = series;
+}
+
+void ChartArea::SetDisplayTransforms(const QHash<int, pat::DisplayTransform>& transforms) {
+    transforms_ = transforms;
+}
+
 void ChartArea::SetDisplayGroups(const QVector<DisplayGroup>& groups) {
     groups_ = groups;
 }
@@ -306,9 +314,15 @@ void ChartArea::HandleMergeDropped(const QVector<int>& indices, int targetIndex)
 void ChartArea::HandleChartMergeRequested(int fromIndex, int toIndex) {
     if (fromIndex < 0 || toIndex < 0 || fromIndex >= groups_.size() || toIndex >= groups_.size()) return;
     if (fromIndex == toIndex) return;
+    const auto& fromGroup = groups_[fromIndex];
+    const auto& toGroup = groups_[toIndex];
+    if (std::any_of(fromGroup.signalIndices.begin(), fromGroup.signalIndices.end(),
+                    [](int index) { return index < 0; })
+        || std::any_of(toGroup.signalIndices.begin(), toGroup.signalIndices.end(),
+                       [](int index) { return index < 0; })) return;
 
-    QVector<int> merged = groups_.value(toIndex).signalIndices;
-    const auto& source = groups_.value(fromIndex).signalIndices;
+    QVector<int> merged = toGroup.signalIndices;
+    const auto& source = fromGroup.signalIndices;
     for (int idx : source) {
         if (idx >= 0 && !merged.contains(idx)) merged.append(idx);
     }
@@ -371,6 +385,15 @@ void ChartArea::BuildCharts() {
                         viewMinX,
                         viewMaxX,
                         groupIndex);
+        QVector<const pat::Series*> displaySources;
+        QVector<pat::DisplayTransform> displayTransforms;
+        displaySources.reserve(group.signalIndices.size());
+        displayTransforms.reserve(group.signalIndices.size());
+        for (int displayIndex : group.signalIndices) {
+            displaySources.append(ResolveSeries(displayIndex));
+            displayTransforms.append(ResolveTransform(displayIndex));
+        }
+        view->SetDisplaySources(displaySources, displayTransforms);
         view->SetXAxisVisible(groupIndex == groups_.size() - 1);
         if (groups_.size() > 8) view->setRenderHint(QPainter::Antialiasing, false);
         view->SetPlotLeftMargin(84.0);
@@ -385,6 +408,7 @@ void ChartArea::BuildCharts() {
         connect(view, &SignalChartView::ReorderRequested, this, &ChartArea::HandleReorderRequested);
         connect(view, &SignalChartView::HideSignalsRequested, this, &ChartArea::HandleHideSignalsRequested);
         connect(view, &SignalChartView::SplitRequested, this, &ChartArea::SplitRequested);
+        connect(view, &SignalChartView::TransformRequested, this, &ChartArea::TransformRequested);
 
         splitter_->addWidget(view);
         splitter_->setStretchFactor(splitter_->indexOf(view), 1);
@@ -472,13 +496,16 @@ void ChartArea::RefreshVisibleSeries(double minX, double maxX) {
         const auto& indices = chart->SeriesIndices();
         samples.reserve(indices.size());
         for (int idx : indices) {
-            if (idx < 0 || idx >= series_->size()) {
+            const auto* source = ResolveSeries(idx);
+            if (!source) {
                 samples.append(QVector<QPointF>{});
                 continue;
             }
             const int widthLimit = std::max(200, static_cast<int>(chart->chart()->plotArea().width() * 1.5));
-            samples.append(DecimateSamples(series_->at(idx).samples, minX, maxX,
-                                           std::min(maxVisiblePoints_, widthLimit)));
+            samples.append(ApplyTransform(
+                DecimateSamples(source->samples, minX, maxX,
+                                std::min(maxVisiblePoints_, widthLimit)),
+                ResolveTransform(idx)));
         }
         chart->SetSeriesSamples(samples);
     }
@@ -542,20 +569,22 @@ bool ChartArea::ComputeGroupRange(const QVector<int>& indices, double& outMinY, 
     outMaxY = 1.0;
 
     for (int idx : indices) {
-        if (idx < 0 || idx >= series_->size()) continue;
-        const auto& series = series_->at(idx);
+        const auto* source = ResolveSeries(idx);
+        if (!source) continue;
+        const auto& series = *source;
+        const auto transform = ResolveTransform(idx);
         const auto begin = std::lower_bound(series.samples.begin(), series.samples.end(), minX,
                                             [](const QPointF& point, double x) { return point.x() < x; });
         const auto end = std::upper_bound(begin, series.samples.end(), maxX,
                                           [](double x, const QPointF& point) { return x < point.x(); });
         for (auto it = begin; it != end; ++it) {
-            const auto& pt = *it;
+            const double value = transform.Apply(it->y());
             if (!hasRange) {
-                outMinY = outMaxY = pt.y();
+                outMinY = outMaxY = value;
                 hasRange = true;
             } else {
-                outMinY = std::min(outMinY, pt.y());
-                outMaxY = std::max(outMaxY, pt.y());
+                outMinY = std::min(outMinY, value);
+                outMaxY = std::max(outMaxY, value);
             }
         }
     }
@@ -567,6 +596,31 @@ bool ChartArea::ComputeGroupRange(const QVector<int>& indices, double& outMinY, 
         outMaxY += delta;
     }
     return true;
+}
+
+const pat::Series* ChartArea::ResolveSeries(int displayIndex) const {
+    if (displayIndex >= 0) {
+        if (!series_ || displayIndex >= series_->size()) return nullptr;
+        return &series_->at(displayIndex);
+    }
+    const int derivedIndex = pat::SeriesProcessing::DerivedStorageIndex(displayIndex);
+    if (!derivedSeries_ || derivedIndex < 0 || derivedIndex >= derivedSeries_->size()) return nullptr;
+    return &derivedSeries_->at(derivedIndex);
+}
+
+pat::DisplayTransform ChartArea::ResolveTransform(int displayIndex) const {
+    return transforms_.value(displayIndex, pat::DisplayTransform{});
+}
+
+QVector<QPointF> ChartArea::ApplyTransform(const QVector<QPointF>& samples,
+                                           const pat::DisplayTransform& transform) const {
+    if (transform.IsIdentity()) return samples;
+    QVector<QPointF> transformed;
+    transformed.reserve(samples.size());
+    for (const auto& point : samples) {
+        transformed.append(QPointF(point.x(), transform.Apply(point.y())));
+    }
+    return transformed;
 }
 
 void ChartArea::UpdateChartHeights() {

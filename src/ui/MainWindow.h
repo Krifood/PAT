@@ -3,6 +3,7 @@
 #include "core/DataSession.h"
 #include "core/FormatDocument.h"
 #include "core/LiveDataSession.h"
+#include "core/SeriesProcessing.h"
 #include "ui/DisplayGroupManager.h"
 #include "ui/SignalTreeController.h"
 #ifdef PAT_ENABLE_SERIAL
@@ -65,6 +66,9 @@ private:
     void HandleReorderRequested(int fromIndex, int toIndex);
     void HandleHideSignalsRequested(const QVector<int>& indices);
     void HandleSplitRequested(const QVector<int>& indices);
+    void ShowSignalTransformDialog(int signalIndex);
+    void ShowDifferenceDialog(const QVector<int>& suggestedSignals);
+    bool CreateDifference(int leftSignal, int rightSignal, QString& errorMessage);
 #ifdef PAT_ENABLE_SERIAL
     void SetupSerialDock();
     void RefreshSerialPorts();
@@ -78,6 +82,7 @@ private:
     pat::DataSession dataSession_;
     pat::LiveDataSession liveSession_;
     DisplayGroupManager displayGroupManager_;
+    pat::SeriesProcessing seriesProcessing_;
 
     SignalTreeWidget* signalTree_ = nullptr;
     std::unique_ptr<SignalTreeController> signalTreeController_;

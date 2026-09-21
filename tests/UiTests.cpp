@@ -51,7 +51,83 @@ private slots:
     void liveChartsLimitVisibleWork();
     void axisLabelsDistinguishSmallDeltas();
     void trajectoryTabPlotsOfflineCoordinates();
+    void displayProcessingWorksWithLiveMergedCharts();
 };
+
+void UiTests::displayProcessingWorksWithLiveMergedCharts() {
+    MainWindow window;
+    QString error;
+    const QString root = QString::fromUtf8(PAT_SOURCE_DIR);
+    QVERIFY2(window.formatDocument_.LoadFromFile(
+                 root + QStringLiteral("/samples/cp01_b3_navigation.json"), error),
+             qPrintable(error));
+    window.BuildSignalTree();
+    window.liveSession_.Reset(window.formatDocument_.Format());
+    window.liveMode_ = true;
+    window.signalTreeController_->SetSignalsChecked({0, 1}, true);
+    window.displayGroupManager_.MergeSignals({0, 1}, window.formatDocument_.Format(), error);
+    window.seriesProcessing_.SetTransform(0, {2.0, 10.0});
+    QVERIFY2(window.CreateDifference(0, 1, error), qPrintable(error));
+
+    QVector<double> values(
+        static_cast<qsizetype>(window.formatDocument_.Format().signalFormats.size()), 0.0);
+    values[0] = 3.0;
+    values[1] = 1.0;
+    QVERIFY(window.liveSession_.Append(0, values));
+    window.seriesProcessing_.AppendLive(0, values);
+    values[0] = 5.0;
+    values[1] = 2.0;
+    QVERIFY(window.liveSession_.Append(1, values));
+    window.seriesProcessing_.AppendLive(1, values);
+    window.liveSession_.UpdateStatistics();
+    window.UpdateCharts();
+    window.show();
+
+    auto views = window.chartArea_->findChildren<SignalChartView*>();
+    QCOMPARE(views.size(), 2);
+    SignalChartView* merged = nullptr;
+    SignalChartView* difference = nullptr;
+    for (auto* view : views) {
+        if (view->SeriesIndices() == QVector<int>({0, 1})) merged = view;
+        if (view->SeriesIndices() == QVector<int>({-1})) difference = view;
+    }
+    QVERIFY(merged);
+    QVERIFY(difference);
+    const auto mergedLines = merged->chart()->series();
+    QCOMPARE(mergedLines.size(), 2);
+    auto* transformed = qobject_cast<QLineSeries*>(mergedLines[0]);
+    auto* unchanged = qobject_cast<QLineSeries*>(mergedLines[1]);
+    QVERIFY(transformed);
+    QVERIFY(unchanged);
+    QCOMPARE(transformed->points(), (QList<QPointF>{{0, 16}, {1, 20}}));
+    QCOMPARE(unchanged->points(), (QList<QPointF>{{0, 1}, {1, 2}}));
+    QVERIFY(transformed->name().contains(QStringLiteral("×2")));
+
+    auto* differenceLine = qobject_cast<QLineSeries*>(difference->chart()->series().first());
+    QVERIFY(differenceLine);
+    QCOMPARE(differenceLine->points(), (QList<QPointF>{{0, 2}, {1, 3}}));
+    QVERIFY(differenceLine->name().contains(QStringLiteral("滚转角 - 俯仰角")));
+
+    merged->SetCursorX(1.0);
+    bool sawTransformedCursor = false;
+    for (auto* item : merged->chart()->scene()->items()) {
+        auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item);
+        if (label && label->text().contains(QStringLiteral("val=20.0000"))) {
+            sawTransformedCursor = true;
+        }
+    }
+    QVERIFY(sawTransformedCursor);
+
+    values[0] = 9.0;
+    values[1] = 4.0;
+    QVERIFY(window.liveSession_.Append(2, values));
+    window.seriesProcessing_.AppendLive(2, values);
+    window.liveSession_.UpdateStatistics();
+    window.chartArea_->SetStatistics(window.liveSession_.Statistics());
+    window.chartArea_->RefreshLiveData(true);
+    QCOMPARE(transformed->points().last(), QPointF(2, 28));
+    QCOMPARE(differenceLine->points().last(), QPointF(2, 5));
+}
 
 void UiTests::trajectoryTabPlotsOfflineCoordinates() {
     MainWindow window;

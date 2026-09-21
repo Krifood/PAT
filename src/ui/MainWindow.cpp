@@ -5,6 +5,7 @@
 #include "ui/FormatEditorDialog.h"
 #include "ui/SignalTreeController.h"
 #include "ui/SignalTreeWidget.h"
+#include "ui/SignalProcessingDialogs.h"
 #include "ui/TrajectoryView.h"
 #include "core/FrameExporter.h"
 #include "core/InputReader.h"
@@ -196,6 +197,7 @@ void MainWindow::SetupUi() {
     connect(chartArea_, &ChartArea::ReorderRequested, this, &MainWindow::HandleReorderRequested);
     connect(chartArea_, &ChartArea::HideSignalsRequested, this, &MainWindow::HandleHideSignalsRequested);
     connect(chartArea_, &ChartArea::SplitRequested, this, &MainWindow::HandleSplitRequested);
+    connect(chartArea_, &ChartArea::TransformRequested, this, &MainWindow::ShowSignalTransformDialog);
     trajectoryView_ = new TrajectoryView(dataViewTabs_);
     dataViewTabs_->addTab(chartArea_, tr("时序曲线"));
     dataViewTabs_->addTab(trajectoryView_, tr("二维轨迹"));
@@ -343,6 +345,7 @@ void MainWindow::OpenDataFile() {
         QMessageBox::warning(this, tr("解析失败"), error);
         return;
     }
+    seriesProcessing_.RebuildDerived(dataSession_.Series());
 
     liveMode_ = false;
     if (trajectoryView_) trajectoryView_->SetPaused(false);
@@ -667,7 +670,16 @@ void MainWindow::UpdateCharts() {
 
     const QVector<int> checked = signalTreeController_->CollectCheckedSignalIndices();
     displayGroupManager_.UpdateGroups(checked, formatDocument_.Format());
-    chartArea_->SetDisplayGroups(displayGroupManager_.Groups());
+    QVector<DisplayGroup> groups = displayGroupManager_.Groups();
+    const auto& differences = seriesProcessing_.Differences();
+    for (int i = 0; i < differences.size(); ++i) {
+        const auto& difference = differences[i];
+        groups.append({{pat::SeriesProcessing::DerivedDisplayIndex(i)},
+                       difference.title, difference.unit, false});
+    }
+    chartArea_->SetDisplayGroups(groups);
+    chartArea_->SetDerivedSeries(&seriesProcessing_.DerivedSeries());
+    chartArea_->SetDisplayTransforms(seriesProcessing_.Transforms());
     if (liveMode_) {
         chartArea_->SetStatistics(liveSession_.Statistics());
         chartArea_->SetSeries(&liveSession_.SeriesData());
@@ -692,6 +704,7 @@ void MainWindow::UpdateStatus(const QString& text) {
 void MainWindow::BuildSignalTree() {
     if (!signalTreeController_) return;
     signalTreeController_->Build(formatDocument_.Format());
+    seriesProcessing_.Reset(formatDocument_.Format());
     if (trajectoryView_) {
         trajectoryView_->SetPaused(false);
         trajectoryView_->ConfigureSignals(formatDocument_.Format());
@@ -769,11 +782,33 @@ void MainWindow::ShowSignalTreeMenu(const QPoint& pos) {
         hasActions = true;
     }
 
+    if (targetIndices.size() == 1) {
+        if (hasActions) menu.addSeparator();
+        const int signalIndex = targetIndices.first();
+        menu.addAction(tr("显示比例与平移..."), this, [this, signalIndex]() {
+            ShowSignalTransformDialog(signalIndex);
+        });
+        if (!seriesProcessing_.Transform(signalIndex).IsIdentity()) {
+            menu.addAction(tr("重置显示变换"), this, [this, signalIndex]() {
+                seriesProcessing_.ResetTransform(signalIndex);
+                UpdateCharts();
+            });
+        }
+        hasActions = true;
+    } else if (targetIndices.size() == 2) {
+        if (hasActions) menu.addSeparator();
+        menu.addAction(tr("创建差值图..."), this, [this, targetIndices]() {
+            ShowDifferenceDialog(targetIndices);
+        });
+        hasActions = true;
+    }
+
     if (hasActions) menu.addSeparator();
     menu.addAction(tr("取消所有展示信号"), this, [this]() {
         if (!signalTreeController_) return;
         signalTreeController_->SetAllSignalsChecked(false);
         displayGroupManager_.Clear();
+        seriesProcessing_.ClearDerivedSignals();
         UpdateCharts();
     });
 
@@ -807,14 +842,57 @@ void MainWindow::HandleReorderRequested(int fromIndex, int toIndex) {
 
 void MainWindow::HandleHideSignalsRequested(const QVector<int>& indices) {
     if (!signalTreeController_) return;
-    signalTreeController_->SetSignalsChecked(indices, false);
-    displayGroupManager_.RemoveSignals(indices);
+    QVector<int> rawSignals;
+    bool removedDerived = false;
+    for (int index : indices) {
+        if (index < 0) {
+            seriesProcessing_.RemoveDerivedSignal(index);
+            removedDerived = true;
+        } else {
+            rawSignals.append(index);
+        }
+    }
+    if (removedDerived) {
+        seriesProcessing_.RebuildDerived(liveMode_ ? liveSession_.SeriesData() : dataSession_.Series());
+    }
+    signalTreeController_->SetSignalsChecked(rawSignals, false);
+    displayGroupManager_.RemoveSignals(rawSignals);
     UpdateCharts();
 }
 
 void MainWindow::HandleSplitRequested(const QVector<int>& indices) {
     displayGroupManager_.UnmergeSignals(indices);
     UpdateCharts();
+}
+
+void MainWindow::ShowSignalTransformDialog(int signalIndex) {
+    if (!formatDocument_.HasFormat() || signalIndex < 0
+        || signalIndex >= static_cast<int>(formatDocument_.Format().signalFormats.size())) return;
+    const auto& signal = formatDocument_.Format().signalFormats[static_cast<size_t>(signalIndex)];
+    SignalTransformDialog dialog(signal.name, seriesProcessing_.Transform(signalIndex), this);
+    if (dialog.exec() != QDialog::Accepted) return;
+    seriesProcessing_.SetTransform(signalIndex, dialog.Transform());
+    UpdateCharts();
+}
+
+void MainWindow::ShowDifferenceDialog(const QVector<int>& suggestedSignals) {
+    if (!formatDocument_.HasFormat()) return;
+    const int initialLeft = suggestedSignals.value(0, 0);
+    const int initialRight = suggestedSignals.value(1,
+        formatDocument_.Format().signalFormats.size() > 1 ? 1 : 0);
+    DifferenceDialog dialog(formatDocument_.Format(), initialLeft, initialRight, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+    QString error;
+    if (!CreateDifference(dialog.LeftSignal(), dialog.RightSignal(), error)) {
+        QMessageBox::information(this, tr("无法创建差值图"), error);
+    }
+}
+
+bool MainWindow::CreateDifference(int leftSignal, int rightSignal, QString& errorMessage) {
+    if (!seriesProcessing_.AddDifference(leftSignal, rightSignal, errorMessage)) return false;
+    seriesProcessing_.RebuildDerived(liveMode_ ? liveSession_.SeriesData() : dataSession_.Series());
+    UpdateCharts();
+    return true;
 }
 
 #ifdef PAT_ENABLE_SERIAL
@@ -970,6 +1048,7 @@ void MainWindow::StartSerialCapture() {
     config.logDirectory = logDirectoryEdit_->text().trimmed();
 
     liveSession_.Reset(formatDocument_.Format());
+    seriesProcessing_.ClearDerivedSamples();
     liveMode_ = true;
     displayPaused_ = false;
     if (trajectoryView_) trajectoryView_->SetPaused(false);
@@ -1051,6 +1130,7 @@ void MainWindow::HandleSerialSamples(const QVector<pat::LiveSample>& samples, qu
     if (!liveMode_ || samples.isEmpty()) return;
     for (const auto& sample : samples) {
         liveSession_.Append(sample.index, sample.values);
+        seriesProcessing_.AppendLive(sample.index, sample.values);
         if (liveFrameTable_) {
             if (liveFrameTable_->rowCount() >= 100) liveFrameTable_->removeRow(0);
             const int row = liveFrameTable_->rowCount();

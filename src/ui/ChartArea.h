@@ -5,6 +5,7 @@
 #include "ui/SignalChartView.h"
 
 #include <QWidget>
+#include <QHash>
 
 class QScrollArea;
 class QSplitter;
@@ -17,6 +18,8 @@ public:
     explicit ChartArea(QWidget* parent = nullptr);
 
     void SetSeries(const QVector<pat::Series>* series);
+    void SetDerivedSeries(const QVector<pat::Series>* series);
+    void SetDisplayTransforms(const QHash<int, pat::DisplayTransform>& transforms);
     void SetDisplayGroups(const QVector<DisplayGroup>& groups);
     void SetStatistics(const pat::SeriesStatistics& stats);
     void SetTimeUnit(const QString& unit);
@@ -33,6 +36,7 @@ signals:
     void ReorderRequested(int fromIndex, int toIndex);
     void HideSignalsRequested(const QVector<int>& indices);
     void SplitRequested(const QVector<int>& indices);
+    void TransformRequested(int signalIndex);
 
 protected:
     bool eventFilter(QObject* obj, QEvent* event) override;
@@ -63,6 +67,10 @@ private:
     void UpdateChartHeights();
     void UpdateRangeContext();
     void AlignYAxisMargins();
+    const pat::Series* ResolveSeries(int displayIndex) const;
+    pat::DisplayTransform ResolveTransform(int displayIndex) const;
+    QVector<QPointF> ApplyTransform(const QVector<QPointF>& samples,
+                                   const pat::DisplayTransform& transform) const;
 
     QScrollArea* scrollArea_ = nullptr;
     QWidget* container_ = nullptr;
@@ -70,6 +78,8 @@ private:
     QVector<SignalChartView*> charts_;
 
     const QVector<pat::Series>* series_ = nullptr;
+    const QVector<pat::Series>* derivedSeries_ = nullptr;
+    QHash<int, pat::DisplayTransform> transforms_;
     QVector<DisplayGroup> groups_;
     pat::SeriesStatistics stats_;
     bool hasStats_ = false;

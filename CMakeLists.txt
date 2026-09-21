@@ -39,6 +39,7 @@ add_library(pat_core
   src/core/RecordDecoder.cpp
   src/core/RecordParser.cpp
   src/core/SerialFrameAssembler.cpp
+  src/core/SeriesProcessing.cpp
   src/core/TrajectoryData.cpp
 )
 
@@ -70,6 +71,7 @@ if(PAT_BUILD_GUI)
     src/ui/SignalChartView.cpp
     src/ui/SignalTreeController.cpp
     src/ui/SignalTreeWidget.cpp
+    src/ui/SignalProcessingDialogs.cpp
     src/ui/TrajectoryView.cpp
     src/ui/app_resources.qrc
   )

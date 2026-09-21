@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "core/RecordParser.h"
+#include "core/SeriesProcessing.h"
 
 #include <QtCharts/QChartView>
 
@@ -60,6 +61,8 @@ public:
                    int viewIndex);
 
     void SetSeriesSamples(const QVector<QVector<QPointF>>& seriesSamples);
+    void SetDisplaySources(const QVector<const pat::Series*>& sources,
+                           const QVector<pat::DisplayTransform>& transforms);
     void SetRangeContext(const ChartRangeContext& context);
     void SetXAxisRange(double minX, double maxX);
     void SetYAxisRange(double minY, double maxY);
@@ -84,6 +87,7 @@ signals:
     void ReorderRequested(int fromIndex, int toIndex);
     void HideSignalsRequested(const QVector<int>& indices);
     void SplitRequested(const QVector<int>& indices);
+    void TransformRequested(int signalIndex);
 
 protected:
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -122,6 +126,8 @@ private:
     QVector<QLineSeries*> series_;
     QVector<int> seriesIndices_;
     const QVector<pat::Series>* sourceSeries_ = nullptr;
+    QVector<const pat::Series*> displaySources_;
+    QVector<pat::DisplayTransform> displayTransforms_;
 
     QGraphicsLineItem* crosshair_ = nullptr;
     QVector<QGraphicsSimpleTextItem*> valueLabels_;

@@ -89,6 +89,14 @@ void SignalChartView::Configure(const QString& title,
                                int viewIndex) {
     seriesIndices_ = seriesIndices;
     sourceSeries_ = sourceSeries;
+    displaySources_.clear();
+    displayTransforms_.clear();
+    for (int dataIndex : seriesIndices) {
+        displaySources_.append(sourceSeries_ && dataIndex >= 0 && dataIndex < sourceSeries_->size()
+                                   ? &sourceSeries_->at(dataIndex)
+                                   : nullptr);
+        displayTransforms_.append(pat::DisplayTransform{});
+    }
     viewIndex_ = viewIndex;
 
     auto* chart = new QChart();
@@ -237,6 +245,38 @@ void SignalChartView::SetSeriesSamples(const QVector<QVector<QPointF>>& seriesSa
         if (series_[i]) {
             series_[i]->replace(seriesSamples[i]);
         }
+    }
+}
+
+void SignalChartView::SetDisplaySources(const QVector<const pat::Series*>& sources,
+                                        const QVector<pat::DisplayTransform>& transforms) {
+    displaySources_ = sources;
+    displayTransforms_ = transforms;
+    while (displayTransforms_.size() < displaySources_.size()) {
+        displayTransforms_.append(pat::DisplayTransform{});
+    }
+    for (int i = 0; i < series_.size() && i < displaySources_.size(); ++i) {
+        const auto* source = displaySources_[i];
+        if (!series_[i] || !source) continue;
+        QString label = source->unit.isEmpty() ? source->name
+            : tr("%1 (%2)").arg(source->name, source->unit);
+        const auto transform = displayTransforms_.value(i);
+        if (!transform.IsIdentity()) {
+            label += tr(" [×%1, 平移 %2]")
+                         .arg(transform.scale, 0, 'g', 8)
+                         .arg(transform.offset, 0, 'g', 8);
+        }
+        series_[i]->setName(label);
+    }
+    if (displaySources_.size() == 1 && displaySources_.first()
+        && !displayTransforms_.value(0).IsIdentity()) {
+        const auto transform = displayTransforms_.value(0);
+        headerDescText_ = tr("%1  显示值=解析值×%2%3%4")
+                              .arg(displaySources_.first()->unit)
+                              .arg(transform.scale, 0, 'g', 8)
+                              .arg(transform.offset >= 0.0 ? QStringLiteral("+") : QString())
+                              .arg(transform.offset, 0, 'g', 8);
+        UpdateHeaderLayout();
     }
 }
 
@@ -605,7 +645,7 @@ int SignalChartView::GuideAt(const QPoint& viewPos) const {
 }
 
 QString SignalChartView::GuideTooltip(int index, int maxEntries) const {
-    if (index < 0 || index >= guides_.size() || !sourceSeries_) return {};
+    if (index < 0 || index >= guides_.size()) return {};
     const GuideLine guide = guides_[index].guide;
     QStringList rows;
     rows.append(guide.orientation == GuideOrientation::Horizontal
@@ -622,9 +662,11 @@ QString SignalChartView::GuideTooltip(int index, int maxEntries) const {
                                   : tr("%1～%2").arg(QString::number(x, 'g', 12), QString::number(endX, 'g', 12));
         rows.append(tr("%1：key=%2  val=%3").arg(name, xText, QString::number(y, 'g', 12)));
     };
-    for (int idx : seriesIndices_) {
-        if (idx < 0 || idx >= sourceSeries_->size()) continue;
-        const auto& data = sourceSeries_->at(idx);
+    for (int seriesIndex = 0; seriesIndex < displaySources_.size(); ++seriesIndex) {
+        const auto* dataPtr = displaySources_[seriesIndex];
+        if (!dataPtr) continue;
+        const auto& data = *dataPtr;
+        const auto transform = displayTransforms_.value(seriesIndex);
         const QString label = data.unit.isEmpty() ? data.name : tr("%1 (%2)").arg(data.name, data.unit);
         const auto& samples = data.samples;
         if (samples.isEmpty()) continue;
@@ -642,13 +684,13 @@ QString SignalChartView::GuideTooltip(int index, int maxEntries) const {
                         const double dx = p1.x() - p0.x();
                         y = dx == 0.0 ? p1.y() : p0.y() + (p1.y() - p0.y()) * (x - p0.x()) / dx;
                     }
-                    appendCrossing(label, x, y);
+                    appendCrossing(label, x, transform.Apply(y));
                 }
             }
         } else {
             const double y = guide.value;
             if (samples.size() == 1 && samples.first().x() >= visibleMinX && samples.first().x() <= visibleMaxX
-                && samples.first().y() == y) {
+                && transform.Apply(samples.first().y()) == y) {
                 appendCrossing(label, samples.first().x(), y);
             }
             const auto firstVisible = std::lower_bound(samples.begin(), samples.end(), visibleMinX,
@@ -663,8 +705,10 @@ QString SignalChartView::GuideTooltip(int index, int maxEntries) const {
             const qsizetype end = std::min<qsizetype>(samples.size() - 1, afterVisible - samples.begin());
             double lastX = std::numeric_limits<double>::quiet_NaN();
             for (qsizetype i = start; i <= end; ++i) {
-                const QPointF p0 = samples[i - 1];
-                const QPointF p1 = samples[i];
+                QPointF p0 = samples[i - 1];
+                QPointF p1 = samples[i];
+                p0.setY(transform.Apply(p0.y()));
+                p1.setY(transform.Apply(p1.y()));
                 if (p1.x() < visibleMinX || p0.x() > visibleMaxX) continue;
                 if (y < std::min(p0.y(), p1.y()) || y > std::max(p0.y(), p1.y())) continue;
                 const double dy = p1.y() - p0.y();
@@ -723,6 +767,23 @@ void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
         menu.addAction(tr("打散组合画布"), this, [this]() {
             emit SplitRequested(seriesIndices_);
         });
+    }
+    QVector<int> transformable;
+    for (int signalIndex : seriesIndices_) {
+        if (signalIndex >= 0) transformable.append(signalIndex);
+    }
+    if (!transformable.isEmpty()) {
+        auto* transformMenu = menu.addMenu(tr("显示比例与平移"));
+        for (int signalIndex : transformable) {
+            QString label = tr("信号 %1").arg(signalIndex);
+            const int position = seriesIndices_.indexOf(signalIndex);
+            if (position >= 0 && position < displaySources_.size() && displaySources_[position]) {
+                label = displaySources_[position]->name;
+            }
+            transformMenu->addAction(label, this, [this, signalIndex]() {
+                emit TransformRequested(signalIndex);
+            });
+        }
     }
     if (!seriesIndices_.isEmpty()) {
         menu.addAction(tr("取消显示本图信号"), this, [this]() {
@@ -930,7 +991,7 @@ void SignalChartView::StartReorderDrag() {
 }
 
 void SignalChartView::UpdateCursor(double cursorX) {
-    if (!chart() || series_.isEmpty() || !sourceSeries_) return;
+    if (!chart() || series_.isEmpty()) return;
 
     auto* axisY = qobject_cast<QValueAxis*>(chart()->axes(Qt::Vertical, series_.first()).value(0));
     if (!axisY) return;
@@ -944,10 +1005,9 @@ void SignalChartView::UpdateCursor(double cursorX) {
         crosshair_->setVisible(true);
     }
 
-    for (int i = 0; i < valueLabels_.size() && i < seriesIndices_.size(); ++i) {
-        const int idx = seriesIndices_[i];
-        if (idx < 0 || idx >= sourceSeries_->size()) continue;
-        const auto& seriesData = sourceSeries_->at(idx);
+    for (int i = 0; i < valueLabels_.size() && i < displaySources_.size(); ++i) {
+        if (!displaySources_[i]) continue;
+        const auto& seriesData = *displaySources_[i];
         if (seriesData.samples.isEmpty()) continue;
 
         const double seriesMinX = seriesData.samples.first().x();
@@ -971,6 +1031,7 @@ void SignalChartView::UpdateCursor(double cursorX) {
             value = dx == 0.0 ? p1.y() : (p0.y() + (p1.y() - p0.y()) * (clampedX - p0.x()) / dx);
         }
 
+        value = displayTransforms_.value(i).Apply(value);
         auto* label = valueLabels_[i];
         if (!label) continue;
         label->setText(QStringLiteral("key=%1\nval=%2").arg(cursorX, 0, 'f', 2).arg(value, 0, 'f', 4));
