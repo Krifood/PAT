@@ -1,6 +1,7 @@
 ﻿#include "ui/MainWindow.h"
 
 #include "ui/ChartArea.h"
+#include "ui/AboutDialog.h"
 #include "ui/FormatEditorDialog.h"
 #include "ui/SignalTreeController.h"
 #include "ui/SignalTreeWidget.h"
@@ -238,7 +239,26 @@ void MainWindow::SetupUi() {
 #ifdef PAT_ENABLE_SERIAL
     SetupSerialDock();
 #endif
+    auto* helpMenu = menuBar()->addMenu(tr("帮助"));
+    helpMenu->addAction(tr("版本信息..."), this, &MainWindow::ShowVersionInfo);
+    helpMenu->addAction(tr("更新日志..."), this, &MainWindow::ShowChangelog);
     statusBar()->showMessage(tr("就绪"));
+}
+
+void MainWindow::ShowVersionInfo() {
+    if (!infoDialog_) infoDialog_ = new AboutDialog(this);
+    infoDialog_->SelectPage(AboutDialog::Page::Version);
+    infoDialog_->show();
+    infoDialog_->raise();
+    infoDialog_->activateWindow();
+}
+
+void MainWindow::ShowChangelog() {
+    if (!infoDialog_) infoDialog_ = new AboutDialog(this);
+    infoDialog_->SelectPage(AboutDialog::Page::Changelog);
+    infoDialog_->show();
+    infoDialog_->raise();
+    infoDialog_->activateWindow();
 }
 
 void MainWindow::OpenFormatFile() {

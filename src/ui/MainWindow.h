@@ -17,6 +17,7 @@ class QLabel;
 class SignalTreeWidget;
 class SignalTreeController;
 class ChartArea;
+class AboutDialog;
 class QTreeWidgetItem;
 #ifdef PAT_ENABLE_SERIAL
 class QComboBox;
@@ -47,6 +48,8 @@ private slots:
     void SaveFormatFile();
     void SaveFormatFileAs();
     void SetMaxVisiblePoints();
+    void ShowVersionInfo();
+    void ShowChangelog();
 
 private:
     void SetupUi();
@@ -77,6 +80,7 @@ private:
     SignalTreeWidget* signalTree_ = nullptr;
     std::unique_ptr<SignalTreeController> signalTreeController_;
     ChartArea* chartArea_ = nullptr;
+    AboutDialog* infoDialog_ = nullptr;
     QLabel* statusLabel_ = nullptr;
 
     int maxVisiblePoints_ = 5000;

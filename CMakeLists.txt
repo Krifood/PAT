@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ParamAnalysisTool
-  VERSION 0.1
+  VERSION 0.1.0
   LANGUAGES CXX
 )
 
@@ -61,6 +61,7 @@ endif()
 
 if(PAT_BUILD_GUI)
   set(PAT_UI_SOURCES
+    src/ui/AboutDialog.cpp
     src/ui/MainWindow.cpp
     src/ui/ChartArea.cpp
     src/ui/DisplayGroupManager.cpp
@@ -68,11 +69,13 @@ if(PAT_BUILD_GUI)
     src/ui/SignalChartView.cpp
     src/ui/SignalTreeController.cpp
     src/ui/SignalTreeWidget.cpp
+    src/ui/app_resources.qrc
   )
   add_executable(pat_app src/ui/main.cpp ${PAT_UI_SOURCES})
   target_include_directories(pat_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(pat_app PRIVATE pat_core Qt6::Widgets Qt6::Charts)
-  target_compile_definitions(pat_app PRIVATE PAT_ENABLE_QT_CHARTS=1)
+  target_compile_definitions(pat_app PRIVATE PAT_ENABLE_QT_CHARTS=1
+    PAT_APP_VERSION="${PROJECT_VERSION}")
 endif()
 
 if(PAT_ENABLE_SERIAL)
@@ -107,6 +110,7 @@ if(PAT_BUILD_TESTS)
       target_include_directories(pat_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
       target_link_libraries(pat_ui_tests PRIVATE pat_serial Qt6::Widgets Qt6::Charts Qt6::Test)
       target_compile_definitions(pat_ui_tests PRIVATE PAT_ENABLE_QT_CHARTS=1 PAT_ENABLE_SERIAL=1
+        PAT_APP_VERSION="${PROJECT_VERSION}"
         PAT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
       if(NOT APPLE)
         target_link_libraries(pat_ui_tests PRIVATE util)
@@ -135,6 +139,9 @@ if(PAT_BUILD_GUI)
     get_filename_component(PAT_QT_LIB_DIR "${Qt6_DIR}/../.." ABSOLUTE)
     set_target_properties(pat_app PROPERTIES
       MACOSX_BUNDLE TRUE
+      MACOSX_BUNDLE_BUNDLE_NAME "PAT"
+      MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+      MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
       INSTALL_RPATH "${PAT_QT_LIB_DIR}"
     )
     install(TARGETS pat_app BUNDLE DESTINATION .)

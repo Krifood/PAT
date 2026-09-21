@@ -1,4 +1,5 @@
 #include "ui/MainWindow.h"
+#include "ui/AboutDialog.h"
 #include "ui/ChartArea.h"
 #include "ui/SignalChartView.h"
 
@@ -18,7 +19,9 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSplitter>
+#include <QTabWidget>
 #include <QTemporaryDir>
+#include <QTextBrowser>
 #include <QTimer>
 #include <QToolTip>
 #include <QtCharts/QChart>
@@ -39,6 +42,7 @@ class UiTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void informationMenuShowsVersionAndBundledChangelog();
     void openFormatMenuLoadsFile();
     void liveChartsAppearBeforeFirstFrame();
     void chartGroupsGuidesAndAxes();
@@ -46,6 +50,45 @@ private slots:
     void liveChartsLimitVisibleWork();
     void axisLabelsDistinguishSmallDeltas();
 };
+
+void UiTests::informationMenuShowsVersionAndBundledChangelog() {
+    MainWindow window;
+    window.show();
+
+    QMenu* helpMenu = nullptr;
+    for (auto* action : window.menuBar()->actions()) {
+        if (action->text() == QStringLiteral("帮助")) helpMenu = action->menu();
+    }
+    QVERIFY(helpMenu);
+
+    QAction* versionAction = nullptr;
+    QAction* changelogAction = nullptr;
+    for (auto* action : helpMenu->actions()) {
+        if (action->text().startsWith(QStringLiteral("版本信息"))) versionAction = action;
+        if (action->text().startsWith(QStringLiteral("更新日志"))) changelogAction = action;
+    }
+    QVERIFY(versionAction);
+    QVERIFY(changelogAction);
+
+    versionAction->trigger();
+    auto* dialog = window.findChild<AboutDialog*>(QStringLiteral("applicationInfoDialog"));
+    QVERIFY(dialog);
+    QTRY_VERIFY(dialog->isVisible());
+    auto* tabs = dialog->findChild<QTabWidget*>(QStringLiteral("infoTabs"));
+    QVERIFY(tabs);
+    QCOMPARE(tabs->currentIndex(), 0);
+    auto* version = dialog->findChild<QLabel*>(QStringLiteral("versionValue"));
+    QVERIFY(version);
+    QCOMPARE(version->text(), QStringLiteral(PAT_APP_VERSION));
+
+    changelogAction->trigger();
+    QCOMPARE(window.findChildren<AboutDialog*>().size(), 1);
+    QCOMPARE(tabs->currentIndex(), 1);
+    auto* changelog = dialog->findChild<QTextBrowser*>(QStringLiteral("changelogView"));
+    QVERIFY(changelog);
+    QVERIFY(changelog->toPlainText().contains(QStringLiteral("PAT 更新日志")));
+    QVERIFY(changelog->toPlainText().contains(QStringLiteral("2026-09-21")));
+}
 
 void UiTests::openFormatMenuLoadsFile() {
     MainWindow window;
