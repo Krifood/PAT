@@ -69,7 +69,7 @@
 
 | 字段 | 如何填写 | 当前规则 |
 | --- | --- | --- |
-| `schema_version` | 新串口模板填数字 `2` | 支持 1、2；有 `framing` 时必须为 2 |
+| `schema_version` | 新串口模板填数字 `2` | 固定记录/串口支持 1、2；索引混合日志使用 3，见第 6 节 |
 | `template_id` | 稳定且能区分版本的非空字符串，如 `sensor_v1` | 有 `framing` 时必填；修改字段含义后建议改版本后缀 |
 | `record_size` | 完整帧的**总字节数**，包含帧头和校验字节 | 正整数；所有信号必须落在 `[0, record_size)` 内 |
 | `endianness` | 多字节字段共同的 `little` 或 `big` | 默认 `little`；单字节不受影响；当前没有单字段覆盖 |
@@ -105,6 +105,7 @@
 | `int8` / `uint8` | 1 | 有符号 / 无符号单字节整数 |
 | `int16` / `uint16` | 2 | 有符号 / 无符号双字节整数 |
 | `int32` / `uint32` | 4 | 有符号 / 无符号四字节整数 |
+| `int64` / `uint64` | 8 | 64 位整数；常用于设备计数或时间戳，超过双精度整数精确范围时曲线显示会损失最低位 |
 | `float32` | 4 | IEEE 754 单精度浮点数 |
 | `float64` | 8 | IEEE 754 双精度浮点数 |
 
@@ -129,3 +130,53 @@
 5. 先把同一帧保存为 `.hex` 或 `.bin` 做离线解析，再连接设备采集。`.hex/.txt/.log/.csv` 按十六进制文本读取；`.bin/.dat` 按原始字节读取。本程序生成的**成功解析 CSV 是工程值表，不是原始帧回放文件**，回放请用原始 `.bin`。采集时检查最近帧、成功解析 `.csv` 和原始 `.bin`；有原始字节但无成功帧时，依次核对帧头、长度、校验、串口参数和接线。
 
 已有 86 字节、多字段、位段和校验的实际填写例子见 [CP01-B3 模板说明](CP01-B3导航模板说明.md)。该文件中的合成帧可用来练习核对，但不是设备抓包。
+
+## 6. schema 3 索引混合日志 JSON
+
+“文件 → 导入 VMC 混合日志...”会自动生成 schema 3 JSON。它与 `.patbin` 成对使用，不是串口分帧模板。外层至少包含：
+
+```json
+{
+  "schema_version": 3,
+  "template_id": "vmc_unified_xxx",
+  "storage": {
+    "kind": "indexed_stream_chunks",
+    "version": 1,
+    "layout_sha256": "64位十六进制结构指纹",
+    "data_file": "同目录数据文件.patbin"
+  },
+  "timestamp": {
+    "value_type": "uint64",
+    "unit": "tick",
+    "scale": null
+  },
+  "streams": [
+    {
+      "stream_id": 123,
+      "source_message_id": "0x00E7",
+      "name": "ah_nav",
+      "payload_length": 139,
+      "endianness": "big",
+      "signals": [
+        {
+          "name": "cur_pos_x",
+          "source_name": "cur_pos_x",
+          "byte_offset": 0,
+          "value_type": "float32",
+          "source_type": "r32",
+          "scale": 1.0,
+          "bias": 0.0,
+          "unit": "",
+          "description": "",
+          "group": "ah_nav [0x00E7]"
+        }
+      ]
+    }
+  ],
+  "source_segments": []
+}
+```
+
+可以人工补充或修正 `signals[].scale`、`bias`、`unit`、`description` 和 `group`；确认设备时间基准后，可把 `timestamp.unit` 改为真实单位，并把 `timestamp.scale` 从 `null` 改为换算到该单位的正数。`storage.data_file` 可在成对文件改名后更新为新的相对文件名。
+
+不要人工修改 `storage.kind/version/layout_sha256`、`stream_id`、`payload_length`、`endianness`、`byte_offset`、`value_type` 或信号顺序，除非同时重新生成 BIN；这些字段参与结构校验或原始负载解码，单独修改会被拒绝或得到错误数值。`source_name`、`source_type`、`source_message_id`、`source_control`、`source_format` 和 `source_segments` 用于追溯源日志，建议保持原样。若其他设备也采用自描述、多消息 ID、不同负载长度的日志，应新增相应源读取器并复用统一写入器，不应把所有消息补齐成一条超宽固定记录。
