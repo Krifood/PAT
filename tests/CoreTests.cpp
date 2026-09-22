@@ -67,6 +67,7 @@ void CoreTests::displayTransformAndDifferenceSeries() {
     QVERIFY(!processing.Transform(0).IsIdentity());
 
     QVERIFY2(processing.AddDifference(0, 1, error), qPrintable(error));
+    QVERIFY2(processing.AddSum(0, 1, error), qPrintable(error));
     QVERIFY(!processing.AddDifference(0, 2, error));
     QVERIFY(error.contains(QStringLiteral("单位不同")));
 
@@ -74,9 +75,12 @@ void CoreTests::displayTransformAndDifferenceSeries() {
     source[0].samples = {{0, 10}, {1, 15}, {2, 18}};
     source[1].samples = {{0, 3}, {2, 8}};
     processing.RebuildDerived(source);
-    QCOMPARE(processing.DerivedSeries().size(), 1);
+    QCOMPARE(processing.DerivedSeries().size(), 2);
     QCOMPARE(processing.DerivedSeries()[0].samples,
              (QVector<QPointF>{{0, 7}, {2, 10}}));
+    QCOMPARE(processing.DerivedSeries()[1].samples,
+             (QVector<QPointF>{{0, 13}, {2, 26}}));
+    QVERIFY(processing.DerivedDefinitions()[1].title.contains(QStringLiteral("来源")));
 
     processing.ClearDerivedSamples();
     processing.AppendLive(7, {20, 6, 0}, 2);
@@ -84,12 +88,14 @@ void CoreTests::displayTransformAndDifferenceSeries() {
     processing.AppendLive(9, {30, 8, 0}, 2);
     QCOMPARE(processing.DerivedSeries()[0].samples,
              (QVector<QPointF>{{8, 19}, {9, 22}}));
+    QCOMPARE(processing.DerivedSeries()[1].samples,
+             (QVector<QPointF>{{8, 29}, {9, 38}}));
     processing.ResetTransform(0);
     QVERIFY(processing.Transform(0).IsIdentity());
 }
 
 void CoreTests::trajectoryPairsByRecordOrSampleIndex() {
-    pat::Series longitude, latitude;
+    pat::Series longitude, latitude, altitude;
     longitude.samples = {{0, 116.0}, {1, 116.1}, {2, 116.2}};
     latitude.samples = {{0, 39.0}, {2, 39.2}};
 
@@ -109,6 +115,25 @@ void CoreTests::trajectoryPairsByRecordOrSampleIndex() {
     QCOMPARE(reduced.first(), path.first());
     QCOMPARE(reduced.last(), path.last());
     QVERIFY(reduced.contains(path[50]));
+
+    longitude.samples = {{0, 116.0}, {1, 116.1}, {2, 116.2}, {3, 116.3}};
+    latitude.samples = {{0, 39.0}, {2, 39.2}, {3, 39.3}};
+    altitude.samples = {{0, 100.0}, {1, 101.0}, {2, 102.0}, {3, 200.0}};
+    const auto spatial = pat::PairTrajectorySamples3D(
+        longitude, latitude, altitude, pat::TrajectoryPairing::SampleIndex);
+    QCOMPARE(spatial.size(), 3);
+    QCOMPARE(spatial[1].sampleKey, 2.0);
+    QCOMPARE(spatial[1].z, 102.0);
+    QVector<pat::TrajectoryPoint3D> spatialPath;
+    for (int i = 0; i < 100; ++i) {
+        spatialPath.append({double(i), double(i), double(i % 5), i == 55 ? 999.0 : 0.0});
+    }
+    const auto reduced3D = pat::DecimateTrajectory3D(spatialPath, 26);
+    QVERIFY(reduced3D.size() <= 26);
+    QCOMPARE(reduced3D.first().sampleKey, 0.0);
+    QCOMPARE(reduced3D.last().sampleKey, 99.0);
+    QVERIFY(std::any_of(reduced3D.begin(), reduced3D.end(),
+                        [](const auto& point) { return point.z == 999.0; }));
 }
 
 void CoreTests::jsonGuideExampleDecodes() {

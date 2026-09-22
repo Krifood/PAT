@@ -126,7 +126,7 @@ QString BuildApplicationStyleSheet(const AppTheme& theme) {
         QLabel, QCheckBox, QRadioButton, QGroupBox, QDockWidget { color: @TEXT@; }
         QMenuBar, QMenu { background: @PANEL@; color: @TEXT@; }
         QMenuBar::item:selected, QMenu::item:selected { background: @SELECTION@; }
-        QTreeWidget#signalTree, QTableWidget, QTextBrowser {
+        QTreeWidget#signalTree, QTreeWidget#signalSearchResults, QTableWidget, QTextBrowser {
             background: @INPUT@; color: @TEXT@; alternate-background-color: @ALTERNATE@;
             border: 1px solid @BORDER@; selection-background-color: @SELECTION@;
         }

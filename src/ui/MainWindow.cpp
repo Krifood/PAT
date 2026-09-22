@@ -30,6 +30,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -195,8 +196,34 @@ void MainWindow::SetupUi() {
     signalTree_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(signalTree_, &QTreeWidget::itemChanged, this, &MainWindow::HandleSignalTreeItemChanged);
     connect(signalTree_, &QWidget::customContextMenuRequested, this, &MainWindow::ShowSignalTreeMenu);
+    connect(signalTree_, &SignalTreeWidget::MergeRequested,
+            this, &MainWindow::HandleMergeRequested);
     leftLayout->addWidget(listLabel);
-    leftLayout->addWidget(signalTree_, /*stretch=*/1);
+    leftLayout->addWidget(signalTree_, /*stretch=*/2);
+
+    auto* searchLabel = new QLabel(tr("信号检索与快捷操作"), leftPane);
+    signalSearchEdit_ = new QLineEdit(leftPane);
+    signalSearchEdit_->setObjectName(QStringLiteral("signalSearchEdit"));
+    signalSearchEdit_->setClearButtonEnabled(true);
+    signalSearchEdit_->setPlaceholderText(tr("输入信号名、说明、分组或单位"));
+    signalSearchResults_ = new SignalTreeWidget(leftPane);
+    signalSearchResults_->setObjectName(QStringLiteral("signalSearchResults"));
+    signalSearchResults_->setColumnCount(3);
+    signalSearchResults_->setHeaderLabels({tr("搜索结果"), tr("分组"), tr("说明/单位")});
+    signalSearchResults_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    signalSearchResults_->setContextMenuPolicy(Qt::CustomContextMenu);
+    signalSearchResults_->setMinimumHeight(150);
+    connect(signalSearchEdit_, &QLineEdit::textChanged,
+            this, &MainWindow::UpdateSignalSearchResults);
+    connect(signalSearchResults_, &QTreeWidget::itemChanged,
+            this, &MainWindow::HandleSearchResultItemChanged);
+    connect(signalSearchResults_, &QWidget::customContextMenuRequested,
+            this, &MainWindow::ShowSearchResultsMenu);
+    connect(signalSearchResults_, &SignalTreeWidget::MergeRequested,
+            this, &MainWindow::HandleMergeRequested);
+    leftLayout->addWidget(searchLabel);
+    leftLayout->addWidget(signalSearchEdit_);
+    leftLayout->addWidget(signalSearchResults_, /*stretch=*/1);
     leftPane->setLayout(leftLayout);
 
     signalTreeController_ = std::make_unique<SignalTreeController>(signalTree_);
@@ -217,7 +244,7 @@ void MainWindow::SetupUi() {
     connect(chartArea_, &ChartArea::TransformRequested, this, &MainWindow::ShowSignalTransformDialog);
     trajectoryView_ = new TrajectoryView(dataViewTabs_);
     dataViewTabs_->addTab(chartArea_, tr("时序曲线"));
-    dataViewTabs_->addTab(trajectoryView_, tr("二维轨迹"));
+    dataViewTabs_->addTab(trajectoryView_, tr("二维/三维轨迹"));
     rightLayout->addWidget(dataViewTabs_, /*stretch=*/1);
 #ifdef PAT_ENABLE_SERIAL
     connect(dataViewTabs_, &QTabWidget::currentChanged, this, [this](int index) {
@@ -370,7 +397,10 @@ void MainWindow::OpenDataFile() {
     seriesProcessing_.RebuildDerived(dataSession_.Series());
 
     liveMode_ = false;
-    if (trajectoryView_) trajectoryView_->SetPaused(false);
+    if (trajectoryView_) {
+        trajectoryView_->ResetSession();
+        trajectoryView_->SetPaused(false);
+    }
     if (chartArea_) chartArea_->ResetSessionView();
 
 #ifdef PAT_ENABLE_QT_CHARTS
@@ -669,6 +699,7 @@ void MainWindow::HandleSignalTreeItemChanged(QTreeWidgetItem* item, int column) 
     signalTreeController_->UpdateParentCheckStates(item);
 
     signalTreeUpdating_ = false;
+    SyncSignalSearchChecks();
     UpdateCharts();
 }
 
@@ -677,6 +708,7 @@ void MainWindow::UpdateCharts() {
     if (!chartArea_) return;
     const bool hasData = liveMode_ ? liveSession_.HasData() : dataSession_.HasData();
     if (trajectoryView_) {
+        trajectoryView_->SetDisplayTransforms(seriesProcessing_.Transforms());
         trajectoryView_->SetDataSource(liveMode_ ? &liveSession_.SeriesData()
                                                  : &dataSession_.Series(),
                                        liveMode_ ? pat::TrajectoryPairing::SampleIndex
@@ -693,11 +725,11 @@ void MainWindow::UpdateCharts() {
     const QVector<int> checked = signalTreeController_->CollectCheckedSignalIndices();
     displayGroupManager_.UpdateGroups(checked, formatDocument_.Format());
     QVector<DisplayGroup> groups = displayGroupManager_.Groups();
-    const auto& differences = seriesProcessing_.Differences();
-    for (int i = 0; i < differences.size(); ++i) {
-        const auto& difference = differences[i];
+    const auto& definitions = seriesProcessing_.DerivedDefinitions();
+    for (int i = 0; i < definitions.size(); ++i) {
+        const auto& definition = definitions[i];
         groups.append({{pat::SeriesProcessing::DerivedDisplayIndex(i)},
-                       difference.title, difference.unit, false});
+                       definition.title, definition.unit, false});
     }
     chartArea_->SetDisplayGroups(groups);
     chartArea_->SetDerivedSeries(&seriesProcessing_.DerivedSeries());
@@ -727,6 +759,7 @@ void MainWindow::BuildSignalTree() {
     if (!signalTreeController_) return;
     signalTreeController_->Build(formatDocument_.Format());
     seriesProcessing_.Reset(formatDocument_.Format());
+    UpdateSignalSearchResults(signalSearchEdit_ ? signalSearchEdit_->text() : QString());
     if (trajectoryView_) {
         trajectoryView_->SetPaused(false);
         trajectoryView_->ConfigureSignals(formatDocument_.Format());
@@ -735,7 +768,6 @@ void MainWindow::BuildSignalTree() {
 
 void MainWindow::ShowSignalTreeMenu(const QPoint& pos) {
     if (!signalTreeController_ || !signalTree_ || !formatDocument_.HasFormat()) return;
-    QMenu menu(this);
     const QTreeWidgetItem* clickedItem = signalTree_->itemAt(pos);
     QVector<int> targetIndices;
     bool hasGroupContext = false;
@@ -754,6 +786,88 @@ void MainWindow::ShowSignalTreeMenu(const QPoint& pos) {
     } else {
         targetIndices = signalTreeController_->CollectSelectedSignalIndices();
     }
+    ShowSignalActionsMenu(targetIndices, hasGroupContext,
+                          signalTree_->viewport()->mapToGlobal(pos));
+}
+
+void MainWindow::UpdateSignalSearchResults(const QString& query) {
+    if (!signalSearchResults_) return;
+    signalSearchUpdating_ = true;
+    QSignalBlocker blocker(signalSearchResults_);
+    signalSearchResults_->clear();
+    if (!formatDocument_.HasFormat() || query.trimmed().isEmpty()) {
+        signalSearchUpdating_ = false;
+        return;
+    }
+    const QStringList terms = query.trimmed().toLower().split(
+        QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    const QVector<int> checked = signalTreeController_
+        ? signalTreeController_->CollectCheckedSignalIndices() : QVector<int>{};
+    const auto& format = formatDocument_.Format();
+    for (int i = 0; i < static_cast<int>(format.signalFormats.size()); ++i) {
+        const auto& signal = format.signalFormats[static_cast<size_t>(i)];
+        const QString searchable = QStringLiteral("%1 %2 %3 %4")
+            .arg(signal.name, signal.description, signal.groupPath, signal.unit).toLower();
+        bool matches = true;
+        for (const auto& term : terms) {
+            if (!searchable.contains(term)) { matches = false; break; }
+        }
+        if (!matches) continue;
+        const QString detail = signal.unit.isEmpty() ? signal.description
+            : tr("%1  [%2]").arg(signal.description, signal.unit);
+        auto* item = new QTreeWidgetItem(signalSearchResults_,
+                                         {signal.name, signal.groupPath, detail});
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable
+                       | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
+        item->setData(0, SignalTreeWidget::ITEM_TYPE_ROLE, SignalTreeWidget::ITEM_TYPE_SIGNAL);
+        item->setData(0, SignalTreeWidget::SIGNAL_INDEX_ROLE, i);
+        item->setCheckState(0, checked.contains(i) ? Qt::Checked : Qt::Unchecked);
+    }
+    signalSearchUpdating_ = false;
+}
+
+void MainWindow::SyncSignalSearchChecks() {
+    if (!signalSearchResults_ || !signalTreeController_) return;
+    signalSearchUpdating_ = true;
+    QSignalBlocker blocker(signalSearchResults_);
+    const QVector<int> checked = signalTreeController_->CollectCheckedSignalIndices();
+    for (int i = 0; i < signalSearchResults_->topLevelItemCount(); ++i) {
+        auto* item = signalSearchResults_->topLevelItem(i);
+        const int index = item->data(0, SignalTreeWidget::SIGNAL_INDEX_ROLE).toInt();
+        item->setCheckState(0, checked.contains(index) ? Qt::Checked : Qt::Unchecked);
+    }
+    signalSearchUpdating_ = false;
+}
+
+void MainWindow::HandleSearchResultItemChanged(QTreeWidgetItem* item, int column) {
+    if (signalSearchUpdating_ || !item || column != 0 || !signalTreeController_) return;
+    const int index = item->data(0, SignalTreeWidget::SIGNAL_INDEX_ROLE).toInt();
+    if (index < 0) return;
+    signalTreeController_->SetSignalsChecked({index}, item->checkState(0) == Qt::Checked);
+    SyncSignalSearchChecks();
+    UpdateCharts();
+}
+
+void MainWindow::ShowSearchResultsMenu(const QPoint& pos) {
+    if (!signalSearchResults_ || !formatDocument_.HasFormat()) return;
+    auto* clicked = signalSearchResults_->itemAt(pos);
+    QVector<int> indices;
+    for (auto* item : signalSearchResults_->selectedItems()) {
+        const int index = item->data(0, SignalTreeWidget::SIGNAL_INDEX_ROLE).toInt();
+        if (index >= 0 && !indices.contains(index)) indices.append(index);
+    }
+    if (clicked) {
+        const int index = clicked->data(0, SignalTreeWidget::SIGNAL_INDEX_ROLE).toInt();
+        if (index >= 0 && !indices.contains(index)) indices.append(index);
+    }
+    ShowSignalActionsMenu(indices, false, signalSearchResults_->viewport()->mapToGlobal(pos));
+}
+
+void MainWindow::ShowSignalActionsMenu(const QVector<int>& targetIndices,
+                                       bool hasGroupContext,
+                                       const QPoint& globalPos) {
+    if (!signalTreeController_ || !formatDocument_.HasFormat()) return;
+    QMenu menu(this);
 
     QString unit;
     const bool canMerge = DisplayGroupManager::CanMerge(targetIndices, formatDocument_.Format(), unit);
@@ -780,24 +894,28 @@ void MainWindow::ShowSignalTreeMenu(const QPoint& pos) {
             menu.addAction(tr("本组全部显示"), this, [this, targetIndices]() {
                 if (!signalTreeController_) return;
                 signalTreeController_->SetSignalsChecked(targetIndices, true);
+                SyncSignalSearchChecks();
                 UpdateCharts();
             });
             menu.addAction(tr("本组全部隐藏"), this, [this, targetIndices]() {
                 if (!signalTreeController_) return;
                 signalTreeController_->SetSignalsChecked(targetIndices, false);
                 displayGroupManager_.RemoveSignals(targetIndices);
+                SyncSignalSearchChecks();
                 UpdateCharts();
             });
         } else {
             menu.addAction(tr("显示所选信号"), this, [this, targetIndices]() {
                 if (!signalTreeController_) return;
                 signalTreeController_->SetSignalsChecked(targetIndices, true);
+                SyncSignalSearchChecks();
                 UpdateCharts();
             });
             menu.addAction(tr("隐藏所选信号"), this, [this, targetIndices]() {
                 if (!signalTreeController_) return;
                 signalTreeController_->SetSignalsChecked(targetIndices, false);
                 displayGroupManager_.RemoveSignals(targetIndices);
+                SyncSignalSearchChecks();
                 UpdateCharts();
             });
         }
@@ -807,11 +925,11 @@ void MainWindow::ShowSignalTreeMenu(const QPoint& pos) {
     if (targetIndices.size() == 1) {
         if (hasActions) menu.addSeparator();
         const int signalIndex = targetIndices.first();
-        menu.addAction(tr("显示比例与平移..."), this, [this, signalIndex]() {
+        menu.addAction(tr("信号属性（比例/整体平移）..."), this, [this, signalIndex]() {
             ShowSignalTransformDialog(signalIndex);
         });
         if (!seriesProcessing_.Transform(signalIndex).IsIdentity()) {
-            menu.addAction(tr("重置显示变换"), this, [this, signalIndex]() {
+            menu.addAction(tr("复原信号显示"), this, [this, signalIndex]() {
                 seriesProcessing_.ResetTransform(signalIndex);
                 UpdateCharts();
             });
@@ -819,7 +937,7 @@ void MainWindow::ShowSignalTreeMenu(const QPoint& pos) {
         hasActions = true;
     } else if (targetIndices.size() == 2) {
         if (hasActions) menu.addSeparator();
-        menu.addAction(tr("创建差值图..."), this, [this, targetIndices]() {
+        menu.addAction(tr("创建差值/和值关系图..."), this, [this, targetIndices]() {
             ShowDifferenceDialog(targetIndices);
         });
         hasActions = true;
@@ -831,16 +949,18 @@ void MainWindow::ShowSignalTreeMenu(const QPoint& pos) {
         signalTreeController_->SetAllSignalsChecked(false);
         displayGroupManager_.Clear();
         seriesProcessing_.ClearDerivedSignals();
+        SyncSignalSearchChecks();
         UpdateCharts();
     });
 
-    menu.exec(signalTree_->viewport()->mapToGlobal(pos));
+    menu.exec(globalPos);
 }
 
 void MainWindow::HandleSignalsDropped(const QVector<int>& indices) {
     if (!signalTreeController_) return;
     signalTreeController_->SetSignalsChecked(indices, true);
     displayGroupManager_.RemoveSignals(indices);
+    SyncSignalSearchChecks();
     UpdateCharts();
 }
 
@@ -848,6 +968,7 @@ void MainWindow::HandleMergeRequested(const QVector<int>& indices) {
     if (!formatDocument_.HasFormat()) return;
     if (signalTreeController_) {
         signalTreeController_->SetSignalsChecked(indices, true);
+        SyncSignalSearchChecks();
     }
     QString error;
     if (!displayGroupManager_.MergeSignals(indices, formatDocument_.Format(), error)) {
@@ -879,6 +1000,7 @@ void MainWindow::HandleHideSignalsRequested(const QVector<int>& indices) {
     }
     signalTreeController_->SetSignalsChecked(rawSignals, false);
     displayGroupManager_.RemoveSignals(rawSignals);
+    SyncSignalSearchChecks();
     UpdateCharts();
 }
 
@@ -905,16 +1027,25 @@ void MainWindow::ShowDifferenceDialog(const QVector<int>& suggestedSignals) {
     DifferenceDialog dialog(formatDocument_.Format(), initialLeft, initialRight, this);
     if (dialog.exec() != QDialog::Accepted) return;
     QString error;
-    if (!CreateDifference(dialog.LeftSignal(), dialog.RightSignal(), error)) {
-        QMessageBox::information(this, tr("无法创建差值图"), error);
+    if (!CreateDerived(dialog.LeftSignal(), dialog.RightSignal(), dialog.Operation(), error)) {
+        QMessageBox::information(this, tr("无法创建关系图"), error);
     }
 }
 
-bool MainWindow::CreateDifference(int leftSignal, int rightSignal, QString& errorMessage) {
-    if (!seriesProcessing_.AddDifference(leftSignal, rightSignal, errorMessage)) return false;
+bool MainWindow::CreateDerived(int leftSignal, int rightSignal,
+                               pat::SeriesOperation operation, QString& errorMessage) {
+    if (!seriesProcessing_.AddDerived(leftSignal, rightSignal, operation, errorMessage)) return false;
     seriesProcessing_.RebuildDerived(liveMode_ ? liveSession_.SeriesData() : dataSession_.Series());
     UpdateCharts();
     return true;
+}
+
+bool MainWindow::CreateDifference(int leftSignal, int rightSignal, QString& errorMessage) {
+    return CreateDerived(leftSignal, rightSignal, pat::SeriesOperation::Difference, errorMessage);
+}
+
+bool MainWindow::CreateSum(int leftSignal, int rightSignal, QString& errorMessage) {
+    return CreateDerived(leftSignal, rightSignal, pat::SeriesOperation::Sum, errorMessage);
 }
 
 #ifdef PAT_ENABLE_SERIAL
@@ -1075,7 +1206,10 @@ void MainWindow::StartSerialCapture() {
     seriesProcessing_.ClearDerivedSamples();
     liveMode_ = true;
     displayPaused_ = false;
-    if (trajectoryView_) trajectoryView_->SetPaused(false);
+    if (trajectoryView_) {
+        trajectoryView_->ResetSession();
+        trajectoryView_->SetPaused(false);
+    }
     liveChartsInitialized_ = false;
     pauseDisplayButton_->setText(tr("暂停显示"));
     followLatestCheck_->setChecked(true);
@@ -1092,6 +1226,7 @@ void MainWindow::StartSerialCapture() {
         for (int i = 0; i < count; ++i) defaults.append(i);
         signalTreeController_->SetSignalsChecked(defaults, true);
     }
+    SyncSignalSearchChecks();
     if (chartArea_) {
         chartArea_->ResetSessionView();
         chartArea_->SetSeries(&liveSession_.SeriesData());

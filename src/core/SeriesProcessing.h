@@ -15,9 +15,12 @@ struct DisplayTransform {
     double Apply(double value) const { return value * scale + offset; }
 };
 
-struct DifferenceDefinition {
+enum class SeriesOperation { Difference, Sum };
+
+struct DerivedSeriesDefinition {
     int leftSignal = -1;
     int rightSignal = -1;
+    SeriesOperation operation = SeriesOperation::Difference;
     QString title;
     QString unit;
 };
@@ -30,7 +33,10 @@ public:
     void SetTransform(int signalIndex, const DisplayTransform& transform);
     void ResetTransform(int signalIndex);
 
+    bool AddDerived(int leftSignal, int rightSignal, SeriesOperation operation,
+                    QString& errorMessage);
     bool AddDifference(int leftSignal, int rightSignal, QString& errorMessage);
+    bool AddSum(int leftSignal, int rightSignal, QString& errorMessage);
     void RemoveDerivedSignal(int displayIndex);
     void ClearDerivedSignals();
     void RebuildDerived(const QVector<Series>& source);
@@ -38,7 +44,7 @@ public:
     void AppendLive(quint64 sampleIndex, const QVector<double>& values,
                     int maxSamplesPerSignal = 30000);
 
-    const QVector<DifferenceDefinition>& Differences() const { return differences_; }
+    const QVector<DerivedSeriesDefinition>& DerivedDefinitions() const { return definitions_; }
     const QVector<Series>& DerivedSeries() const { return derivedSeries_; }
     const QHash<int, DisplayTransform>& Transforms() const { return transforms_; }
 
@@ -50,7 +56,7 @@ private:
 
     FormatDefinition format_;
     QHash<int, DisplayTransform> transforms_;
-    QVector<DifferenceDefinition> differences_;
+    QVector<DerivedSeriesDefinition> definitions_;
     QVector<Series> derivedSeries_;
 };
 

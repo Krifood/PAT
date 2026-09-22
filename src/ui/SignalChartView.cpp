@@ -771,7 +771,7 @@ void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
         if (signalIndex >= 0) transformable.append(signalIndex);
     }
     if (!transformable.isEmpty()) {
-        auto* transformMenu = menu.addMenu(tr("显示比例与平移"));
+        auto* transformMenu = menu.addMenu(tr("信号属性（比例/整体平移）"));
         for (int signalIndex : transformable) {
             QString label = tr("信号 %1").arg(signalIndex);
             const int position = seriesIndices_.indexOf(signalIndex);

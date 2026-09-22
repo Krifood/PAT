@@ -14,12 +14,12 @@ SignalTransformDialog::SignalTransformDialog(const QString& signalName,
                                              const pat::DisplayTransform& initial,
                                              QWidget* parent)
     : QDialog(parent) {
-    setWindowTitle(tr("显示比例与平移 — %1").arg(signalName));
+    setWindowTitle(tr("信号属性 — %1").arg(signalName));
     setMinimumWidth(430);
     auto* layout = new QVBoxLayout(this);
     auto* explanation = new QLabel(
-        tr("显示值 = 解析值 × 显示比例/LSB 系数 + 平移量\n"
-           "此设置只影响曲线显示，不修改解析值、差值源数据或日志。"), this);
+        tr("当前信号所有显示值 = 解析值 × 显示比例/LSB 系数 + 整体纵向平移量\n"
+           "时序图和二维/三维空间图同步应用；不修改解析值、派生图源数据或日志。"), this);
     explanation->setWordWrap(true);
     layout->addWidget(explanation);
 
@@ -37,7 +37,7 @@ SignalTransformDialog::SignalTransformDialog(const QString& signalName,
     offsetSpin_->setValue(initial.offset);
     offsetSpin_->setSingleStep(1.0);
     form->addRow(tr("显示比例 / LSB 系数"), scaleSpin_);
-    form->addRow(tr("纵向平移量"), offsetSpin_);
+    form->addRow(tr("整体纵向平移量"), offsetSpin_);
     layout->addLayout(form);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel
@@ -60,16 +60,22 @@ DifferenceDialog::DifferenceDialog(const pat::FormatDefinition& format,
                                    int initialRight,
                                    QWidget* parent)
     : QDialog(parent) {
-    setWindowTitle(tr("创建差值图"));
+    setWindowTitle(tr("创建差值/和值关系图"));
     setMinimumWidth(430);
     auto* layout = new QVBoxLayout(this);
     auto* explanation = new QLabel(
-        tr("生成独立子图：被减信号 A − 减数信号 B。\n"
+        tr("生成没有信号树来源的独立关系子图，标题会声明运算和数据来源。\n"
            "只有相同采样位置且单位相同的有效数据参与计算。"), this);
     explanation->setWordWrap(true);
     layout->addWidget(explanation);
 
     auto* form = new QFormLayout;
+    operationCombo_ = new QComboBox(this);
+    operationCombo_->setObjectName(QStringLiteral("derivedOperationCombo"));
+    operationCombo_->addItem(tr("差值：A − B"),
+                             static_cast<int>(pat::SeriesOperation::Difference));
+    operationCombo_->addItem(tr("和值：A + B"),
+                             static_cast<int>(pat::SeriesOperation::Sum));
     leftCombo_ = new QComboBox(this);
     leftCombo_->setObjectName(QStringLiteral("differenceLeftCombo"));
     rightCombo_ = new QComboBox(this);
@@ -83,8 +89,9 @@ DifferenceDialog::DifferenceDialog(const pat::FormatDefinition& format,
     }
     leftCombo_->setCurrentIndex(std::max(0, leftCombo_->findData(initialLeft)));
     rightCombo_->setCurrentIndex(std::max(0, rightCombo_->findData(initialRight)));
-    form->addRow(tr("被减信号 A"), leftCombo_);
-    form->addRow(tr("减数信号 B"), rightCombo_);
+    form->addRow(tr("运算"), operationCombo_);
+    form->addRow(tr("信号 A"), leftCombo_);
+    form->addRow(tr("信号 B"), rightCombo_);
     layout->addLayout(form);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
@@ -99,4 +106,8 @@ int DifferenceDialog::LeftSignal() const {
 
 int DifferenceDialog::RightSignal() const {
     return rightCombo_->currentData().toInt();
+}
+
+pat::SeriesOperation DifferenceDialog::Operation() const {
+    return static_cast<pat::SeriesOperation>(operationCombo_->currentData().toInt());
 }

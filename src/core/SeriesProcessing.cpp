@@ -14,7 +14,7 @@ bool DisplayTransform::IsIdentity() const {
 void SeriesProcessing::Reset(const FormatDefinition& format) {
     format_ = format;
     transforms_.clear();
-    differences_.clear();
+    definitions_.clear();
     derivedSeries_.clear();
 }
 
@@ -33,10 +33,19 @@ void SeriesProcessing::ResetTransform(int signalIndex) {
 }
 
 bool SeriesProcessing::AddDifference(int leftSignal, int rightSignal, QString& errorMessage) {
+    return AddDerived(leftSignal, rightSignal, SeriesOperation::Difference, errorMessage);
+}
+
+bool SeriesProcessing::AddSum(int leftSignal, int rightSignal, QString& errorMessage) {
+    return AddDerived(leftSignal, rightSignal, SeriesOperation::Sum, errorMessage);
+}
+
+bool SeriesProcessing::AddDerived(int leftSignal, int rightSignal, SeriesOperation operation,
+                                  QString& errorMessage) {
     errorMessage.clear();
     const int count = static_cast<int>(format_.signalFormats.size());
     if (leftSignal < 0 || rightSignal < 0 || leftSignal >= count || rightSignal >= count) {
-        errorMessage = QStringLiteral("差值信号索引无效");
+        errorMessage = QStringLiteral("派生信号索引无效");
         return false;
     }
     if (leftSignal == rightSignal) {
@@ -46,53 +55,60 @@ bool SeriesProcessing::AddDifference(int leftSignal, int rightSignal, QString& e
     const auto& left = format_.signalFormats[static_cast<size_t>(leftSignal)];
     const auto& right = format_.signalFormats[static_cast<size_t>(rightSignal)];
     if (left.unit != right.unit) {
-        errorMessage = QStringLiteral("两个信号单位不同（%1 / %2），不能直接做差")
+        errorMessage = QStringLiteral("两个信号单位不同（%1 / %2），不能直接运算")
                            .arg(left.unit.isEmpty() ? QStringLiteral("无单位") : left.unit,
                                 right.unit.isEmpty() ? QStringLiteral("无单位") : right.unit);
         return false;
     }
-    for (const auto& existing : differences_) {
-        if (existing.leftSignal == leftSignal && existing.rightSignal == rightSignal) {
-            errorMessage = QStringLiteral("该差值图已经存在");
+    for (const auto& existing : definitions_) {
+        if (existing.leftSignal == leftSignal && existing.rightSignal == rightSignal
+            && existing.operation == operation) {
+            errorMessage = QStringLiteral("该关系图已经存在");
             return false;
         }
     }
 
-    DifferenceDefinition definition;
+    DerivedSeriesDefinition definition;
     definition.leftSignal = leftSignal;
     definition.rightSignal = rightSignal;
-    definition.title = QStringLiteral("差值: %1 - %2").arg(left.name, right.name);
+    definition.operation = operation;
+    const QString operationName = operation == SeriesOperation::Difference
+        ? QStringLiteral("差值") : QStringLiteral("和值");
+    const QString symbol = operation == SeriesOperation::Difference
+        ? QStringLiteral("-") : QStringLiteral("+");
+    definition.title = QStringLiteral("%1: %2 %3 %4（来源: %2、%4）")
+                           .arg(operationName, left.name, symbol, right.name);
     definition.unit = left.unit;
-    differences_.append(definition);
+    definitions_.append(definition);
     InitializeDerivedSeries();
     return true;
 }
 
 void SeriesProcessing::RemoveDerivedSignal(int displayIndex) {
     const int index = DerivedStorageIndex(displayIndex);
-    if (displayIndex >= 0 || index < 0 || index >= differences_.size()) return;
-    differences_.removeAt(index);
+    if (displayIndex >= 0 || index < 0 || index >= definitions_.size()) return;
+    definitions_.removeAt(index);
     InitializeDerivedSeries();
 }
 
 void SeriesProcessing::ClearDerivedSignals() {
-    differences_.clear();
+    definitions_.clear();
     derivedSeries_.clear();
 }
 
 void SeriesProcessing::InitializeDerivedSeries() {
-    derivedSeries_.resize(differences_.size());
-    for (int i = 0; i < differences_.size(); ++i) {
-        derivedSeries_[i].name = differences_[i].title;
-        derivedSeries_[i].unit = differences_[i].unit;
+    derivedSeries_.resize(definitions_.size());
+    for (int i = 0; i < definitions_.size(); ++i) {
+        derivedSeries_[i].name = definitions_[i].title;
+        derivedSeries_[i].unit = definitions_[i].unit;
         derivedSeries_[i].samples.clear();
     }
 }
 
 void SeriesProcessing::RebuildDerived(const QVector<Series>& source) {
     InitializeDerivedSeries();
-    for (int definitionIndex = 0; definitionIndex < differences_.size(); ++definitionIndex) {
-        const auto& definition = differences_[definitionIndex];
+    for (int definitionIndex = 0; definitionIndex < definitions_.size(); ++definitionIndex) {
+        const auto& definition = definitions_[definitionIndex];
         if (definition.leftSignal >= source.size() || definition.rightSignal >= source.size()) continue;
         const auto& left = source[definition.leftSignal].samples;
         const auto& right = source[definition.rightSignal].samples;
@@ -106,7 +122,9 @@ void SeriesProcessing::RebuildDerived(const QVector<Series>& source) {
             const double rightX = right[rightIndex].x();
             const double tolerance = 1e-9 * std::max({1.0, std::abs(leftX), std::abs(rightX)});
             if (std::abs(leftX - rightX) <= tolerance) {
-                const double value = left[leftIndex].y() - right[rightIndex].y();
+                const double value = definition.operation == SeriesOperation::Difference
+                    ? left[leftIndex].y() - right[rightIndex].y()
+                    : left[leftIndex].y() + right[rightIndex].y();
                 if (std::isfinite(value)) output.append(QPointF(leftX, value));
                 ++leftIndex;
                 ++rightIndex;
@@ -126,10 +144,12 @@ void SeriesProcessing::ClearDerivedSamples() {
 void SeriesProcessing::AppendLive(quint64 sampleIndex, const QVector<double>& values,
                                   int maxSamplesPerSignal) {
     maxSamplesPerSignal = std::max(1, maxSamplesPerSignal);
-    for (int i = 0; i < differences_.size(); ++i) {
-        const auto& definition = differences_[i];
+    for (int i = 0; i < definitions_.size(); ++i) {
+        const auto& definition = definitions_[i];
         if (definition.leftSignal >= values.size() || definition.rightSignal >= values.size()) continue;
-        const double value = values[definition.leftSignal] - values[definition.rightSignal];
+        const double value = definition.operation == SeriesOperation::Difference
+            ? values[definition.leftSignal] - values[definition.rightSignal]
+            : values[definition.leftSignal] + values[definition.rightSignal];
         if (!std::isfinite(value)) continue;
         auto& samples = derivedSeries_[i].samples;
         samples.append(QPointF(static_cast<double>(sampleIndex), value));

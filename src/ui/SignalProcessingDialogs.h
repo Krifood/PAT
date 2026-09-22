@@ -34,8 +34,10 @@ public:
 
     int LeftSignal() const;
     int RightSignal() const;
+    pat::SeriesOperation Operation() const;
 
 private:
+    QComboBox* operationCombo_ = nullptr;
     QComboBox* leftCombo_ = nullptr;
     QComboBox* rightCombo_ = nullptr;
 };

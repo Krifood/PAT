@@ -24,10 +24,10 @@ class TrajectoryView;
 class QTabWidget;
 class QTreeWidgetItem;
 class QMenu;
+class QLineEdit;
 #ifdef PAT_ENABLE_SERIAL
 class QComboBox;
 class QSpinBox;
-class QLineEdit;
 class QPushButton;
 class QCheckBox;
 class QTableWidget;
@@ -63,6 +63,13 @@ private:
     void UpdateStatus(const QString& text);
     void BuildSignalTree();
     void ShowSignalTreeMenu(const QPoint& pos);
+    void ShowSearchResultsMenu(const QPoint& pos);
+    void ShowSignalActionsMenu(const QVector<int>& targetIndices,
+                               bool hasGroupContext,
+                               const QPoint& globalPos);
+    void UpdateSignalSearchResults(const QString& query);
+    void SyncSignalSearchChecks();
+    void HandleSearchResultItemChanged(QTreeWidgetItem* item, int column);
     void HandleSignalsDropped(const QVector<int>& indices);
     void HandleMergeRequested(const QVector<int>& indices);
     void HandleReorderRequested(int fromIndex, int toIndex);
@@ -70,7 +77,10 @@ private:
     void HandleSplitRequested(const QVector<int>& indices);
     void ShowSignalTransformDialog(int signalIndex);
     void ShowDifferenceDialog(const QVector<int>& suggestedSignals);
+    bool CreateDerived(int leftSignal, int rightSignal, pat::SeriesOperation operation,
+                       QString& errorMessage);
     bool CreateDifference(int leftSignal, int rightSignal, QString& errorMessage);
+    bool CreateSum(int leftSignal, int rightSignal, QString& errorMessage);
     void ApplyTheme(AppThemeId id, bool persist = true);
 #ifdef PAT_ENABLE_SERIAL
     void SetupSerialDock();
@@ -88,6 +98,8 @@ private:
     pat::SeriesProcessing seriesProcessing_;
 
     SignalTreeWidget* signalTree_ = nullptr;
+    QLineEdit* signalSearchEdit_ = nullptr;
+    SignalTreeWidget* signalSearchResults_ = nullptr;
     std::unique_ptr<SignalTreeController> signalTreeController_;
     ChartArea* chartArea_ = nullptr;
     TrajectoryView* trajectoryView_ = nullptr;
@@ -98,6 +110,7 @@ private:
 
     int maxVisiblePoints_ = 5000;
     bool signalTreeUpdating_ = false;
+    bool signalSearchUpdating_ = false;
     bool liveMode_ = false;
     AppThemeId currentThemeId_ = AppThemeId::IndoorDark;
 #ifdef PAT_ENABLE_SERIAL

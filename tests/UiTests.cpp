@@ -3,6 +3,7 @@
 #include "ui/AppTheme.h"
 #include "ui/ChartArea.h"
 #include "ui/SignalChartView.h"
+#include "ui/SignalTreeWidget.h"
 #include "ui/TrajectoryView.h"
 
 #include <QComboBox>
@@ -73,6 +74,8 @@ private slots:
     void liveChartsLimitVisibleWork();
     void axisLabelsDistinguishSmallDeltas();
     void trajectoryTabPlotsOfflineCoordinates();
+    void spatialPlotsKeepHistoryMergeAndApplyTransforms();
+    void signalSearchOperatesOnMainSelection();
     void displayProcessingWorksWithLiveMergedCharts();
     void themesUpdateControlsAndCharts();
 };
@@ -169,6 +172,7 @@ void UiTests::displayProcessingWorksWithLiveMergedCharts() {
     window.displayGroupManager_.MergeSignals({0, 1}, window.formatDocument_.Format(), error);
     window.seriesProcessing_.SetTransform(0, {2.0, 10.0});
     QVERIFY2(window.CreateDifference(0, 1, error), qPrintable(error));
+    QVERIFY2(window.CreateSum(0, 1, error), qPrintable(error));
 
     QVector<double> values(
         static_cast<qsizetype>(window.formatDocument_.Format().signalFormats.size()), 0.0);
@@ -185,15 +189,18 @@ void UiTests::displayProcessingWorksWithLiveMergedCharts() {
     window.show();
 
     auto views = window.chartArea_->findChildren<SignalChartView*>();
-    QCOMPARE(views.size(), 2);
+    QCOMPARE(views.size(), 3);
     SignalChartView* merged = nullptr;
     SignalChartView* difference = nullptr;
+    SignalChartView* sum = nullptr;
     for (auto* view : views) {
         if (view->SeriesIndices() == QVector<int>({0, 1})) merged = view;
         if (view->SeriesIndices() == QVector<int>({-1})) difference = view;
+        if (view->SeriesIndices() == QVector<int>({-2})) sum = view;
     }
     QVERIFY(merged);
     QVERIFY(difference);
+    QVERIFY(sum);
     const auto mergedLines = merged->chart()->series();
     QCOMPARE(mergedLines.size(), 2);
     auto* transformed = qobject_cast<QLineSeries*>(mergedLines[0]);
@@ -208,6 +215,13 @@ void UiTests::displayProcessingWorksWithLiveMergedCharts() {
     QVERIFY(differenceLine);
     QCOMPARE(differenceLine->points(), (QList<QPointF>{{0, 2}, {1, 3}}));
     QVERIFY(differenceLine->name().contains(QStringLiteral("滚转角 - 俯仰角")));
+    QVERIFY(differenceLine->name().contains(QStringLiteral("来源")));
+
+    auto* sumLine = qobject_cast<QLineSeries*>(sum->chart()->series().first());
+    QVERIFY(sumLine);
+    QCOMPARE(sumLine->points(), (QList<QPointF>{{0, 4}, {1, 7}}));
+    QVERIFY(sumLine->name().contains(QStringLiteral("滚转角 + 俯仰角")));
+    QVERIFY(sumLine->name().contains(QStringLiteral("来源")));
 
     merged->SetCursorX(1.0);
     bool sawTransformedCursor = false;
@@ -228,6 +242,119 @@ void UiTests::displayProcessingWorksWithLiveMergedCharts() {
     window.chartArea_->RefreshLiveData(true);
     QCOMPARE(transformed->points().last(), QPointF(2, 28));
     QCOMPARE(differenceLine->points().last(), QPointF(2, 5));
+    QCOMPARE(sumLine->points().last(), QPointF(2, 13));
+}
+
+void UiTests::spatialPlotsKeepHistoryMergeAndApplyTransforms() {
+    pat::FormatDefinition format;
+    QString error;
+    const QString root = QString::fromUtf8(PAT_SOURCE_DIR);
+    QVERIFY2(pat::LoadFormatFromJson(root + QStringLiteral("/samples/cp01_b3_navigation.json"),
+                                     format, error), qPrintable(error));
+
+    QVector<pat::Series> source(static_cast<qsizetype>(format.signalFormats.size()));
+    for (int signal = 0; signal < source.size(); ++signal) {
+        source[signal].name = format.signalFormats[static_cast<size_t>(signal)].name;
+        source[signal].unit = format.signalFormats[static_cast<size_t>(signal)].unit;
+    }
+
+    TrajectoryView view;
+    view.resize(1000, 800);
+    view.ConfigureSignals(format);
+    auto plots = view.findChildren<TrajectoryPlotWidget*>();
+    QCOMPARE(plots.size(), 1);
+    auto* first2D = plots.first();
+    auto* second2D = view.AddPlot(TrajectoryDimension::TwoD);
+    auto* plot3D = view.AddPlot(TrajectoryDimension::ThreeD);
+    QCOMPARE(view.PlotCount(), 3);
+    QCOMPARE(first2D->Dimension(), TrajectoryDimension::TwoD);
+    QCOMPARE(plot3D->Dimension(), TrajectoryDimension::ThreeD);
+    QVERIFY(plot3D->findChild<QWidget*>(QStringLiteral("trajectory3DCanvas_%1")
+                                           .arg(plot3D->PlotId())));
+
+    const auto appendWindow = [&source](int begin) {
+        for (int signal = 0; signal < source.size(); ++signal) {
+            source[signal].samples.clear();
+            source[signal].samples.append(QPointF(begin, signal * 100.0 + begin));
+            source[signal].samples.append(QPointF(begin + 1, signal * 100.0 + begin + 1));
+        }
+    };
+    appendWindow(0);
+    view.SetDataSource(&source, pat::TrajectoryPairing::SampleIndex);
+    QCOMPARE(first2D->HistoryPointCount(), 2);
+    QCOMPARE(second2D->HistoryPointCount(), 2);
+    QCOMPARE(plot3D->HistoryPointCount(), 2);
+
+    // Simulate the live source ring buffer dropping old samples. Each spatial subplot
+    // must retain its own complete session history.
+    appendWindow(2);
+    view.RequestRefresh();
+    QCOMPARE(first2D->HistoryPointCount(), 4);
+    QCOMPARE(second2D->HistoryPointCount(), 4);
+    QCOMPARE(plot3D->HistoryPointCount(), 4);
+    view.SetPaused(true);
+    appendWindow(4);
+    view.RequestRefresh();
+    QCOMPARE(first2D->HistoryPointCount(), 6);
+    QCOMPARE(second2D->HistoryPointCount(), 6);
+    QCOMPARE(plot3D->HistoryPointCount(), 6);
+
+    const int targetId = first2D->PlotId();
+    QVERIFY2(view.MergePlots(second2D->PlotId(), targetId, error), qPrintable(error));
+    QCOMPARE(view.PlotCount(), 2);
+    QCOMPARE(first2D->TrackCount(), 2);
+    QCOMPARE(first2D->HistoryPointCount(0), 6);
+    QCOMPARE(first2D->HistoryPointCount(1), 6);
+    QVERIFY(!view.MergePlots(plot3D->PlotId(), targetId, error));
+    QVERIFY(error.contains(QStringLiteral("不能合并")));
+    QCOMPARE(view.PlotCount(), 2);
+
+    auto* xCombo = first2D->findChild<QComboBox*>(QStringLiteral("trajectoryXCombo"));
+    QVERIFY(xCombo);
+    const int xSignal = xCombo->currentData().toInt();
+    QVERIFY(xSignal >= 0);
+    QHash<int, pat::DisplayTransform> transforms;
+    transforms.insert(xSignal, {2.0, 10.0});
+    view.SetDisplayTransforms(transforms);
+    auto* chartView = first2D->findChild<QChartView*>();
+    QVERIFY(chartView);
+    QLineSeries* firstLine = nullptr;
+    for (auto* series : chartView->chart()->series()) {
+        if ((firstLine = qobject_cast<QLineSeries*>(series))) break;
+    }
+    QVERIFY(firstLine);
+    QCOMPARE(firstLine->points().size(), 6);
+    QCOMPARE(firstLine->points().first().x(), xSignal * 200.0 + 10.0);
+    QCOMPARE(first2D->HistoryPointCount(), 6);
+}
+
+void UiTests::signalSearchOperatesOnMainSelection() {
+    MainWindow window;
+    QString error;
+    const QString root = QString::fromUtf8(PAT_SOURCE_DIR);
+    QVERIFY2(window.formatDocument_.LoadFromFile(
+                 root + QStringLiteral("/samples/cp01_b3_navigation.json"), error),
+             qPrintable(error));
+    window.BuildSignalTree();
+
+    window.signalSearchEdit_->setText(QStringLiteral("组合 经度"));
+    QCOMPARE(window.signalSearchResults_->topLevelItemCount(), 1);
+    auto* result = window.signalSearchResults_->topLevelItem(0);
+    const int signalIndex = result->data(0, SignalTreeWidget::SIGNAL_INDEX_ROLE).toInt();
+    QVERIFY(signalIndex >= 0);
+    result->setCheckState(0, Qt::Checked);
+    QVERIFY(window.signalTreeController_->CollectCheckedSignalIndices().contains(signalIndex));
+
+    window.seriesProcessing_.SetTransform(signalIndex, {1.0, 25.0});
+    window.signalSearchEdit_->clear();
+    QCOMPARE(window.signalSearchResults_->topLevelItemCount(), 0);
+    QVERIFY(window.signalTreeController_->CollectCheckedSignalIndices().contains(signalIndex));
+    QCOMPARE(window.seriesProcessing_.Transform(signalIndex).offset, 25.0);
+
+    window.signalSearchEdit_->setText(QStringLiteral("COMBINED-NAME-NOT-PRESENT"));
+    QCOMPARE(window.signalSearchResults_->topLevelItemCount(), 0);
+    window.signalSearchEdit_->setText(QStringLiteral("角"));
+    QVERIFY(window.signalSearchResults_->topLevelItemCount() > 1);
 }
 
 void UiTests::trajectoryTabPlotsOfflineCoordinates() {
