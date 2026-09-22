@@ -149,6 +149,7 @@ private:
     void CaptureAllPlots();
 
     QSplitter* splitter_ = nullptr;
+    QLabel* emptyState_ = nullptr;
     QTimer* refreshTimer_ = nullptr;
     QVector<TrajectoryPlotWidget*> plots_;
     int nextPlotId_ = 0;

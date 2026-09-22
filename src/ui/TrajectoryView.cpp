@@ -280,7 +280,8 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
     autoRange_->setVisible(dimension_ == TrajectoryDimension::TwoD);
     auto* removeButton = new QToolButton(this);
     removeButton->setObjectName(QStringLiteral("removeTrajectoryPlot_%1").arg(plotId_));
-    removeButton->setText(tr("删除子图"));
+    removeButton->setText(tr("× 删除子图"));
+    removeButton->setToolTip(tr("删除本子图及其会话轨迹历史"));
     connect(removeButton, &QToolButton::clicked, this, [this]() { emit RemoveRequested(plotId_); });
     header->addWidget(headerTitle_);
     header->addWidget(dimensionLabel_);
@@ -709,6 +710,8 @@ void TrajectoryPlotWidget::AppendSnapshots(const QVector<TrackSnapshot>& snapsho
 void TrajectoryPlotWidget::SetRemoveEnabled(bool enabled) {
     if (auto* button = findChild<QToolButton*>(QStringLiteral("removeTrajectoryPlot_%1").arg(plotId_))) {
         button->setEnabled(enabled);
+        button->setToolTip(enabled ? tr("删除本子图及其会话轨迹历史")
+                                   : tr("当前子图暂不能删除"));
     }
 }
 
@@ -828,6 +831,12 @@ TrajectoryView::TrajectoryView(QWidget* parent) : QWidget(parent) {
     auto* container = new QWidget(scroll);
     auto* containerLayout = new QVBoxLayout(container);
     containerLayout->setContentsMargins(0, 0, 0, 0);
+    emptyState_ = new QLabel(tr("当前没有空间子图\n请使用上方“新增二维子图”或“新增三维子图”创建"),
+                             container);
+    emptyState_->setObjectName(QStringLiteral("emptyTrajectoryState"));
+    emptyState_->setAlignment(Qt::AlignCenter);
+    emptyState_->setMinimumHeight(260);
+    containerLayout->addWidget(emptyState_, 1);
     splitter_ = new QSplitter(Qt::Vertical, container);
     splitter_->setChildrenCollapsible(false);
     containerLayout->addWidget(splitter_);
@@ -891,7 +900,6 @@ bool TrajectoryView::MergePlots(int sourcePlotId, int targetPlotId, QString& err
 }
 
 void TrajectoryView::RemovePlot(int plotId) {
-    if (plots_.size() <= 1) return;
     for (int i = 0; i < plots_.size(); ++i) {
         if (plots_[i]->PlotId() != plotId) continue;
         auto* plot = plots_.takeAt(i);
@@ -912,7 +920,10 @@ void TrajectoryView::ClearPlots() {
 }
 
 void TrajectoryView::UpdateRemoveButtons() {
-    for (auto* plot : plots_) plot->SetRemoveEnabled(plots_.size() > 1);
+    const bool hasPlots = !plots_.isEmpty();
+    if (emptyState_) emptyState_->setVisible(!hasPlots);
+    if (splitter_) splitter_->setVisible(hasPlots);
+    for (auto* plot : plots_) plot->SetRemoveEnabled(true);
 }
 
 void TrajectoryView::SetTheme(const AppTheme& theme) {

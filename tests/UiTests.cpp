@@ -28,6 +28,7 @@
 #include <QTemporaryDir>
 #include <QTextBrowser>
 #include <QTimer>
+#include <QToolButton>
 #include <QToolTip>
 #include <QtCharts/QChart>
 #include <QtCharts/QLineSeries>
@@ -264,6 +265,10 @@ void UiTests::spatialPlotsKeepHistoryMergeAndApplyTransforms() {
     auto plots = view.findChildren<TrajectoryPlotWidget*>();
     QCOMPARE(plots.size(), 1);
     auto* first2D = plots.first();
+    auto* firstRemove = first2D->findChild<QToolButton*>(
+        QStringLiteral("removeTrajectoryPlot_%1").arg(first2D->PlotId()));
+    QVERIFY(firstRemove);
+    QVERIFY(firstRemove->isEnabled());
     auto* second2D = view.AddPlot(TrajectoryDimension::TwoD);
     auto* plot3D = view.AddPlot(TrajectoryDimension::ThreeD);
     QCOMPARE(view.PlotCount(), 3);
@@ -326,6 +331,20 @@ void UiTests::spatialPlotsKeepHistoryMergeAndApplyTransforms() {
     QCOMPARE(firstLine->points().size(), 6);
     QCOMPARE(firstLine->points().first().x(), xSignal * 200.0 + 10.0);
     QCOMPARE(first2D->HistoryPointCount(), 6);
+
+    auto* remove3D = plot3D->findChild<QToolButton*>(
+        QStringLiteral("removeTrajectoryPlot_%1").arg(plot3D->PlotId()));
+    QVERIFY(remove3D);
+    remove3D->click();
+    QCOMPARE(view.PlotCount(), 1);
+    firstRemove->click();
+    QCOMPARE(view.PlotCount(), 0);
+    auto* emptyState = view.findChild<QLabel*>(QStringLiteral("emptyTrajectoryState"));
+    QVERIFY(emptyState);
+    QVERIFY(!emptyState->isHidden());
+    QCOMPARE(view.AddPlot(TrajectoryDimension::ThreeD)->Dimension(),
+             TrajectoryDimension::ThreeD);
+    QCOMPARE(view.PlotCount(), 1);
 }
 
 void UiTests::signalSearchOperatesOnMainSelection() {
