@@ -125,6 +125,7 @@ void UiTests::themesUpdateControlsAndCharts() {
     QVERIFY(outdoorAction);
     QVERIFY(outdoorAction->isChecked());
     QVERIFY(window.styleSheet().contains(outdoor.windowBackground.name()));
+    QVERIFY(window.styleSheet().contains(QStringLiteral("QToolButton")));
     window.ApplyTheme(AppThemeId::OutdoorHighContrast, true);
     settings.sync();
     QCOMPARE(settings.value(QStringLiteral("appearance/theme")).toString(),
@@ -269,6 +270,8 @@ void UiTests::spatialPlotsKeepHistoryMergeAndApplyTransforms() {
         QStringLiteral("removeTrajectoryPlot_%1").arg(first2D->PlotId()));
     QVERIFY(firstRemove);
     QVERIFY(firstRemove->isEnabled());
+    QVERIFY(firstRemove->text().contains(QStringLiteral("删除子图")));
+    QVERIFY(firstRemove->minimumWidth() >= 100);
     auto* second2D = view.AddPlot(TrajectoryDimension::TwoD);
     auto* plot3D = view.AddPlot(TrajectoryDimension::ThreeD);
     QCOMPARE(view.PlotCount(), 3);

@@ -138,10 +138,11 @@ QString BuildApplicationStyleSheet(const AppTheme& theme) {
         }
         QComboBox QAbstractItemView { background: @INPUT@; color: @TEXT@;
                                       selection-background-color: @SELECTION@; }
-        QPushButton { background: @BUTTON@; color: @TEXT@; border: 1px solid @BORDER@;
-                      border-radius: 4px; padding: 4px 8px; }
-        QPushButton:hover { background: @BUTTON_HOVER@; }
-        QPushButton:disabled { color: @SUBDUED@; }
+        QPushButton, QToolButton { background: @BUTTON@; color: @TEXT@;
+                                  border: 1px solid @BORDER@;
+                                  border-radius: 4px; padding: 4px 8px; }
+        QPushButton:hover, QToolButton:hover { background: @BUTTON_HOVER@; }
+        QPushButton:disabled, QToolButton:disabled { color: @SUBDUED@; }
         QTabWidget::pane { border: 1px solid @BORDER@; background: @CONTENT@; }
         QTabBar::tab { background: @PANEL@; color: @TEXT@; border: 1px solid @BORDER@;
                        padding: 5px 12px; }

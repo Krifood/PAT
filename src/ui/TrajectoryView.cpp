@@ -281,6 +281,9 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
     auto* removeButton = new QToolButton(this);
     removeButton->setObjectName(QStringLiteral("removeTrajectoryPlot_%1").arg(plotId_));
     removeButton->setText(tr("× 删除子图"));
+    removeButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    removeButton->setAutoRaise(false);
+    removeButton->setMinimumWidth(100);
     removeButton->setToolTip(tr("删除本子图及其会话轨迹历史"));
     connect(removeButton, &QToolButton::clicked, this, [this]() { emit RemoveRequested(plotId_); });
     header->addWidget(headerTitle_);
@@ -818,7 +821,8 @@ TrajectoryView::TrajectoryView(QWidget* parent) : QWidget(parent) {
     add2D->setObjectName(QStringLiteral("addTrajectory2D"));
     auto* add3D = new QPushButton(tr("新增三维子图"), this);
     add3D->setObjectName(QStringLiteral("addTrajectory3D"));
-    auto* hint = new QLabel(tr("拖动子图标题到同维度子图可合并；轨迹历史独立保留"), this);
+    auto* hint = new QLabel(
+        tr("每个子图右上角可删除；拖动标题到同维度子图可合并"), this);
     actions->addWidget(add2D);
     actions->addWidget(add3D);
     actions->addWidget(hint);
