@@ -105,7 +105,38 @@ private slots:
     void vmcReaderAndUnifiedRoundTrip();
     void mixedReaderHonorsCacheBudget();
     void vmcProvidedSampleRegression();
+    void vmcTwentyFoldStress();
 };
+
+void CoreTests::vmcTwentyFoldStress() {
+    if (qEnvironmentVariable("PAT_RUN_LARGE_VMC_TEST") != QStringLiteral("1")) {
+        QSKIP("set PAT_RUN_LARGE_VMC_TEST=1 to run the 20x real-sample stress test");
+    }
+    const QString sourcePath = QString::fromUtf8(PAT_SOURCE_DIR)
+        + QStringLiteral("/samples/0c_vmc/log_151_data_2026_09_18__09_54_15.bin");
+    if (!QFileInfo::exists(sourcePath)) QSKIP("optional 0c_vmc sample is not present");
+    QStringList sources;
+    for (int i = 0; i < 20; ++i) sources.append(sourcePath);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString binPath = dir.filePath(QStringLiteral("stress.patbin"));
+    const QString jsonPath = dir.filePath(QStringLiteral("stress.json"));
+    pat::UnifiedLogWriteResult result;
+    pat::UnifiedLogWriter writer;
+    QString error;
+    QVERIFY2(writer.ConvertVmcFiles(sources, binPath, jsonPath, {}, result, error),
+             qPrintable(error));
+    QCOMPARE(result.routedRecordCount, quint64(775964) * 20);
+    QCOMPARE(result.sourceRecordCount, quint64(775975) * 20);
+    QVERIFY(result.peakBufferedBytes <= qsizetype(32 * 1024 * 1024 + 300));
+    QVERIFY(result.outputBytes < quint64(700 * 1024 * 1024));
+    pat::FormatDefinition format;
+    QVERIFY2(pat::LoadFormatFromJson(jsonPath, format, error), qPrintable(error));
+    pat::MixedDataSession session;
+    QVERIFY2(session.Open(binPath, format, error), qPrintable(error));
+    QCOMPARE(session.RecordCount(), quint64(775964) * 20);
+    QCOMPARE(session.RetainedPointCount(), quint64(0));
+}
 
 void CoreTests::vmcProvidedSampleRegression() {
     const QString sourcePath = QString::fromUtf8(PAT_SOURCE_DIR)
