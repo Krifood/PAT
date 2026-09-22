@@ -34,6 +34,8 @@ bool DecodeValue(const SignalFormat& signal, const uchar* data, bool little, dou
     else if (type == "uint16") value = ReadUnsigned<quint16>(data, little);
     else if (type == "int32") value = std::bit_cast<qint32>(ReadUnsigned<quint32>(data, little));
     else if (type == "uint32") value = ReadUnsigned<quint32>(data, little);
+    else if (type == "int64") value = static_cast<double>(std::bit_cast<qint64>(ReadUnsigned<quint64>(data, little)));
+    else if (type == "uint64") value = static_cast<double>(ReadUnsigned<quint64>(data, little));
     else if (type == "float32") value = std::bit_cast<float>(ReadUnsigned<quint32>(data, little));
     else if (type == "float64") value = std::bit_cast<double>(ReadUnsigned<quint64>(data, little));
     else return false;
@@ -45,7 +47,7 @@ int ValueSize(const QString& type) {
     if (type == "int8" || type == "uint8") return 1;
     if (type == "int16" || type == "uint16") return 2;
     if (type == "int32" || type == "uint32" || type == "float32") return 4;
-    if (type == "float64") return 8;
+    if (type == "int64" || type == "uint64" || type == "float64") return 8;
     return 0;
 }
 

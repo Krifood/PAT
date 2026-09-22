@@ -21,7 +21,7 @@ option(PAT_STRICT_WARNINGS "Enable compiler warnings" ON)
 find_package(Qt6 REQUIRED COMPONENTS Core)
 
 if(PAT_BUILD_GUI)
-  find_package(Qt6 REQUIRED COMPONENTS Widgets Charts)
+  find_package(Qt6 REQUIRED COMPONENTS Widgets Charts Concurrent)
 endif()
 
 if(PAT_ENABLE_SERIAL)
@@ -35,12 +35,16 @@ add_library(pat_core
   src/core/FormatDocument.cpp
   src/core/FrameExporter.cpp
   src/core/InputReader.cpp
+  src/core/IndexedMixedReader.cpp
   src/core/LiveDataSession.cpp
+  src/core/MixedDataSession.cpp
   src/core/RecordDecoder.cpp
   src/core/RecordParser.cpp
   src/core/SerialFrameAssembler.cpp
   src/core/SeriesProcessing.cpp
   src/core/TrajectoryData.cpp
+  src/core/UnifiedLogWriter.cpp
+  src/core/VmcLogReader.cpp
 )
 
 target_include_directories(pat_core
@@ -78,7 +82,7 @@ if(PAT_BUILD_GUI)
   )
   add_executable(pat_app src/ui/main.cpp ${PAT_UI_SOURCES})
   target_include_directories(pat_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-  target_link_libraries(pat_app PRIVATE pat_core Qt6::Widgets Qt6::Charts)
+  target_link_libraries(pat_app PRIVATE pat_core Qt6::Widgets Qt6::Charts Qt6::Concurrent)
   target_compile_definitions(pat_app PRIVATE PAT_ENABLE_QT_CHARTS=1
     PAT_APP_VERSION="${PROJECT_VERSION}")
 endif()
@@ -113,7 +117,7 @@ if(PAT_BUILD_TESTS)
     if(PAT_BUILD_GUI)
       add_executable(pat_ui_tests tests/UiTests.cpp ${PAT_UI_SOURCES})
       target_include_directories(pat_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-      target_link_libraries(pat_ui_tests PRIVATE pat_serial Qt6::Widgets Qt6::Charts Qt6::Test)
+      target_link_libraries(pat_ui_tests PRIVATE pat_serial Qt6::Widgets Qt6::Charts Qt6::Concurrent Qt6::Test)
       target_compile_definitions(pat_ui_tests PRIVATE PAT_ENABLE_QT_CHARTS=1 PAT_ENABLE_SERIAL=1
         PAT_APP_VERSION="${PROJECT_VERSION}"
         PAT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

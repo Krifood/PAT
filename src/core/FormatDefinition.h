@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QHash>
 #include <QString>
+#include <QtGlobal>
 #include <vector>
 
 namespace pat {
@@ -22,6 +23,16 @@ struct SignalFormat {
     QString groupPath;
 };
 
+struct StreamFormat {
+    quint32 streamId = 0;
+    QString sourceMessageId;
+    QString name;
+    int payloadLength = 0;
+    QString endianness = QStringLiteral("big");
+    int firstSignalIndex = 0;
+    int signalCount = 0;
+};
+
 struct FormatDefinition {
     int schemaVersion = 1;
     QString templateId;
@@ -36,8 +47,22 @@ struct FormatDefinition {
     QHash<QString, QString> groupDescriptions;
     QString timeAxisUnit = QStringLiteral("s");
 
+    // schema_version 3 keeps each source message as an independently indexed stream.
+    QString storageKind;
+    int storageVersion = 0;
+    QString layoutSha256;
+    QString dataFile;
+    QString timestampValueType;
+    QString timestampUnit;
+    double timestampScale = 1.0;
+    bool timestampScaleKnown = false;
+    std::vector<StreamFormat> streamFormats;
+
     bool HasFraming() const { return !frameHeader.isEmpty(); }
     bool HasSum8Checksum() const { return checksumByteOffset >= 0; }
+    bool IsIndexedMixed() const {
+        return schemaVersion == 3 && storageKind == QStringLiteral("indexed_stream_chunks");
+    }
 };
 
 bool LoadFormatFromJson(const QString& path, FormatDefinition& outFormat, QString& errorMessage);

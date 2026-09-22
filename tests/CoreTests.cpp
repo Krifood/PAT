@@ -2,18 +2,25 @@
 #include "core/FormatDefinition.h"
 #include "core/FrameExporter.h"
 #include "core/InputReader.h"
+#include "core/MixedDataSession.h"
 #include "core/LiveDataSession.h"
 #include "core/RecordDecoder.h"
 #include "core/RecordParser.h"
 #include "core/SerialFrameAssembler.h"
 #include "core/SeriesProcessing.h"
 #include "core/TrajectoryData.h"
+#include "core/UnifiedLogWriter.h"
+#include "core/VmcLogReader.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QBuffer>
 #include <QCryptographicHash>
 #include <QTemporaryDir>
+#include <QtEndian>
 #include <QtTest>
+
+#include <cmath>
 
 namespace {
 
@@ -26,6 +33,53 @@ constexpr auto kFramedFormat = R"({
   "signals": [{"name": "temperature", "byte_offset": 2, "value_type": "int16",
                "scale": 0.1, "bias": -40, "unit": "C"}]
 })";
+
+template <typename T>
+void AppendBig(QByteArray& bytes, T value) {
+    const qsizetype offset = bytes.size();
+    bytes.resize(offset + qsizetype(sizeof(T)));
+    qToBigEndian<T>(value, reinterpret_cast<uchar*>(bytes.data() + offset));
+}
+
+template <typename T>
+void AppendLittle(QByteArray& bytes, T value) {
+    const qsizetype offset = bytes.size();
+    bytes.resize(offset + qsizetype(sizeof(T)));
+    qToLittleEndian<T>(value, reinterpret_cast<uchar*>(bytes.data() + offset));
+}
+
+QByteArray SyntheticVmcLog(int recordCount, bool includeMetadata = true) {
+    QByteArray bytes(84, '\0');
+    const QByteArray format("temp@i16,count@u8,energy@u64");
+    bytes.append(char(0xA5));
+    bytes.append(char(0x37));
+    AppendLittle<quint16>(bytes, 0x0123);
+    QByteArray topic(16, '\0');
+    topic.replace(0, 6, QByteArrayLiteral("sensor"));
+    bytes.append(topic);
+    AppendBig<quint16>(bytes, quint16(format.size()));
+    bytes.append(format);
+    for (int i = 0; i < recordCount; ++i) {
+        bytes.append(char(0x5A));
+        bytes.append(char(0x80 | (i & 0x0f)));
+        AppendLittle<quint16>(bytes, 0x0123);
+        AppendBig<quint64>(bytes, quint64(1000 + i * 10));
+        bytes.append(char(11));
+        AppendBig<quint16>(bytes, quint16(qint16(i % 200 - 100)));
+        bytes.append(char(i & 0xff));
+        AppendBig<quint64>(bytes, quint64(9000000000ULL + quint64(i)));
+    }
+    if (includeMetadata) {
+        bytes.append(char(0x5A));
+        bytes.append(char(0x44));
+        AppendLittle<quint16>(bytes, 0x0100);
+        AppendBig<quint64>(bytes, 999999);
+        bytes.append(char(3));
+        bytes.append("abc", 3);
+    }
+    bytes.append(QByteArray(17, char(0xFF)));
+    return bytes;
+}
 
 }  // namespace
 
@@ -48,7 +102,190 @@ private slots:
     void jsonGuideExampleDecodes();
     void trajectoryPairsByRecordOrSampleIndex();
     void displayTransformAndDifferenceSeries();
+    void vmcReaderAndUnifiedRoundTrip();
+    void mixedReaderHonorsCacheBudget();
+    void vmcProvidedSampleRegression();
 };
+
+void CoreTests::vmcProvidedSampleRegression() {
+    const QString sourcePath = QString::fromUtf8(PAT_SOURCE_DIR)
+        + QStringLiteral("/samples/0c_vmc/log_151_data_2026_09_18__09_54_15.bin");
+    if (!QFileInfo::exists(sourcePath)) QSKIP("optional 0c_vmc sample is not present");
+    pat::VmcLogReader reader;
+    pat::VmcSourceHeader header;
+    QString error;
+    QVERIFY2(reader.ReadHeader(sourcePath, header, error), qPrintable(error));
+    QCOMPARE(header.descriptors.size(), 55);
+    QCOMPARE(header.dataOffset, qint64(0x2469));
+    pat::VmcReadSummary summary;
+    QVERIFY2(reader.VisitRecords(sourcePath, header, {}, summary, error), qPrintable(error));
+    QCOMPARE(summary.recordCount, quint64(775975));
+    QCOMPARE(summary.routedRecordCount, quint64(775964));
+    QCOMPARE(summary.metadataRecordCount, quint64(11));
+    QCOMPARE(summary.trailingFillBytes, quint64(1497));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString binPath = dir.filePath(QStringLiteral("sample.patbin"));
+    const QString jsonPath = dir.filePath(QStringLiteral("sample.json"));
+    pat::UnifiedLogWriteResult result;
+    pat::UnifiedLogWriter writer;
+    QVERIFY2(writer.ConvertVmcFiles({sourcePath}, binPath, jsonPath, {}, result, error),
+             qPrintable(error));
+    QCOMPARE(result.streamCount, 55);
+    QCOMPARE(result.routedRecordCount, quint64(775964));
+    QVERIFY(result.outputBytes < quint64(40 * 1024 * 1024));
+    QVERIFY(result.peakBufferedBytes <= qsizetype(32 * 1024 * 1024 + 300));
+
+    pat::FormatDefinition format;
+    QVERIFY2(pat::LoadFormatFromJson(jsonPath, format, error), qPrintable(error));
+    int abz = -1;
+    for (int i = 0; i < static_cast<int>(format.signalFormats.size()); ++i) {
+        if (format.signalFormats[static_cast<size_t>(i)].name == QStringLiteral("ah_nav.abz")) {
+            abz = i;
+            break;
+        }
+    }
+    QVERIFY(abz >= 0);
+    pat::MixedDataSession session;
+    QVERIFY2(session.Open(binPath, format, error), qPrintable(error));
+    QCOMPARE(session.RecordCount(), quint64(775964));
+    QVERIFY2(session.LoadSignals({abz}, error), qPrintable(error));
+    QCOMPARE(session.Series()[abz].samples.size(), 16636);
+    QVERIFY(qAbs(session.Series()[abz].samples.first().y() - (-9.75662)) < 1e-4);
+}
+
+void CoreTests::vmcReaderAndUnifiedRoundTrip() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString sourcePath = dir.filePath(QStringLiteral("source.bin"));
+    QFile source(sourcePath);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    const QByteArray sourceBytes = SyntheticVmcLog(5);
+    QCOMPARE(source.write(sourceBytes), qint64(sourceBytes.size()));
+    source.close();
+
+    pat::VmcLogReader sourceReader;
+    pat::VmcSourceHeader header;
+    QString error;
+    QVERIFY2(sourceReader.ReadHeader(sourcePath, header, error), qPrintable(error));
+    QCOMPARE(header.descriptors.size(), 1);
+    QCOMPARE(header.descriptors[0].payloadLength, 11);
+    QCOMPARE(header.descriptors[0].fields.size(), 3);
+    QCOMPARE(header.descriptors[0].fields[2].valueType, QStringLiteral("uint64"));
+    pat::VmcReadSummary sourceSummary;
+    QVERIFY2(sourceReader.VisitRecords(sourcePath, header, {}, sourceSummary, error), qPrintable(error));
+    QCOMPARE(sourceSummary.recordCount, quint64(6));
+    QCOMPARE(sourceSummary.routedRecordCount, quint64(5));
+    QCOMPARE(sourceSummary.metadataRecordCount, quint64(1));
+    QCOMPARE(sourceSummary.trailingFillBytes, quint64(17));
+
+    const QString binPath = dir.filePath(QStringLiteral("unified.patbin"));
+    const QString jsonPath = dir.filePath(QStringLiteral("unified.json"));
+    pat::UnifiedLogWriteResult writeResult;
+    pat::UnifiedLogWriter writer;
+    QVERIFY2(writer.ConvertVmcFiles({sourcePath}, binPath, jsonPath, {}, writeResult, error),
+             qPrintable(error));
+    QCOMPARE(writeResult.routedRecordCount, quint64(5));
+    QCOMPARE(writeResult.metadataRecordCount, quint64(1));
+    QCOMPARE(writeResult.streamCount, 1);
+    QVERIFY(writeResult.outputBytes < quint64(sourceBytes.size() + 1024));
+
+    pat::FormatDefinition formatDefinition;
+    QVERIFY2(pat::LoadFormatFromJson(jsonPath, formatDefinition, error), qPrintable(error));
+    QVERIFY(formatDefinition.IsIndexedMixed());
+    QCOMPARE(formatDefinition.signalFormats.size(), size_t(3));
+    QCOMPARE(formatDefinition.signalFormats[0].name, QStringLiteral("sensor.temp"));
+    pat::MixedDataSession session;
+    QVERIFY2(session.Open(binPath, formatDefinition, error), qPrintable(error));
+    QCOMPARE(session.RecordCount(), quint64(5));
+    QVERIFY2(session.LoadSignals({0, 1, 2}, error), qPrintable(error));
+    QCOMPARE(session.Series()[0].samples.size(), 5);
+    QCOMPARE(session.Series()[0].samples[0], QPointF(0, -100));
+    QCOMPARE(session.Series()[1].samples[4], QPointF(40, 4));
+    QCOMPARE(session.Series()[2].samples[0].y(), 9000000000.0);
+
+    const QString preservedBin = dir.filePath(QStringLiteral("preserved.patbin"));
+    QFile oldOutput(preservedBin);
+    QVERIFY(oldOutput.open(QIODevice::WriteOnly));
+    QCOMPARE(oldOutput.write("previous"), qint64(8));
+    oldOutput.close();
+    QFile invalidParent(dir.filePath(QStringLiteral("not-a-directory")));
+    QVERIFY(invalidParent.open(QIODevice::WriteOnly));
+    invalidParent.close();
+    pat::UnifiedLogWriteResult failedResult;
+    QVERIFY(!writer.ConvertVmcFiles(
+        {sourcePath}, preservedBin,
+        dir.filePath(QStringLiteral("not-a-directory/result.json")), {},
+        failedResult, error));
+    QVERIFY(oldOutput.open(QIODevice::ReadOnly));
+    QCOMPARE(oldOutput.readAll(), QByteArrayLiteral("previous"));
+
+    const QString multiBin = dir.filePath(QStringLiteral("multi.patbin"));
+    const QString multiJson = dir.filePath(QStringLiteral("multi.json"));
+    pat::UnifiedLogWriteResult multiResult;
+    QVERIFY2(writer.ConvertVmcFiles({sourcePath, sourcePath}, multiBin, multiJson, {},
+                                    multiResult, error), qPrintable(error));
+    pat::FormatDefinition multiFormat;
+    QVERIFY2(pat::LoadFormatFromJson(multiJson, multiFormat, error), qPrintable(error));
+    pat::MixedDataSession multiSession;
+    QVERIFY2(multiSession.Open(multiBin, multiFormat, error), qPrintable(error));
+    QCOMPARE(multiSession.RecordCount(), quint64(10));
+    QVERIFY2(multiSession.LoadSignals({0}, error), qPrintable(error));
+    QCOMPARE(multiSession.Series()[0].samples.size(), 11);
+    QVERIFY(std::isnan(multiSession.Series()[0].samples[5].y()));
+    QVERIFY(multiSession.Series()[0].samples[6].x()
+            > multiSession.Series()[0].samples[4].x());
+
+    QFile corrupt(multiBin);
+    QVERIFY(corrupt.open(QIODevice::ReadWrite));
+    QVERIFY(corrupt.seek(64 + 56 + 15));
+    char byte = 0;
+    QCOMPARE(corrupt.read(&byte, 1), qint64(1));
+    QVERIFY(corrupt.seek(64 + 56 + 15));
+    byte ^= 0x01;
+    QCOMPARE(corrupt.write(&byte, 1), qint64(1));
+    corrupt.close();
+    pat::MixedDataSession corruptSession;
+    QVERIFY2(corruptSession.Open(multiBin, multiFormat, error), qPrintable(error));
+    QVERIFY(!corruptSession.LoadSignals({0}, error));
+    QVERIFY(error.contains(QStringLiteral("校验失败")));
+}
+
+void CoreTests::mixedReaderHonorsCacheBudget() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString sourcePath = dir.filePath(QStringLiteral("large.bin"));
+    QFile source(sourcePath);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    const QByteArray sourceBytes = SyntheticVmcLog(100000, false);
+    QCOMPARE(source.write(sourceBytes), qint64(sourceBytes.size()));
+    source.close();
+
+    pat::UnifiedLogWriteOptions options;
+    options.targetChunkBytes = 64 * 1024;
+    options.maxBufferedBytes = 128 * 1024;
+    pat::UnifiedLogWriteResult writeResult;
+    QString error;
+    const QString binPath = dir.filePath(QStringLiteral("large.patbin"));
+    const QString jsonPath = dir.filePath(QStringLiteral("large.json"));
+    pat::UnifiedLogWriter writer;
+    QVERIFY2(writer.ConvertVmcFiles({sourcePath}, binPath, jsonPath, options,
+                                    writeResult, error), qPrintable(error));
+    QVERIFY(writeResult.chunkCount > 1);
+    QVERIFY(writeResult.peakBufferedBytes <= options.maxBufferedBytes + 26);
+
+    pat::FormatDefinition format;
+    QVERIFY2(pat::LoadFormatFromJson(jsonPath, format, error), qPrintable(error));
+    pat::MixedDataSession session;
+    session.SetCacheBudgetBytes(4 * 1024 * 1024);
+    QVERIFY2(session.Open(binPath, format, error), qPrintable(error));
+    QVERIFY2(session.LoadSignals({0, 1, 2}, error), qPrintable(error));
+    QVERIFY(session.RetainedPointCount() < quint64(150000));
+    QVERIFY(session.RetainedPointCount() > quint64(10000));
+    QVERIFY(session.Series()[0].samples.contains(QPointF(0, -100)));
+    QVERIFY(session.Series()[0].samples.constLast().x() <= 999990.0);
+}
 
 void CoreTests::displayTransformAndDifferenceSeries() {
     pat::FormatDefinition format;

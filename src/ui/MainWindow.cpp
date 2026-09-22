@@ -11,17 +11,21 @@
 #include "core/InputReader.h"
 #include "core/RecordDecoder.h"
 #include "core/SerialFrameAssembler.h"
+#include "core/UnifiedLogWriter.h"
 
 #include <QAction>
 #include <QActionGroup>
+#include <QApplication>
 #include <QAbstractItemView>
 #include <QComboBox>
 #include <QCheckBox>
 #include <QBuffer>
 #include <QDir>
 #include <QDockWidget>
+#include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QFormLayout>
 #include <QInputDialog>
 #include <QLabel>
@@ -29,6 +33,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSettings>
@@ -44,11 +49,13 @@
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QTreeWidgetItem>
+#include <QtConcurrent>
 #ifdef PAT_ENABLE_SERIAL
 #include <QSerialPortInfo>
 #endif
 
 #include <algorithm>
+#include <atomic>
 
 namespace {
 
@@ -131,6 +138,8 @@ void MainWindow::SetupUi() {
     auto* saveFormatAction = new QAction(tr("保存格式"), this);
     auto* saveAsFormatAction = new QAction(tr("格式另存为..."), this);
     auto* openDataAction = new QAction(tr("打开数据..."), this);
+    auto* importVmcAction = new QAction(tr("导入 VMC 混合日志..."), this);
+    importVmcAction->setObjectName(QStringLiteral("importVmcLogAction"));
     auto* exportFramesAction = new QAction(tr("导出原始帧..."), this);
     auto* previewFrameAction = new QAction(tr("预览帧解码..."), this);
     auto* setMaxPointsAction = new QAction(tr("设置最大显示点数..."), this);
@@ -143,6 +152,7 @@ void MainWindow::SetupUi() {
     connect(saveFormatAction, &QAction::triggered, this, &MainWindow::SaveFormatFile);
     connect(saveAsFormatAction, &QAction::triggered, this, &MainWindow::SaveFormatFileAs);
     connect(openDataAction, &QAction::triggered, this, &MainWindow::OpenDataFile);
+    connect(importVmcAction, &QAction::triggered, this, &MainWindow::ImportVmcLog);
     connect(exportFramesAction, &QAction::triggered, this, &MainWindow::ExportRawFrames);
     connect(previewFrameAction, &QAction::triggered, this, &MainWindow::PreviewFrame);
     connect(setMaxPointsAction, &QAction::triggered, this, &MainWindow::SetMaxVisiblePoints);
@@ -156,6 +166,7 @@ void MainWindow::SetupUi() {
     fileMenu->addAction(saveFormatAction);
     fileMenu->addAction(saveAsFormatAction);
     fileMenu->addAction(openDataAction);
+    fileMenu->addAction(importVmcAction);
     fileMenu->addAction(exportFramesAction);
     fileMenu->addAction(previewFrameAction);
     fileMenu->addAction(setMaxPointsAction);
@@ -243,6 +254,9 @@ void MainWindow::SetupUi() {
     connect(chartArea_, &ChartArea::SplitRequested, this, &MainWindow::HandleSplitRequested);
     connect(chartArea_, &ChartArea::TransformRequested, this, &MainWindow::ShowSignalTransformDialog);
     trajectoryView_ = new TrajectoryView(dataViewTabs_);
+    connect(trajectoryView_, &TrajectoryView::SignalsChanged, this, [this]() {
+        if (mixedMode_ && !liveMode_) UpdateCharts();
+    });
     dataViewTabs_->addTab(chartArea_, tr("时序曲线"));
     dataViewTabs_->addTab(trajectoryView_, tr("二维/三维轨迹"));
     rightLayout->addWidget(dataViewTabs_, /*stretch=*/1);
@@ -348,6 +362,26 @@ void MainWindow::OpenFormatFile() {
         return;
     }
 
+    if (formatDocument_.Format().IsIndexedMixed()) {
+        dataSession_.Clear();
+        mixedDataSession_.Clear();
+        mixedMode_ = false;
+        const QString dataFile = formatDocument_.Format().dataFile;
+        if (!dataFile.isEmpty()) {
+            const QString candidate = QFileInfo(path).dir().filePath(dataFile);
+            if (QFileInfo::exists(candidate)) {
+                if (!mixedDataSession_.Open(candidate, formatDocument_.Format(), error)) {
+                    QMessageBox::warning(this, tr("统一日志加载失败"), error);
+                } else {
+                    mixedMode_ = true;
+                }
+            }
+        }
+    } else {
+        mixedDataSession_.Clear();
+        mixedMode_ = false;
+    }
+
     displayGroupManager_.Clear();
     liveMode_ = false;
 #ifdef PAT_ENABLE_SERIAL
@@ -357,7 +391,7 @@ void MainWindow::OpenFormatFile() {
     BuildSignalTree();
     if (chartArea_) chartArea_->SetTimeUnit(formatDocument_.Format().timeAxisUnit);
 
-    if (dataSession_.HasData()) {
+    if (!formatDocument_.Format().IsIndexedMixed() && dataSession_.HasData()) {
         const QString dataPath = dataSession_.Path();
         if (!dataSession_.Load(dataPath, formatDocument_.Format(), error)) {
             dataSession_.Clear();
@@ -383,18 +417,38 @@ void MainWindow::OpenDataFile() {
         return;
     }
 
+    QString initialPath;
+    if (formatDocument_.Format().IsIndexedMixed()
+        && !formatDocument_.Format().dataFile.isEmpty()
+        && !formatDocument_.Path().isEmpty()) {
+        initialPath = QFileInfo(formatDocument_.Path()).dir().filePath(
+            formatDocument_.Format().dataFile);
+    }
     const QString path = QFileDialog::getOpenFileName(this,
                                                       tr("选择数据文件"),
-                                                      QString(),
-                                                      tr("数据文件 (*.bin *.dat *.txt *.log *.hex *.csv);;所有文件 (*)"));
+                                                      initialPath,
+                                                      formatDocument_.Format().IsIndexedMixed()
+                                                          ? tr("PAT 统一日志 (*.patbin *.bin);;所有文件 (*)")
+                                                          : tr("数据文件 (*.bin *.dat *.txt *.log *.hex *.csv);;所有文件 (*)"));
     if (path.isEmpty()) return;
 
     QString error;
-    if (!dataSession_.Load(path, formatDocument_.Format(), error)) {
-        QMessageBox::warning(this, tr("解析失败"), error);
-        return;
+    if (formatDocument_.Format().IsIndexedMixed()) {
+        if (!mixedDataSession_.Open(path, formatDocument_.Format(), error)) {
+            QMessageBox::warning(this, tr("解析失败"), error);
+            return;
+        }
+        dataSession_.Clear();
+        mixedMode_ = true;
+    } else {
+        if (!dataSession_.Load(path, formatDocument_.Format(), error)) {
+            QMessageBox::warning(this, tr("解析失败"), error);
+            return;
+        }
+        mixedDataSession_.Clear();
+        mixedMode_ = false;
+        seriesProcessing_.RebuildDerived(dataSession_.Series());
     }
-    seriesProcessing_.RebuildDerived(dataSession_.Series());
 
     liveMode_ = false;
     if (trajectoryView_) {
@@ -405,20 +459,109 @@ void MainWindow::OpenDataFile() {
 
 #ifdef PAT_ENABLE_QT_CHARTS
     if (chartArea_) {
-        chartArea_->SetStatistics(dataSession_.Statistics());
-        chartArea_->SetSeries(&dataSession_.Series());
+        chartArea_->SetStatistics(OfflineStatistics());
+        chartArea_->SetSeries(&OfflineSeries());
         if (formatDocument_.Format().HasFraming()) {
             chartArea_->SetAxisTitle(tr("采样序号"));
         } else {
-            chartArea_->SetTimeUnit(dataSession_.TimeUnit());
+            chartArea_->SetTimeUnit(mixedMode_ ? mixedDataSession_.TimeUnit()
+                                               : dataSession_.TimeUnit());
         }
     }
 #endif
 
     UpdateCharts();
 
-    const int recordCount = dataSession_.Series().isEmpty() ? 0 : dataSession_.Series().first().samples.size();
+    const quint64 recordCount = mixedMode_ ? mixedDataSession_.RecordCount()
+        : (dataSession_.Series().isEmpty() ? 0
+                                           : quint64(dataSession_.Series().first().samples.size()));
     UpdateStatus(tr("解析完成：%1，记录数 %2").arg(FileLeaf(path)).arg(recordCount));
+}
+
+void MainWindow::ImportVmcLog() {
+#ifdef PAT_ENABLE_SERIAL
+    if (captureRunning_) {
+        QMessageBox::information(this, tr("提示"), tr("请先停止串口采集，再导入日志"));
+        return;
+    }
+#endif
+    const QStringList sources = QFileDialog::getOpenFileNames(
+        this, tr("选择一个或多个 VMC 日志"), QString(),
+        tr("VMC 日志 (*.bin *.log);;所有文件 (*)"));
+    if (sources.isEmpty()) return;
+    const QFileInfo first(sources.first());
+    const QString suggested = first.dir().filePath(first.completeBaseName() + QStringLiteral("_pat.json"));
+    QString jsonPath = QFileDialog::getSaveFileName(
+        this, tr("保存统一日志配置"), suggested, tr("JSON (*.json)"));
+    if (jsonPath.isEmpty()) return;
+    if (QFileInfo(jsonPath).suffix().isEmpty()) jsonPath += QStringLiteral(".json");
+    const QFileInfo jsonInfo(jsonPath);
+    const QString binaryPath = jsonInfo.dir().filePath(jsonInfo.completeBaseName()
+                                                        + QStringLiteral(".patbin"));
+    if (QFileInfo::exists(binaryPath)) {
+        const auto answer = QMessageBox::question(
+            this, tr("覆盖统一日志"), tr("数据文件已存在：\n%1\n是否覆盖？").arg(binaryPath));
+        if (answer != QMessageBox::Yes) return;
+    }
+
+    struct ConversionOutcome {
+        bool ok = false;
+        pat::UnifiedLogWriteResult result;
+        QString error;
+    };
+    auto cancelled = std::make_shared<std::atomic_bool>(false);
+    QFutureWatcher<ConversionOutcome> watcher;
+    QProgressDialog progress(tr("正在按流转换并建立索引..."), tr("取消"), 0, 0, this);
+    progress.setWindowTitle(tr("导入 VMC 混合日志"));
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    connect(&progress, &QProgressDialog::canceled, this, [cancelled, &progress]() {
+        cancelled->store(true);
+        progress.setLabelText(QObject::tr("正在安全取消转换..."));
+    });
+    QEventLoop loop;
+    connect(&watcher, &QFutureWatcher<ConversionOutcome>::finished, &loop, &QEventLoop::quit);
+    watcher.setFuture(QtConcurrent::run([sources, binaryPath, jsonPath, cancelled]() {
+        ConversionOutcome outcome;
+        pat::UnifiedLogWriteOptions options;
+        options.isCancelled = [cancelled]() { return cancelled->load(); };
+        pat::UnifiedLogWriter writer;
+        outcome.ok = writer.ConvertVmcFiles(sources, binaryPath, jsonPath, options,
+                                            outcome.result, outcome.error);
+        return outcome;
+    }));
+    progress.show();
+    loop.exec();
+    progress.close();
+    const ConversionOutcome outcome = watcher.result();
+    if (!outcome.ok) {
+        if (!cancelled->load()) QMessageBox::warning(this, tr("导入失败"), outcome.error);
+        else UpdateStatus(tr("VMC 日志转换已取消"));
+        return;
+    }
+
+    QString error;
+    pat::FormatDocument newDocument;
+    pat::MixedDataSession newSession;
+    if (!newDocument.LoadFromFile(jsonPath, error)
+        || !newSession.Open(binaryPath, newDocument.Format(), error)) {
+        QMessageBox::warning(this, tr("导入结果加载失败"), error);
+        return;
+    }
+    formatDocument_ = std::move(newDocument);
+    mixedDataSession_ = std::move(newSession);
+    dataSession_.Clear();
+    mixedMode_ = true;
+    liveMode_ = false;
+    displayGroupManager_.Clear();
+    if (chartArea_) chartArea_->ResetSessionView();
+    BuildSignalTree();
+    UpdateCharts();
+    UpdateStatus(tr("导入完成：%1 个流，%2 条记录，%3 个数据块，峰值写缓冲 %4 MiB")
+                     .arg(outcome.result.streamCount)
+                     .arg(outcome.result.routedRecordCount)
+                     .arg(outcome.result.chunkCount)
+                     .arg(double(outcome.result.peakBufferedBytes) / (1024.0 * 1024.0), 0, 'f', 1));
 }
 
 void MainWindow::ExportRawFrames() {
@@ -486,6 +629,11 @@ void MainWindow::ExportRawFrames() {
 void MainWindow::PreviewFrame() {
     if (!formatDocument_.HasFormat()) {
         QMessageBox::information(this, tr("提示"), tr("请先加载协议模板"));
+        return;
+    }
+    if (formatDocument_.Format().IsIndexedMixed()) {
+        QMessageBox::information(this, tr("提示"),
+                                 tr("统一混合日志按流和时间索引读取，不适用单个固定帧预览"));
         return;
     }
     bool accepted = false;
@@ -556,6 +704,8 @@ void MainWindow::NewFormatFile() {
     displayGroupManager_.Clear();
     liveMode_ = false;
     dataSession_.Clear();
+    mixedDataSession_.Clear();
+    mixedMode_ = false;
     if (chartArea_) chartArea_->ResetSessionView();
     BuildSignalTree();
     UpdateCharts();
@@ -579,6 +729,8 @@ void MainWindow::NewSerialFormatFile() {
         return;
     }
     dataSession_.Clear();
+    mixedDataSession_.Clear();
+    mixedMode_ = false;
     liveMode_ = false;
     displayGroupManager_.Clear();
     if (chartArea_) chartArea_->ResetSessionView();
@@ -599,6 +751,8 @@ void MainWindow::EditFormatFile() {
         return;
     }
 
+    const QString previousDataPath = dataSession_.Path();
+    const QString previousMixedPath = mixedDataSession_.Path();
     QString edited;
     FormatEditorDialog dialog(tr("编辑格式"), formatDocument_.JsonText(), this);
     if (!dialog.Run(edited)) return;
@@ -615,9 +769,21 @@ void MainWindow::EditFormatFile() {
     BuildSignalTree();
     if (chartArea_) chartArea_->SetTimeUnit(formatDocument_.Format().timeAxisUnit);
 
-    if (dataSession_.HasData()) {
-        const QString dataPath = dataSession_.Path();
-        if (!dataSession_.Load(dataPath, formatDocument_.Format(), error)) {
+    if (formatDocument_.Format().IsIndexedMixed()) {
+        dataSession_.Clear();
+        mixedMode_ = false;
+        if (!previousMixedPath.isEmpty()
+            && !mixedDataSession_.Open(previousMixedPath, formatDocument_.Format(), error)) {
+            mixedDataSession_.Clear();
+            QMessageBox::warning(this, tr("重解析失败"), error);
+        } else if (!previousMixedPath.isEmpty()) {
+            mixedMode_ = true;
+        }
+    } else {
+        mixedDataSession_.Clear();
+        mixedMode_ = false;
+        if (!previousDataPath.isEmpty()
+            && !dataSession_.Load(previousDataPath, formatDocument_.Format(), error)) {
             dataSession_.Clear();
             QMessageBox::warning(this, tr("重解析失败"), error);
         }
@@ -706,13 +872,20 @@ void MainWindow::HandleSignalTreeItemChanged(QTreeWidgetItem* item, int column) 
 void MainWindow::UpdateCharts() {
 #ifdef PAT_ENABLE_QT_CHARTS
     if (!chartArea_) return;
-    const bool hasData = liveMode_ ? liveSession_.HasData() : dataSession_.HasData();
+    if (!liveMode_ && mixedMode_ && mixedDataSession_.HasData()) {
+        QString error;
+        if (!LoadMixedSignalsForCurrentView(error)) {
+            UpdateStatus(tr("统一日志按需读取失败：%1").arg(error));
+        }
+    }
+    const bool hasData = liveMode_ ? liveSession_.HasData() : HasOfflineData();
     if (trajectoryView_) {
         trajectoryView_->SetDisplayTransforms(seriesProcessing_.Transforms());
         trajectoryView_->SetDataSource(liveMode_ ? &liveSession_.SeriesData()
-                                                 : &dataSession_.Series(),
+                                                 : &OfflineSeries(),
                                        liveMode_ ? pat::TrajectoryPairing::SampleIndex
-                                                 : pat::TrajectoryPairing::RecordOrder);
+                                                 : (mixedMode_ ? pat::TrajectoryPairing::SampleIndex
+                                                               : pat::TrajectoryPairing::RecordOrder));
     }
     // Framed signals can show empty axes before capture and while waiting for a valid frame.
     if (!formatDocument_.HasFormat()
@@ -739,15 +912,48 @@ void MainWindow::UpdateCharts() {
         chartArea_->SetSeries(&liveSession_.SeriesData());
         chartArea_->SetAxisTitle(tr("采样序号"));
     } else {
-        chartArea_->SetStatistics(dataSession_.Statistics());
-        chartArea_->SetSeries(&dataSession_.Series());
+        chartArea_->SetStatistics(OfflineStatistics());
+        chartArea_->SetSeries(&OfflineSeries());
         if (formatDocument_.Format().HasFraming()) chartArea_->SetAxisTitle(tr("采样序号"));
-        else chartArea_->SetTimeUnit(dataSession_.TimeUnit());
+        else chartArea_->SetTimeUnit(mixedMode_ ? mixedDataSession_.TimeUnit()
+                                               : dataSession_.TimeUnit());
     }
     chartArea_->SetMaxVisiblePoints(maxVisiblePoints_);
     chartArea_->RefreshCharts();
 #else
 #endif
+}
+
+const QVector<pat::Series>& MainWindow::OfflineSeries() const {
+    return mixedMode_ ? mixedDataSession_.Series() : dataSession_.Series();
+}
+
+const pat::SeriesStatistics& MainWindow::OfflineStatistics() const {
+    return mixedMode_ ? mixedDataSession_.Statistics() : dataSession_.Statistics();
+}
+
+bool MainWindow::HasOfflineData() const {
+    return mixedMode_ ? mixedDataSession_.HasData() : dataSession_.HasData();
+}
+
+bool MainWindow::LoadMixedSignalsForCurrentView(QString& errorMessage) {
+    if (!mixedMode_ || !mixedDataSession_.HasData()) return true;
+    QVector<int> required = signalTreeController_
+        ? signalTreeController_->CollectCheckedSignalIndices() : QVector<int>{};
+    for (const auto& definition : seriesProcessing_.DerivedDefinitions()) {
+        if (!required.contains(definition.leftSignal)) required.append(definition.leftSignal);
+        if (!required.contains(definition.rightSignal)) required.append(definition.rightSignal);
+    }
+    if (trajectoryView_) {
+        for (int index : trajectoryView_->SelectedSignalIndices()) {
+            if (!required.contains(index)) required.append(index);
+        }
+    }
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const bool loaded = mixedDataSession_.LoadSignals(required, errorMessage);
+    QApplication::restoreOverrideCursor();
+    if (loaded) seriesProcessing_.RebuildDerived(mixedDataSession_.Series());
+    return loaded;
 }
 
 void MainWindow::UpdateStatus(const QString& text) {
@@ -996,7 +1202,7 @@ void MainWindow::HandleHideSignalsRequested(const QVector<int>& indices) {
         }
     }
     if (removedDerived) {
-        seriesProcessing_.RebuildDerived(liveMode_ ? liveSession_.SeriesData() : dataSession_.Series());
+        seriesProcessing_.RebuildDerived(liveMode_ ? liveSession_.SeriesData() : OfflineSeries());
     }
     signalTreeController_->SetSignalsChecked(rawSignals, false);
     displayGroupManager_.RemoveSignals(rawSignals);
@@ -1035,7 +1241,9 @@ void MainWindow::ShowDifferenceDialog(const QVector<int>& suggestedSignals) {
 bool MainWindow::CreateDerived(int leftSignal, int rightSignal,
                                pat::SeriesOperation operation, QString& errorMessage) {
     if (!seriesProcessing_.AddDerived(leftSignal, rightSignal, operation, errorMessage)) return false;
-    seriesProcessing_.RebuildDerived(liveMode_ ? liveSession_.SeriesData() : dataSession_.Series());
+    if (!mixedMode_) {
+        seriesProcessing_.RebuildDerived(liveMode_ ? liveSession_.SeriesData() : dataSession_.Series());
+    }
     UpdateCharts();
     return true;
 }

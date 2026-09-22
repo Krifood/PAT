@@ -428,6 +428,7 @@ void UiTests::trajectoryTabPlotsOfflineCoordinates() {
 
 void UiTests::informationMenuShowsVersionAndBundledChangelog() {
     MainWindow window;
+    QVERIFY(window.findChild<QAction*>(QStringLiteral("importVmcLogAction")));
     window.show();
 
     QMenu* helpMenu = nullptr;

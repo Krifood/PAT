@@ -344,6 +344,21 @@ qsizetype TrajectoryPlotWidget::HistoryPointCount(int trackIndex) const {
         ? tracks_[trackIndex].history2D.size() : tracks_[trackIndex].history3D.size();
 }
 
+QVector<int> TrajectoryPlotWidget::SelectedSignalIndices() const {
+    QVector<int> indices;
+    const auto append = [&indices](const QComboBox* combo) {
+        if (!combo) return;
+        const int index = combo->currentData().toInt();
+        if (index >= 0 && !indices.contains(index)) indices.append(index);
+    };
+    for (const auto& track : tracks_) {
+        append(track.xCombo);
+        append(track.yCombo);
+        append(track.zCombo);
+    }
+    return indices;
+}
+
 void TrajectoryPlotWidget::ConfigureSignals(const pat::FormatDefinition& format) {
     format_ = format;
     for (auto& track : tracks_) PopulateTrackCombos(track);
@@ -438,6 +453,7 @@ void TrajectoryPlotWidget::AddTrack(const TrackSnapshot* snapshot) {
     tracks_.append(track);
     auto changed = [this, trackId]() {
         ResetTrackHistory(trackId);
+        emit SignalsChanged();
         CaptureData();
         Render();
     };
@@ -863,6 +879,7 @@ TrajectoryPlotWidget* TrajectoryView::AddPlot(TrajectoryDimension dimension) {
     plot->SetDisplayTransforms(transforms_);
     plot->SetTheme(theme_);
     connect(plot, &TrajectoryPlotWidget::RemoveRequested, this, &TrajectoryView::RemovePlot);
+    connect(plot, &TrajectoryPlotWidget::SignalsChanged, this, &TrajectoryView::SignalsChanged);
     connect(plot, &TrajectoryPlotWidget::MergeRequested, this,
             [this](int sourceId, int targetId) {
                 QString error;
@@ -877,6 +894,17 @@ TrajectoryPlotWidget* TrajectoryView::AddPlot(TrajectoryDimension dimension) {
     plot->CaptureData();
     plot->Render();
     return plot;
+}
+
+QVector<int> TrajectoryView::SelectedSignalIndices() const {
+    QVector<int> indices;
+    for (const auto* plot : plots_) {
+        if (!plot) continue;
+        for (int index : plot->SelectedSignalIndices()) {
+            if (!indices.contains(index)) indices.append(index);
+        }
+    }
+    return indices;
 }
 
 bool TrajectoryView::MergePlots(int sourcePlotId, int targetPlotId, QString& errorMessage) {

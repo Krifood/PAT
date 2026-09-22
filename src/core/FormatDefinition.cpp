@@ -8,6 +8,7 @@
 #include <QSet>
 
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace pat {
@@ -18,7 +19,7 @@ int TypeSize(const QString& type) {
     if (t == "int8" || t == "uint8") return 1;
     if (t == "int16" || t == "uint16") return 2;
     if (t == "int32" || t == "uint32" || t == "float32") return 4;
-    if (t == "float64") return 8;
+    if (t == "int64" || t == "uint64" || t == "float64") return 8;
     return 0;
 }
 
@@ -125,6 +126,135 @@ bool IsEndiannessSupported(const QString& endianness) {
     return e == "little" || e == "big";
 }
 
+bool ParseMixedFormat(const QJsonObject& root,
+                      FormatDefinition& outFormat,
+                      QString& errorMessage) {
+    const auto storageValue = root.value(QStringLiteral("storage"));
+    if (!storageValue.isObject()) {
+        errorMessage = QStringLiteral("schema_version 3 缺少 storage 对象");
+        return false;
+    }
+    const auto storage = storageValue.toObject();
+    outFormat.storageKind = storage.value(QStringLiteral("kind")).toString();
+    outFormat.storageVersion = storage.value(QStringLiteral("version")).toInt(0);
+    outFormat.layoutSha256 = storage.value(QStringLiteral("layout_sha256")).toString().toLower();
+    outFormat.dataFile = storage.value(QStringLiteral("data_file")).toString();
+    if (outFormat.storageKind != QStringLiteral("indexed_stream_chunks")
+        || outFormat.storageVersion != 1) {
+        errorMessage = QStringLiteral("storage.kind/version 不支持：%1/%2")
+                           .arg(outFormat.storageKind).arg(outFormat.storageVersion);
+        return false;
+    }
+    if (outFormat.layoutSha256.size() != 64) {
+        errorMessage = QStringLiteral("storage.layout_sha256 必须为 64 位十六进制字符串");
+        return false;
+    }
+    for (const QChar ch : outFormat.layoutSha256) {
+        if (!(ch >= QLatin1Char('0') && ch <= QLatin1Char('9'))
+            && !(ch >= QLatin1Char('a') && ch <= QLatin1Char('f'))) {
+            errorMessage = QStringLiteral("storage.layout_sha256 含非法字符");
+            return false;
+        }
+    }
+
+    const auto timestampValue = root.value(QStringLiteral("timestamp"));
+    if (!timestampValue.isObject()) {
+        errorMessage = QStringLiteral("schema_version 3 缺少 timestamp 对象");
+        return false;
+    }
+    const auto timestamp = timestampValue.toObject();
+    outFormat.timestampValueType = timestamp.value(QStringLiteral("value_type")).toString().toLower();
+    if (outFormat.timestampValueType != QStringLiteral("uint64")) {
+        errorMessage = QStringLiteral("timestamp.value_type 当前仅支持 uint64");
+        return false;
+    }
+    outFormat.timestampUnit = timestamp.value(QStringLiteral("unit")).toString(QStringLiteral("tick"));
+    outFormat.timestampScaleKnown = timestamp.value(QStringLiteral("scale")).isDouble();
+    outFormat.timestampScale = outFormat.timestampScaleKnown
+        ? timestamp.value(QStringLiteral("scale")).toDouble() : 1.0;
+    if (outFormat.timestampScale <= 0.0 || !std::isfinite(outFormat.timestampScale)) {
+        errorMessage = QStringLiteral("timestamp.scale 必须为正数或 null");
+        return false;
+    }
+    outFormat.timeAxisUnit = outFormat.timestampUnit.isEmpty()
+        ? QStringLiteral("tick") : outFormat.timestampUnit;
+
+    const auto streamsValue = root.value(QStringLiteral("streams"));
+    if (!streamsValue.isArray() || streamsValue.toArray().isEmpty()) {
+        errorMessage = QStringLiteral("streams 应为非空数组");
+        return false;
+    }
+    QSet<quint32> streamIds;
+    QSet<QString> flatNames;
+    for (const auto& streamValue : streamsValue.toArray()) {
+        if (!streamValue.isObject()) {
+            errorMessage = QStringLiteral("streams 内元素应为对象");
+            return false;
+        }
+        const auto streamObject = streamValue.toObject();
+        StreamFormat stream;
+        const qint64 id = streamObject.value(QStringLiteral("stream_id")).toVariant().toLongLong();
+        if (id <= 0 || id > std::numeric_limits<quint32>::max() || streamIds.contains(quint32(id))) {
+            errorMessage = QStringLiteral("stream_id 缺失、非法或重复：%1").arg(id);
+            return false;
+        }
+        stream.streamId = quint32(id);
+        streamIds.insert(stream.streamId);
+        stream.sourceMessageId = streamObject.value(QStringLiteral("source_message_id")).toString();
+        stream.name = streamObject.value(QStringLiteral("name")).toString().trimmed();
+        stream.payloadLength = streamObject.value(QStringLiteral("payload_length")).toInt(0);
+        stream.endianness = streamObject.value(QStringLiteral("endianness")).toString(QStringLiteral("big")).toLower();
+        if (stream.name.isEmpty() || stream.payloadLength <= 0
+            || !IsEndiannessSupported(stream.endianness)) {
+            errorMessage = QStringLiteral("stream %1 的名称、负载长度或字节序非法").arg(stream.streamId);
+            return false;
+        }
+        const auto signalsValue = streamObject.value(QStringLiteral("signals"));
+        if (!signalsValue.isArray() || signalsValue.toArray().isEmpty()) {
+            errorMessage = QStringLiteral("stream %1 的 signals 为空").arg(stream.streamId);
+            return false;
+        }
+        stream.firstSignalIndex = static_cast<int>(outFormat.signalFormats.size());
+        QSet<QString> localNames;
+        for (const auto& signalValue : signalsValue.toArray()) {
+            if (!signalValue.isObject()) {
+                errorMessage = QStringLiteral("stream %1 的 signals 内元素应为对象").arg(stream.streamId);
+                return false;
+            }
+            SignalFormat signal;
+            if (!ParseSignal(signalValue.toObject(), signal, stream.payloadLength,
+                             1.0, outFormat.timeAxisUnit, errorMessage)) return false;
+            if (localNames.contains(signal.name)) {
+                errorMessage = QStringLiteral("stream %1 的 signal.name 重复：%2")
+                                   .arg(stream.streamId).arg(signal.name);
+                return false;
+            }
+            localNames.insert(signal.name);
+            const QString localName = signal.name;
+            signal.name = QStringLiteral("%1.%2").arg(stream.name, localName);
+            if (flatNames.contains(signal.name)) {
+                signal.name = QStringLiteral("%1[%2].%3")
+                                  .arg(stream.name).arg(stream.streamId).arg(localName);
+            }
+            flatNames.insert(signal.name);
+            if (signal.groupPath.trimmed().isEmpty()) {
+                signal.groupPath = QStringLiteral("%1 [%2]").arg(stream.name, stream.sourceMessageId);
+            }
+            signal.timeScale = outFormat.timestampScale;
+            signal.timeUnit = outFormat.timeAxisUnit;
+            outFormat.signalFormats.push_back(std::move(signal));
+        }
+        stream.signalCount = static_cast<int>(outFormat.signalFormats.size()) - stream.firstSignalIndex;
+        outFormat.streamFormats.push_back(std::move(stream));
+    }
+    outFormat.templateId = root.value(QStringLiteral("template_id")).toString().trimmed();
+    if (outFormat.templateId.isEmpty()) {
+        errorMessage = QStringLiteral("template_id 缺失");
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 bool LoadFormatFromJson(const QString& path, FormatDefinition& outFormat, QString& errorMessage) {
@@ -149,6 +279,9 @@ bool LoadFormatFromJsonData(const QByteArray& data, FormatDefinition& outFormat,
 
     outFormat = FormatDefinition{};
     outFormat.schemaVersion = root.value(QStringLiteral("schema_version")).toInt(1);
+    if (outFormat.schemaVersion == 3) {
+        return ParseMixedFormat(root, outFormat, errorMessage);
+    }
     if (outFormat.schemaVersion != 1 && outFormat.schemaVersion != 2) {
         errorMessage = QStringLiteral("schema_version 不支持：%1").arg(outFormat.schemaVersion);
         return false;

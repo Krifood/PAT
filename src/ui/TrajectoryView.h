@@ -55,12 +55,14 @@ public:
     void Render();
     void ResetHistory();
     QVector<TrackSnapshot> Snapshots() const;
+    QVector<int> SelectedSignalIndices() const;
     void AppendSnapshots(const QVector<TrackSnapshot>& snapshots);
     void SetRemoveEnabled(bool enabled);
 
 signals:
     void MergeRequested(int sourcePlotId, int targetPlotId);
     void RemoveRequested(int plotId);
+    void SignalsChanged();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -134,10 +136,14 @@ public:
     void RequestRefresh();
     void RefreshNow();
     void ResetSession();
+    QVector<int> SelectedSignalIndices() const;
 
     TrajectoryPlotWidget* AddPlot(TrajectoryDimension dimension);
     bool MergePlots(int sourcePlotId, int targetPlotId, QString& errorMessage);
     int PlotCount() const { return plots_.size(); }
+
+signals:
+    void SignalsChanged();
 
 protected:
     void showEvent(QShowEvent* event) override;

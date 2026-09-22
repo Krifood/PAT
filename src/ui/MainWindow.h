@@ -3,6 +3,7 @@
 #include "core/DataSession.h"
 #include "core/FormatDocument.h"
 #include "core/LiveDataSession.h"
+#include "core/MixedDataSession.h"
 #include "core/SeriesProcessing.h"
 #include "ui/AppTheme.h"
 #include "ui/DisplayGroupManager.h"
@@ -45,6 +46,7 @@ public:
 private slots:
     void OpenFormatFile();
     void OpenDataFile();
+    void ImportVmcLog();
     void ExportRawFrames();
     void PreviewFrame();
     void NewFormatFile();
@@ -82,6 +84,10 @@ private:
     bool CreateDifference(int leftSignal, int rightSignal, QString& errorMessage);
     bool CreateSum(int leftSignal, int rightSignal, QString& errorMessage);
     void ApplyTheme(AppThemeId id, bool persist = true);
+    bool LoadMixedSignalsForCurrentView(QString& errorMessage);
+    const QVector<pat::Series>& OfflineSeries() const;
+    const pat::SeriesStatistics& OfflineStatistics() const;
+    bool HasOfflineData() const;
 #ifdef PAT_ENABLE_SERIAL
     void SetupSerialDock();
     void RefreshSerialPorts();
@@ -93,6 +99,7 @@ private:
 
     pat::FormatDocument formatDocument_;
     pat::DataSession dataSession_;
+    pat::MixedDataSession mixedDataSession_;
     pat::LiveDataSession liveSession_;
     DisplayGroupManager displayGroupManager_;
     pat::SeriesProcessing seriesProcessing_;
@@ -112,6 +119,7 @@ private:
     bool signalTreeUpdating_ = false;
     bool signalSearchUpdating_ = false;
     bool liveMode_ = false;
+    bool mixedMode_ = false;
     AppThemeId currentThemeId_ = AppThemeId::IndoorDark;
 #ifdef PAT_ENABLE_SERIAL
     QComboBox* portCombo_ = nullptr;
