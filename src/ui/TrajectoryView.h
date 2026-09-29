@@ -56,6 +56,7 @@ public:
     void ResetHistory();
     QVector<TrackSnapshot> Snapshots() const;
     QVector<int> SelectedSignalIndices() const;
+    QVector<QVector<int>> SelectedSignalGroups() const;
     void AppendSnapshots(const QVector<TrackSnapshot>& snapshots);
     void SetRemoveEnabled(bool enabled);
 
@@ -137,6 +138,7 @@ public:
     void RefreshNow();
     void ResetSession();
     QVector<int> SelectedSignalIndices() const;
+    QVector<QVector<int>> SelectedSignalGroups() const;
 
     TrajectoryPlotWidget* AddPlot(TrajectoryDimension dimension);
     bool MergePlots(int sourcePlotId, int targetPlotId, QString& errorMessage);

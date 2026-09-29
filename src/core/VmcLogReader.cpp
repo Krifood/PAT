@@ -164,15 +164,20 @@ bool VmcLogReader::VisitRecords(const QString& path, const VmcSourceHeader& head
         const QByteArray marker = file.peek(1);
         if (marker.isEmpty()) break;
         if (quint8(marker[0]) == 0xFF) {
-            const QByteArray tail = file.readAll();
-            for (char byte : tail) {
-                if (quint8(byte) != 0xFF) {
-                    errorMessage = QStringLiteral("数据尾部包含非 FF 字节，偏移 0x%1")
-                                       .arg(file.pos() - tail.size(), 0, 16);
-                    return false;
+            while (!file.atEnd()) {
+                const QByteArray tail = file.read(64 * 1024);
+                if (tail.isEmpty() && file.error() != QFileDevice::NoError) {
+                    errorMessage = file.errorString(); return false;
                 }
+                for (char byte : tail) {
+                    if (quint8(byte) != 0xFF) {
+                        errorMessage = QStringLiteral("数据尾部包含非 FF 字节，偏移 0x%1")
+                                           .arg(file.pos() - tail.size(), 0, 16);
+                        return false;
+                    }
+                }
+                summary.trailingFillBytes += static_cast<quint64>(tail.size());
             }
-            summary.trailingFillBytes = static_cast<quint64>(tail.size());
             break;
         }
         const qint64 recordOffset = file.pos();

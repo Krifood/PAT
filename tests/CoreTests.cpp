@@ -3,6 +3,7 @@
 #include "core/FrameExporter.h"
 #include "core/InputReader.h"
 #include "core/MixedDataSession.h"
+#include "core/LogCrc32.h"
 #include "core/LiveDataSession.h"
 #include "core/RecordDecoder.h"
 #include "core/RecordParser.h"
@@ -104,6 +105,8 @@ private slots:
     void displayTransformAndDifferenceSeries();
     void vmcReaderAndUnifiedRoundTrip();
     void mixedReaderHonorsCacheBudget();
+    void mixedWindowQueriesAndAlignment();
+    void indexedFixedRecordsAndCrossStreamPairing();
     void vmcProvidedSampleRegression();
     void vmcTwentyFoldStress();
 };
@@ -124,8 +127,10 @@ void CoreTests::vmcTwentyFoldStress() {
     pat::UnifiedLogWriteResult result;
     pat::UnifiedLogWriter writer;
     QString error;
+    QElapsedTimer timer; timer.start();
     QVERIFY2(writer.ConvertVmcFiles(sources, binPath, jsonPath, {}, result, error),
              qPrintable(error));
+    const auto convertMs = timer.elapsed();
     QCOMPARE(result.routedRecordCount, quint64(775964) * 20);
     QCOMPARE(result.sourceRecordCount, quint64(775975) * 20);
     QVERIFY(result.peakBufferedBytes <= qsizetype(32 * 1024 * 1024 + 300));
@@ -136,6 +141,40 @@ void CoreTests::vmcTwentyFoldStress() {
     QVERIFY2(session.Open(binPath, format, error), qPrintable(error));
     QCOMPARE(session.RecordCount(), quint64(775964) * 20);
     QCOMPARE(session.RetainedPointCount(), quint64(0));
+    QVector<int> fields;
+    for (int i = 0; i < int(format.signalFormats.size()); ++i)
+        if (format.signalFormats[size_t(i)].name.startsWith(QStringLiteral("ah_nav."))) fields.append(i);
+    QVERIFY(fields.size() >= 3);
+    constexpr qsizetype budget = 64 * 1024 * 1024;
+    session.SetCacheBudgetBytes(budget);
+    timer.restart();
+    QVERIFY2(session.LoadSignals(fields, error), qPrintable(error));
+    const auto overviewMs = timer.elapsed();
+    const auto overview = session.LastRead();
+    QVERIFY(overview.reduced);
+    QVERIFY(session.RetainedPointCount() * sizeof(QPointF) <= quint64(budget));
+    QCOMPARE(overview.statistics[fields.first()].count, quint64(16636 * 20));
+    const double maxX = session.Statistics().maxX;
+    timer.restart();
+    QVERIFY2(session.LoadSignals(fields, error, {maxX * 0.499, maxX * 0.5}), qPrintable(error));
+    const auto detailMs = timer.elapsed();
+    const auto detail = session.LastRead();
+    QVERIFY(!detail.reduced);
+    QVERIFY(detail.retainedPoints > 0);
+    QVERIFY(detail.readBytes < overview.readBytes / 10);
+    timer.restart();
+    QVERIFY2(session.LoadSignals({}, error, {}, {}, {{{fields[0], fields[1]}, 0},
+        {{fields[0], fields[1], fields[2]}, -1}}), qPrintable(error));
+    const auto pairedMs = timer.elapsed();
+    QVERIFY(session.RetainedPointCount() * sizeof(QPointF) <= quint64(budget));
+    QVERIFY(!session.Relations()[0].samples.isEmpty());
+    qInfo().nospace() << "20x: records=" << result.routedRecordCount
+        << ", outputBytes=" << result.outputBytes << ", convertMs=" << convertMs
+        << ", fields=" << fields.size() << ", overviewMs=" << overviewMs
+        << ", overviewBytes=" << overview.readBytes << ", overviewPoints=" << overview.retainedPoints
+        << ", detailMs=" << detailMs << ", detailBytes=" << detail.readBytes
+        << ", detailPoints=" << detail.retainedPoints << ", pairedMs=" << pairedMs
+        << ", pairedPoints=" << session.RetainedPointCount();
 }
 
 void CoreTests::vmcProvidedSampleRegression() {
@@ -281,6 +320,168 @@ void CoreTests::vmcReaderAndUnifiedRoundTrip() {
     QVERIFY2(corruptSession.Open(multiBin, multiFormat, error), qPrintable(error));
     QVERIFY(!corruptSession.LoadSignals({0}, error));
     QVERIFY(error.contains(QStringLiteral("校验失败")));
+}
+
+void CoreTests::indexedFixedRecordsAndCrossStreamPairing() {
+    QCOMPARE(pat::LogCrc32(QByteArrayView("123456789", 9)), quint32(0xcbf43926));
+    QTemporaryDir dir;
+    const QString path = dir.filePath("fixed.bin");
+    QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+    QByteArray records;
+    for (int i = 0; i < 400000; ++i) {
+        AppendLittle<quint32>(records, quint32(i));
+        AppendLittle<quint32>(records, quint32(i * 2));
+    }
+    QCOMPARE(file.write(records), qint64(records.size())); file.close();
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY2(pat::LoadFormatFromJsonData(R"({"record_size":8,"signals":[
+        {"name":"A","byte_offset":0,"value_type":"uint32","time_scale":1},
+        {"name":"B","byte_offset":4,"value_type":"uint32","time_scale":2}]})", format, error), qPrintable(error));
+    pat::IndexedMixedReader reader;
+    QVERIFY2(reader.Open(path, format, error), qPrintable(error));
+    QCOMPARE(reader.RecordCount(), quint64(400000));
+    QCOMPARE(reader.MaxX(), 799998.0);
+    pat::MixedReadResult result;
+    QVERIFY2(reader.ReadSignals({0,1}, 4 * 1024 * 1024, result, error, {100, 110}), qPrintable(error));
+    QCOMPARE(result.series[0].samples.size(), 11);
+    QCOMPARE(result.series[1].samples.size(), 6);
+    QCOMPARE(result.series[0].samples[0], QPointF(100,100));
+    QCOMPARE(result.series[1].samples[0], QPointF(100,100));
+    QVERIFY(!result.reduced);
+    QVERIFY2(reader.ReadAlignedSignals({0,1}, 128*1024, result, error, {100,110}, {}, 0), qPrintable(error));
+    QCOMPARE(result.relation.samples.size(), 6);
+    for (const auto& point : result.relation.samples) QCOMPARE(point.y(), 0.0);
+    // Spatial pairing still uses record order for legacy columns with different time_scale.
+    QVERIFY2(reader.ReadAlignedSignals({0,1}, 128*1024, result, error), qPrintable(error));
+    for (int i = 0; i < result.series[0].samples.size(); ++i)
+        QCOMPARE(result.series[1].samples[i].y(), result.series[0].samples[i].y()*2);
+
+    const QByteArray single = SyntheticVmcLog(10000, false);
+    const int headerSize = 84 + 22 + QByteArray("temp@i16,count@u8,energy@u64").size();
+    QByteArray secondDescriptor = single.mid(84, headerSize-84);
+    secondDescriptor[2] = char(0x24);
+    QByteArray mixed = single.left(headerSize) + secondDescriptor;
+    for (int i = 0; i < 10000; ++i) {
+        QByteArray record = single.mid(headerSize+i*24, 24);
+        mixed += record;
+        if (i % 2 == 0) { record[2] = char(0x24); mixed += record; }
+    }
+    const QString vmc = dir.filePath("source.bin");
+    QFile source(vmc); QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write(mixed); source.close();
+    pat::UnifiedLogWriter writer; pat::UnifiedLogWriteResult written;
+    const QString bin = dir.filePath("mixed.patbin"), json = dir.filePath("mixed.json");
+    QVERIFY2(writer.ConvertVmcFiles({vmc}, bin, json, {}, written, error), qPrintable(error));
+    QVERIFY2(pat::LoadFormatFromJson(json, format, error), qPrintable(error));
+    QVERIFY2(reader.Open(bin, format, error), qPrintable(error));
+    QVERIFY2(reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {}, {}, 0), qPrintable(error));
+    QCOMPARE(result.decodedRecords, quint64(5000));
+    QVERIFY(result.reduced);
+    for (const auto& point : result.relation.samples) QCOMPARE(point.y(), 0.0);
+    QVERIFY2(reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {100,200}, {}, 0), qPrintable(error));
+    QCOMPARE(result.relation.samples.size(), 6);
+    QVERIFY(!result.reduced);
+    // Distinct raw timestamps beyond double's integer precision must never join.
+    QByteArray precise = single.left(headerSize) + secondDescriptor;
+    for (int i = 0; i < 100; ++i) {
+        QByteArray record = single.mid(headerSize+i*24, 24);
+        const quint64 time = (quint64{1} << 60) + quint64(i) * 10;
+        qToBigEndian<quint64>(time, record.data()+4);
+        precise += record;
+        record[2] = char(0x24);
+        qToBigEndian<quint64>(time+1, record.data()+4);
+        precise += record;
+    }
+    const QString preciseSource = dir.filePath("precise.bin");
+    QFile preciseFile(preciseSource); QVERIFY(preciseFile.open(QIODevice::WriteOnly));
+    preciseFile.write(precise); preciseFile.close();
+    const QString preciseBin = dir.filePath("precise.patbin"), preciseJson = dir.filePath("precise.json");
+    QVERIFY2(writer.ConvertVmcFiles({preciseSource}, preciseBin, preciseJson, {}, written, error), qPrintable(error));
+    QVERIFY2(pat::LoadFormatFromJson(preciseJson, format, error), qPrintable(error));
+    QVERIFY2(reader.Open(preciseBin, format, error), qPrintable(error));
+    QVERIFY2(reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {}, {}, 0), qPrintable(error));
+    QCOMPARE(result.decodedRecords, quint64(0));
+    QVERIFY(result.relation.samples.isEmpty());
+    QVERIFY(!reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {}, [] { return true; }, 0));
+
+}
+
+void CoreTests::mixedWindowQueriesAndAlignment() {
+    QTemporaryDir dir;
+    const QString sourcePath = dir.filePath("input.bin");
+    QFile source(sourcePath);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write(SyntheticVmcLog(100000, false));
+    source.close();
+    pat::UnifiedLogWriteOptions options;
+    options.targetChunkBytes = 64 * 1024;
+    pat::UnifiedLogWriteResult written;
+    pat::UnifiedLogWriter writer;
+    QString error;
+    const QString bin = dir.filePath("data.patbin"), json = dir.filePath("data.json");
+    QVERIFY2(writer.ConvertVmcFiles({sourcePath}, bin, json, options, written, error), qPrintable(error));
+    pat::FormatDefinition format;
+    QVERIFY2(pat::LoadFormatFromJson(json, format, error), qPrintable(error));
+    pat::IndexedMixedReader reader;
+    QVERIFY2(reader.Open(bin, format, error), qPrintable(error));
+    pat::MixedReadResult window;
+    QVERIFY2(reader.ReadSignals({0, 1}, 4 * 1024 * 1024, window, error, {10000, 10100}), qPrintable(error));
+    QCOMPARE(window.decodedRecords, quint64(11));
+    QCOMPARE(window.series[0].samples.first(), QPointF(10000, -100));
+    QCOMPARE(window.series[0].samples.last(), QPointF(10100, -90));
+    QCOMPARE(window.statistics[0].count, quint64(11));
+    QCOMPARE(window.statistics[0].min, -100.0);
+    QCOMPARE(window.statistics[0].max, -90.0);
+    QVERIFY(window.readChunks < quint64(reader.Index().size()));
+    QVERIFY(window.readBytes < quint64(QFileInfo(bin).size()) / 10);
+    QVERIFY(!window.reduced);
+    pat::MixedReadResult unchanged = window;
+    QVERIFY(!reader.ReadSignals({0}, 4 * 1024 * 1024, window, error, {}, [] { return true; }));
+    QCOMPARE(window.series[0].samples, unchanged.series[0].samples);
+
+    pat::MixedDataSession session;
+    QVERIFY2(session.Open(bin, format, error), qPrintable(error));
+    session.SetCacheBudgetBytes(4 * 1024 * 1024);
+    QVERIFY2(session.LoadSignals({0, 1, 2}, error), qPrintable(error));
+    QVERIFY(session.LastRead().reduced);
+    session.SetCacheBudgetBytes(128 * 1024 * 1024);
+    QVERIFY2(session.LoadSignals({0, 1, 2}, error), qPrintable(error));
+    QVERIFY(!session.LastRead().reduced);
+    QCOMPARE(session.Series()[0].samples.size(), 100000);
+    QVERIFY2(session.LoadSignals({0, 1, 2}, error, {10000, 10100}), qPrintable(error));
+    QCOMPARE(session.Series()[0].samples.size(), 11);
+    QCOMPARE(session.Statistics().maxX, 999990.0); // zoom does not shrink global bounds
+    QVERIFY2(session.Open(bin, format, error), qPrintable(error));
+    QVERIFY(session.Series()[0].samples.isEmpty()); // same-size reopen must clear old samples
+
+    pat::MixedReadResult aligned;
+    QVERIFY2(reader.ReadAlignedSignals({0, 1}, 128 * 1024, aligned, error, {}, {}, 0), qPrintable(error));
+    QVERIFY(aligned.reduced);
+    QCOMPARE(aligned.decodedRecords, quint64(100000));
+    QCOMPARE(aligned.series[0].samples.size(), aligned.series[1].samples.size());
+    QCOMPARE(aligned.relation.samples.size(), aligned.series[0].samples.size());
+    double expectedMin = 1e9, expectedMax = -1e9;
+    for (int i = 0; i < 100000; ++i) {
+        const double v = (i % 200 - 100) - (i & 255);
+        expectedMin = std::min(expectedMin, v); expectedMax = std::max(expectedMax, v);
+    }
+    double actualMin = 1e9, actualMax = -1e9;
+    for (int i = 0; i < aligned.relation.samples.size(); ++i) {
+        const auto& left = aligned.series[0].samples[i];
+        const auto& right = aligned.series[1].samples[i];
+        QCOMPARE(left.x(), right.x());
+        QCOMPARE(aligned.relation.samples[i], QPointF(left.x(), left.y() - right.y()));
+        actualMin = std::min(actualMin, aligned.relation.samples[i].y());
+        actualMax = std::max(actualMax, aligned.relation.samples[i].y());
+    }
+    QCOMPARE(actualMin, expectedMin); QCOMPARE(actualMax, expectedMax);
+    QVERIFY(aligned.retainedPoints * sizeof(QPointF) < quint64(128 * 1024));
+    QVERIFY2(reader.ReadAlignedSignals({0, 1}, 128 * 1024, aligned, error, {10000, 10100}, {}, 1), qPrintable(error));
+    QCOMPARE(aligned.relation.samples.size(), 11);
+    QVERIFY(!aligned.reduced);
+    QVERIFY2(reader.ReadAlignedSignals({0, 1, 2}, 128 * 1024, aligned, error), qPrintable(error));
+    QCOMPARE(aligned.series[0].samples.size(), aligned.series[2].samples.size());
 }
 
 void CoreTests::mixedReaderHonorsCacheBudget() {

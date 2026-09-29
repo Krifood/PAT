@@ -1,3 +1,4 @@
+#include "core/LogCrc32.h"
 #include "core/UnifiedLogWriter.h"
 
 #include "core/VmcLogReader.h"
@@ -24,16 +25,6 @@ constexpr int kFileHeaderSize = 64;
 constexpr int kChunkHeaderSize = 56;
 constexpr int kIndexEntrySize = 64;
 
-quint32 Crc32(QByteArrayView data) {
-    quint32 crc = 0xFFFFFFFFu;
-    for (char byte : data) {
-        crc ^= quint8(byte);
-        for (int bit = 0; bit < 8; ++bit) {
-            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
-        }
-    }
-    return ~crc;
-}
 
 template <typename T>
 void AppendLittle(QByteArray& bytes, T value) {
@@ -138,7 +129,7 @@ bool UnifiedLogWriter::ConvertVmcFiles(const QStringList& sourcePaths,
         errorMessage = QStringLiteral("BIN 和 JSON 输出路径不能相同");
         return false;
     }
-    const qsizetype targetChunkBytes = std::max<qsizetype>(64 * 1024, options.targetChunkBytes);
+    const qsizetype targetChunkBytes = std::clamp<qsizetype>(options.targetChunkBytes, 64 * 1024, 4 * 1024 * 1024);
     const qsizetype maxBufferedBytes = std::max(targetChunkBytes, options.maxBufferedBytes);
     const QString token = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const QString binaryStage = binaryPath + QStringLiteral(".pat-tmp-") + token;
@@ -209,7 +200,7 @@ bool UnifiedLogWriter::ConvertVmcFiles(const QStringList& sourcePaths,
         entry.recordCount = chunk.recordCount;
         entry.payloadSize = chunk.payloadSize;
         entry.dataSize = static_cast<quint32>(chunk.data.size());
-        entry.crc32 = Crc32(chunk.data);
+        entry.crc32 = LogCrc32(chunk.data);
         QByteArray header(kChunkHeaderSize, '\0');
         header.replace(0, 4, QByteArrayLiteral("PCHK"));
         PutLittle<quint16>(header, 4, kChunkHeaderSize);
@@ -349,7 +340,7 @@ bool UnifiedLogWriter::ConvertVmcFiles(const QStringList& sourcePaths,
         AppendLittle<quint32>(indexBytes, entry.crc32);
         AppendLittle<quint32>(indexBytes, 0);
     }
-    const quint32 indexCrc = Crc32(indexBytes);
+    const quint32 indexCrc = LogCrc32(indexBytes);
     if (!WriteAll(output, indexBytes, errorMessage)) return false;
     QByteArray footer;
     footer.append(QByteArrayLiteral("PEND"));

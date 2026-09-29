@@ -41,6 +41,7 @@ public:
     void ClearDerivedSignals();
     void RebuildDerived(const QVector<Series>& source);
     void ClearDerivedSamples();
+    void SetDerivedSamples(const QVector<Series>& samples);
     void AppendLive(quint64 sampleIndex, const QVector<double>& values,
                     int maxSamplesPerSignal = 30000);
 

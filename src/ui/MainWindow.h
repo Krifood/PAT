@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "core/DataSession.h"
 #include "core/FormatDocument.h"
@@ -16,6 +16,7 @@
 
 #include <memory>
 
+class MixedLoadController;
 class QLabel;
 class SignalTreeWidget;
 class SignalTreeController;
@@ -84,7 +85,7 @@ private:
     bool CreateDifference(int leftSignal, int rightSignal, QString& errorMessage);
     bool CreateSum(int leftSignal, int rightSignal, QString& errorMessage);
     void ApplyTheme(AppThemeId id, bool persist = true);
-    bool LoadMixedSignalsForCurrentView(QString& errorMessage);
+    void RequestMixedSignalsForCurrentView();
     const QVector<pat::Series>& OfflineSeries() const;
     const pat::SeriesStatistics& OfflineStatistics() const;
     bool HasOfflineData() const;
@@ -120,6 +121,8 @@ private:
     bool signalSearchUpdating_ = false;
     bool liveMode_ = false;
     bool mixedMode_ = false;
+    MixedLoadController* mixedLoader_ = nullptr;
+    pat::MixedReadWindow mixedWindow_;
     AppThemeId currentThemeId_ = AppThemeId::IndoorDark;
 #ifdef PAT_ENABLE_SERIAL
     QComboBox* portCombo_ = nullptr;

@@ -36,6 +36,7 @@ add_library(pat_core
   src/core/FrameExporter.cpp
   src/core/InputReader.cpp
   src/core/IndexedMixedReader.cpp
+  src/core/AlignedMixedReader.cpp
   src/core/LiveDataSession.cpp
   src/core/MixedDataSession.cpp
   src/core/RecordDecoder.cpp
@@ -70,6 +71,7 @@ if(PAT_BUILD_GUI)
     src/ui/AppTheme.cpp
     src/ui/AboutDialog.cpp
     src/ui/MainWindow.cpp
+    src/ui/MixedLoadController.cpp
     src/ui/ChartArea.cpp
     src/ui/DisplayGroupManager.cpp
     src/ui/FormatEditorDialog.cpp

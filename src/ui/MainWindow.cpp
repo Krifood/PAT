@@ -1,6 +1,7 @@
-﻿#include "ui/MainWindow.h"
+#include "ui/MainWindow.h"
 
 #include "ui/ChartArea.h"
+#include "ui/MixedLoadController.h"
 #include "ui/AboutDialog.h"
 #include "ui/FormatEditorDialog.h"
 #include "ui/SignalTreeController.h"
@@ -59,6 +60,14 @@
 
 namespace {
 
+bool UseIndexedFile(const QString& path, const pat::FormatDefinition& format) {
+    if (format.IsIndexedMixed()) return true;
+    if (!pat::IndexedMixedReader::SupportsFixedFile(path, format)) return false;
+    const long double points = static_cast<long double>(QFileInfo(path).size())
+        / format.recordSize * format.signalFormats.size();
+    return points * sizeof(QPointF) > 64 * 1024 * 1024;
+}
+
 QString FileLeaf(const QString& path) {
     QFileInfo info(path);
     return info.fileName();
@@ -113,9 +122,35 @@ QString DefaultSerialTemplate() {
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     SetupUi();
+    mixedLoader_ = new MixedLoadController(this);
+    connect(mixedLoader_, &MixedLoadController::Loaded, this,
+            [this](const pat::MixedDataSession& session) {
+        if (!mixedMode_ || liveMode_ || session.Revision() != mixedDataSession_.Revision()) return;
+        mixedDataSession_ = session;
+        seriesProcessing_.SetDerivedSamples(session.Relations());
+        if (chartArea_) {
+            chartArea_->SetStatistics(session.Statistics());
+            chartArea_->SetSeries(&mixedDataSession_.Series());
+            chartArea_->SetDerivedSeries(&seriesProcessing_.DerivedSeries());
+            chartArea_->RefreshData();
+        }
+        if (trajectoryView_ && dataViewTabs_->currentIndex() == 1) {
+            trajectoryView_->SetDisplayTransforms(seriesProcessing_.Transforms());
+            trajectoryView_->SetDataSource(&mixedDataSession_.Series(), pat::TrajectoryPairing::OfflineTimestamp);
+        }
+        const auto& read = session.LastRead();
+        UpdateStatus(tr("已读取 %1 个块、处理 %2 条记录；%3 个显示点%4")
+            .arg(read.readChunks).arg(read.decodedRecords).arg(read.retainedPoints)
+            .arg(read.reduced ? tr("（概览，放大可读取局部细节）") : tr("（当前范围原始采样）")));
+    });
+    connect(mixedLoader_, &MixedLoadController::Failed, this, [this](const QString& error) {
+        UpdateStatus(tr("日志读取失败：%1").arg(error));
+    });
 }
 
 MainWindow::~MainWindow() {
+    delete mixedLoader_;
+    mixedLoader_ = nullptr;
 #ifdef PAT_ENABLE_SERIAL
     if (serialThread_ && serialThread_->isRunning()) {
         if (captureRunning_ && serialWorker_) {
@@ -174,6 +209,20 @@ void MainWindow::SetupUi() {
     fileMenu->addAction(exitAction);
 
     viewMenu_ = menuBar()->addMenu(tr("视图"));
+    auto* memoryMenu = viewMenu_->addMenu(tr("大文件缓存预算"));
+    auto* memoryGroup = new QActionGroup(this);
+    memoryGroup->setExclusive(true);
+    for (int mib : {64, 128, 256}) {
+        auto* action = memoryMenu->addAction(tr("%1 MiB").arg(mib));
+        action->setCheckable(true);
+        action->setChecked(mib == 128);
+        action->setObjectName(QStringLiteral("mixedCache_%1").arg(mib));
+        memoryGroup->addAction(action);
+        connect(action, &QAction::triggered, this, [this, mib]() {
+            mixedDataSession_.SetCacheBudgetBytes(qsizetype(mib) * 1024 * 1024);
+            RequestMixedSignalsForCurrentView();
+        });
+    }
     auto* themeMenu = viewMenu_->addMenu(tr("显示主题"));
     auto* themeGroup = new QActionGroup(this);
     themeGroup->setExclusive(true);
@@ -247,6 +296,12 @@ void MainWindow::SetupUi() {
     dataViewTabs_ = new QTabWidget(rightPane);
     dataViewTabs_->setObjectName(QStringLiteral("dataViewTabs"));
     chartArea_ = new ChartArea(dataViewTabs_);
+    connect(chartArea_, &ChartArea::VisibleRangeChanged, this, [this](double minX, double maxX) {
+        if (mixedMode_ && !liveMode_) {
+            mixedWindow_ = {minX, maxX};
+            RequestMixedSignalsForCurrentView();
+        }
+    });
     connect(chartArea_, &ChartArea::SignalsDropped, this, &MainWindow::HandleSignalsDropped);
     connect(chartArea_, &ChartArea::MergeRequested, this, &MainWindow::HandleMergeRequested);
     connect(chartArea_, &ChartArea::ReorderRequested, this, &MainWindow::HandleReorderRequested);
@@ -255,10 +310,15 @@ void MainWindow::SetupUi() {
     connect(chartArea_, &ChartArea::TransformRequested, this, &MainWindow::ShowSignalTransformDialog);
     trajectoryView_ = new TrajectoryView(dataViewTabs_);
     connect(trajectoryView_, &TrajectoryView::SignalsChanged, this, [this]() {
-        if (mixedMode_ && !liveMode_) UpdateCharts();
+        if (mixedMode_ && !liveMode_) RequestMixedSignalsForCurrentView();
     });
     dataViewTabs_->addTab(chartArea_, tr("时序曲线"));
     dataViewTabs_->addTab(trajectoryView_, tr("二维/三维轨迹"));
+    connect(dataViewTabs_, &QTabWidget::currentChanged, this, [this](int index) {
+        if (!mixedMode_ || liveMode_) return;
+        if (index != 1) trajectoryView_->SetDataSource(nullptr, pat::TrajectoryPairing::OfflineTimestamp);
+        RequestMixedSignalsForCurrentView();
+    });
     rightLayout->addWidget(dataViewTabs_, /*stretch=*/1);
 #ifdef PAT_ENABLE_SERIAL
     connect(dataViewTabs_, &QTabWidget::currentChanged, this, [this](int index) {
@@ -356,6 +416,9 @@ void MainWindow::OpenFormatFile() {
                                                       QFileDialog::DontUseNativeDialog);
     if (path.isEmpty()) return;
 
+    const QString previousPath = mixedMode_
+        ? (formatDocument_.Format().IsIndexedMixed() ? QString() : mixedDataSession_.Path())
+        : dataSession_.Path();
     QString error;
     if (!formatDocument_.LoadFromFile(path, error)) {
         QMessageBox::warning(this, tr("格式加载失败"), error);
@@ -379,7 +442,16 @@ void MainWindow::OpenFormatFile() {
         }
     } else {
         mixedDataSession_.Clear();
+        dataSession_.Clear();
         mixedMode_ = false;
+        if (!previousPath.isEmpty()) {
+            const bool indexed = UseIndexedFile(previousPath, formatDocument_.Format());
+            const bool opened = indexed
+                ? mixedDataSession_.Open(previousPath, formatDocument_.Format(), error)
+                : dataSession_.Load(previousPath, formatDocument_.Format(), error);
+            if (opened) mixedMode_ = indexed;
+            else QMessageBox::warning(this, tr("重解析失败"), error);
+        }
     }
 
     displayGroupManager_.Clear();
@@ -387,17 +459,10 @@ void MainWindow::OpenFormatFile() {
 #ifdef PAT_ENABLE_SERIAL
     liveChartsInitialized_ = false;
 #endif
+    mixedWindow_ = {};
     if (chartArea_) chartArea_->ResetSessionView();
     BuildSignalTree();
     if (chartArea_) chartArea_->SetTimeUnit(formatDocument_.Format().timeAxisUnit);
-
-    if (!formatDocument_.Format().IsIndexedMixed() && dataSession_.HasData()) {
-        const QString dataPath = dataSession_.Path();
-        if (!dataSession_.Load(dataPath, formatDocument_.Format(), error)) {
-            dataSession_.Clear();
-            QMessageBox::warning(this, tr("重解析失败"), error);
-        }
-    }
 
     UpdateCharts();
     UpdateStatus(tr("格式已加载：%1，信号数：%2")
@@ -433,7 +498,7 @@ void MainWindow::OpenDataFile() {
     if (path.isEmpty()) return;
 
     QString error;
-    if (formatDocument_.Format().IsIndexedMixed()) {
+    if (UseIndexedFile(path, formatDocument_.Format())) {
         if (!mixedDataSession_.Open(path, formatDocument_.Format(), error)) {
             QMessageBox::warning(this, tr("解析失败"), error);
             return;
@@ -455,6 +520,7 @@ void MainWindow::OpenDataFile() {
         trajectoryView_->ResetSession();
         trajectoryView_->SetPaused(false);
     }
+    mixedWindow_ = {};
     if (chartArea_) chartArea_->ResetSessionView();
 
 #ifdef PAT_ENABLE_QT_CHARTS
@@ -549,11 +615,13 @@ void MainWindow::ImportVmcLog() {
         return;
     }
     formatDocument_ = std::move(newDocument);
+    newSession.SetCacheBudgetBytes(mixedDataSession_.CacheBudgetBytes());
     mixedDataSession_ = std::move(newSession);
     dataSession_.Clear();
     mixedMode_ = true;
     liveMode_ = false;
     displayGroupManager_.Clear();
+    mixedWindow_ = {};
     if (chartArea_) chartArea_->ResetSessionView();
     BuildSignalTree();
     UpdateCharts();
@@ -706,6 +774,7 @@ void MainWindow::NewFormatFile() {
     dataSession_.Clear();
     mixedDataSession_.Clear();
     mixedMode_ = false;
+    mixedWindow_ = {};
     if (chartArea_) chartArea_->ResetSessionView();
     BuildSignalTree();
     UpdateCharts();
@@ -733,6 +802,7 @@ void MainWindow::NewSerialFormatFile() {
     mixedMode_ = false;
     liveMode_ = false;
     displayGroupManager_.Clear();
+    mixedWindow_ = {};
     if (chartArea_) chartArea_->ResetSessionView();
     BuildSignalTree();
     UpdateCharts();
@@ -751,7 +821,8 @@ void MainWindow::EditFormatFile() {
         return;
     }
 
-    const QString previousDataPath = dataSession_.Path();
+    const QString previousDataPath = mixedMode_ && !formatDocument_.Format().IsIndexedMixed()
+        ? mixedDataSession_.Path() : dataSession_.Path();
     const QString previousMixedPath = mixedDataSession_.Path();
     QString edited;
     FormatEditorDialog dialog(tr("编辑格式"), formatDocument_.JsonText(), this);
@@ -765,11 +836,13 @@ void MainWindow::EditFormatFile() {
 
     displayGroupManager_.Clear();
     liveMode_ = false;
+    mixedWindow_ = {};
     if (chartArea_) chartArea_->ResetSessionView();
     BuildSignalTree();
     if (chartArea_) chartArea_->SetTimeUnit(formatDocument_.Format().timeAxisUnit);
 
-    if (formatDocument_.Format().IsIndexedMixed()) {
+    if (formatDocument_.Format().IsIndexedMixed()
+        || (!previousMixedPath.isEmpty() && UseIndexedFile(previousMixedPath, formatDocument_.Format()))) {
         dataSession_.Clear();
         mixedMode_ = false;
         if (!previousMixedPath.isEmpty()
@@ -873,18 +946,20 @@ void MainWindow::UpdateCharts() {
 #ifdef PAT_ENABLE_QT_CHARTS
     if (!chartArea_) return;
     if (!liveMode_ && mixedMode_ && mixedDataSession_.HasData()) {
-        QString error;
-        if (!LoadMixedSignalsForCurrentView(error)) {
-            UpdateStatus(tr("统一日志按需读取失败：%1").arg(error));
-        }
+        RequestMixedSignalsForCurrentView();
+    } else if (mixedLoader_) {
+        mixedLoader_->Reset();
     }
     const bool hasData = liveMode_ ? liveSession_.HasData() : HasOfflineData();
-    if (trajectoryView_) {
+    if (mixedMode_ && !liveMode_ && trajectoryView_ && dataViewTabs_->currentIndex() != 1)
+        trajectoryView_->SetDataSource(nullptr, pat::TrajectoryPairing::OfflineTimestamp);
+    if (trajectoryView_ && (!mixedMode_ || liveMode_
+        || (dataViewTabs_->currentIndex() == 1 && !mixedLoader_->Busy()))) {
         trajectoryView_->SetDisplayTransforms(seriesProcessing_.Transforms());
         trajectoryView_->SetDataSource(liveMode_ ? &liveSession_.SeriesData()
                                                  : &OfflineSeries(),
                                        liveMode_ ? pat::TrajectoryPairing::SampleIndex
-                                                 : (mixedMode_ ? pat::TrajectoryPairing::SampleIndex
+                                                 : (mixedMode_ ? pat::TrajectoryPairing::OfflineTimestamp
                                                                : pat::TrajectoryPairing::RecordOrder));
     }
     // Framed signals can show empty axes before capture and while waiting for a valid frame.
@@ -936,24 +1011,21 @@ bool MainWindow::HasOfflineData() const {
     return mixedMode_ ? mixedDataSession_.HasData() : dataSession_.HasData();
 }
 
-bool MainWindow::LoadMixedSignalsForCurrentView(QString& errorMessage) {
-    if (!mixedMode_ || !mixedDataSession_.HasData()) return true;
-    QVector<int> required = signalTreeController_
-        ? signalTreeController_->CollectCheckedSignalIndices() : QVector<int>{};
-    for (const auto& definition : seriesProcessing_.DerivedDefinitions()) {
-        if (!required.contains(definition.leftSignal)) required.append(definition.leftSignal);
-        if (!required.contains(definition.rightSignal)) required.append(definition.rightSignal);
-    }
-    if (trajectoryView_) {
-        for (int index : trajectoryView_->SelectedSignalIndices()) {
-            if (!required.contains(index)) required.append(index);
+void MainWindow::RequestMixedSignalsForCurrentView() {
+    if (!mixedLoader_ || !mixedMode_ || !mixedDataSession_.HasData()) return;
+    const bool spatial = dataViewTabs_ && dataViewTabs_->currentIndex() == 1;
+    QVector<int> required;
+    QVector<pat::MixedAlignment> alignments;
+    if (spatial && trajectoryView_) {
+        for (const auto& group : trajectoryView_->SelectedSignalGroups()) alignments.append({group, -1});
+    } else {
+        if (signalTreeController_) required = signalTreeController_->CollectCheckedSignalIndices();
+        for (const auto& definition : seriesProcessing_.DerivedDefinitions()) {
+            alignments.append({{definition.leftSignal, definition.rightSignal},
+                definition.operation == pat::SeriesOperation::Difference ? 0 : 1});
         }
     }
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    const bool loaded = mixedDataSession_.LoadSignals(required, errorMessage);
-    QApplication::restoreOverrideCursor();
-    if (loaded) seriesProcessing_.RebuildDerived(mixedDataSession_.Series());
-    return loaded;
+    mixedLoader_->Request(mixedDataSession_, required, spatial ? pat::MixedReadWindow{} : mixedWindow_, alignments);
 }
 
 void MainWindow::UpdateStatus(const QString& text) {
@@ -1131,6 +1203,23 @@ void MainWindow::ShowSignalActionsMenu(const QVector<int>& targetIndices,
     if (targetIndices.size() == 1) {
         if (hasActions) menu.addSeparator();
         const int signalIndex = targetIndices.first();
+        if (mixedMode_ && !liveMode_) {
+            menu.addAction(tr("当前读取窗口统计..."), this, [this, signalIndex]() {
+                if (mixedLoader_->Busy()) {
+                    QMessageBox::information(this, tr("窗口统计"), tr("正在读取新范围，请等待完成后查看"));
+                    return;
+                }
+                const auto& values = mixedDataSession_.LastRead().statistics;
+                if (signalIndex >= values.size() || values[signalIndex].count == 0) {
+                    QMessageBox::information(this, tr("窗口统计"), tr("请先在时序页勾选此信号并选择时间范围"));
+                    return;
+                }
+                const auto& stats = values[signalIndex];
+                QMessageBox::information(this, tr("窗口统计"),
+                    tr("原始有效样本：%1\n最小值：%2\n最大值：%3\n统计在显示抽稀前计算，不含显示比例/平移。")
+                    .arg(stats.count).arg(stats.min, 0, 'g', 17).arg(stats.max, 0, 'g', 17));
+            });
+        }
         menu.addAction(tr("信号属性（比例/整体平移）..."), this, [this, signalIndex]() {
             ShowSignalTransformDialog(signalIndex);
         });
@@ -1201,7 +1290,7 @@ void MainWindow::HandleHideSignalsRequested(const QVector<int>& indices) {
             rawSignals.append(index);
         }
     }
-    if (removedDerived) {
+    if (removedDerived && (!mixedMode_ || liveMode_)) {
         seriesProcessing_.RebuildDerived(liveMode_ ? liveSession_.SeriesData() : OfflineSeries());
     }
     signalTreeController_->SetSignalsChecked(rawSignals, false);

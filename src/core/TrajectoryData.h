@@ -5,7 +5,7 @@
 namespace pat {
 
 // Offline records pair by position; live series may omit invalid fields, so pair by sample index.
-enum class TrajectoryPairing { RecordOrder, SampleIndex };
+enum class TrajectoryPairing { RecordOrder, SampleIndex, OfflineTimestamp };
 
 struct TrajectoryPoint2D {
     double sampleKey = 0.0;

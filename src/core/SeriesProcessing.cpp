@@ -137,6 +137,12 @@ void SeriesProcessing::RebuildDerived(const QVector<Series>& source) {
     }
 }
 
+void SeriesProcessing::SetDerivedSamples(const QVector<Series>& samples) {
+    InitializeDerivedSeries();
+    for (int i = 0; i < std::min(samples.size(), derivedSeries_.size()); ++i)
+        derivedSeries_[i].samples = samples[i].samples;
+}
+
 void SeriesProcessing::ClearDerivedSamples() {
     for (auto& series : derivedSeries_) series.samples.clear();
 }

@@ -1,4 +1,4 @@
-﻿#include "ui/ChartArea.h"
+#include "ui/ChartArea.h"
 
 #include "ui/SignalTreeWidget.h"
 
@@ -149,6 +149,20 @@ void ChartArea::SetMaxVisiblePoints(int maxPoints) {
 void ChartArea::ResetXRange() {
     if (!hasStats_) return;
     ApplyXRange(0.0, std::max(1.0, stats_.maxX));
+    emit VisibleRangeChanged(currentMinX_, currentMaxX_);
+}
+
+void ChartArea::RefreshData() {
+    for (int i = 0; i < charts_.size(); ++i) {
+        QVector<const pat::Series*> sources;
+        QVector<pat::DisplayTransform> transforms;
+        for (int index : charts_[i]->SeriesIndices()) {
+            sources.append(ResolveSeries(index));
+            transforms.append(ResolveTransform(index));
+        }
+        charts_[i]->SetDisplaySources(sources, transforms);
+    }
+    if (hasCurrentRange_) ApplyXRange(currentMinX_, currentMaxX_);
 }
 
 void ChartArea::RefreshCharts() {
@@ -298,6 +312,7 @@ void ChartArea::HandleCursorLeft() {
 
 void ChartArea::HandleXRangeRequested(double minX, double maxX) {
     ApplyXRange(minX, maxX);
+    emit VisibleRangeChanged(currentMinX_, currentMaxX_);
 }
 
 void ChartArea::HandleResetXRange() {

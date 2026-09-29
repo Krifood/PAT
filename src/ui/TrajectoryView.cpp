@@ -359,6 +359,21 @@ QVector<int> TrajectoryPlotWidget::SelectedSignalIndices() const {
     return indices;
 }
 
+QVector<QVector<int>> TrajectoryPlotWidget::SelectedSignalGroups() const {
+    QVector<QVector<int>> result;
+    for (const auto& track : tracks_) {
+        QVector<int> group{track.xCombo->currentData().toInt(), track.yCombo->currentData().toInt()};
+        if (track.zCombo) group.append(track.zCombo->currentData().toInt());
+        bool valid = true;
+        for (int i = 0; i < group.size(); ++i) {
+            valid = valid && group[i] >= 0;
+            for (int j = 0; j < i; ++j) valid = valid && group[i] != group[j];
+        }
+        if (valid) result.append(group);
+    }
+    return result;
+}
+
 void TrajectoryPlotWidget::ConfigureSignals(const pat::FormatDefinition& format) {
     format_ = format;
     for (auto& track : tracks_) PopulateTrackCombos(track);
@@ -488,6 +503,7 @@ void TrajectoryPlotWidget::RemoveTrack(int trackId) {
     RebuildTrackRows();
     Ensure2DSeries();
     Render();
+    emit SignalsChanged();
 }
 
 void TrajectoryPlotWidget::PopulateTrackCombos(TrackState& track, const TrackSnapshot* snapshot) {
@@ -582,7 +598,7 @@ void TrajectoryPlotWidget::CaptureData() {
         if (x < 0 || y < 0 || x >= source_->size() || y >= source_->size() || x == y) continue;
         if (dimension_ == TrajectoryDimension::TwoD) {
             const auto paired = pat::PairTrajectorySamplesWithKeys(source_->at(x), source_->at(y), pairing_);
-            if (pairing_ == pat::TrajectoryPairing::RecordOrder) {
+            if (pairing_ != pat::TrajectoryPairing::SampleIndex) {
                 track.history2D = paired;
                 track.lastSampleKey = paired.isEmpty() ? -1.0 : paired.last().sampleKey;
             } else {
@@ -596,7 +612,7 @@ void TrajectoryPlotWidget::CaptureData() {
             if (z < 0 || z >= source_->size() || z == x || z == y) continue;
             const auto paired = pat::PairTrajectorySamples3D(source_->at(x), source_->at(y),
                                                              source_->at(z), pairing_);
-            if (pairing_ == pat::TrajectoryPairing::RecordOrder) {
+            if (pairing_ != pat::TrajectoryPairing::SampleIndex) {
                 track.history3D = paired;
                 track.lastSampleKey = paired.isEmpty() ? -1.0 : paired.last().sampleKey;
             } else {
@@ -890,6 +906,7 @@ TrajectoryPlotWidget* TrajectoryView::AddPlot(TrajectoryDimension dimension) {
     splitter_->addWidget(plot);
     splitter_->setStretchFactor(splitter_->indexOf(plot), 1);
     plots_.append(plot);
+    emit SignalsChanged();
     UpdateRemoveButtons();
     plot->CaptureData();
     plot->Render();
@@ -905,6 +922,12 @@ QVector<int> TrajectoryView::SelectedSignalIndices() const {
         }
     }
     return indices;
+}
+
+QVector<QVector<int>> TrajectoryView::SelectedSignalGroups() const {
+    QVector<QVector<int>> result;
+    for (const auto* plot : plots_) result += plot->SelectedSignalGroups();
+    return result;
 }
 
 bool TrajectoryView::MergePlots(int sourcePlotId, int targetPlotId, QString& errorMessage) {
@@ -940,6 +963,7 @@ void TrajectoryView::RemovePlot(int plotId) {
         break;
     }
     UpdateRemoveButtons();
+    emit SignalsChanged();
 }
 
 void TrajectoryView::ClearPlots() {

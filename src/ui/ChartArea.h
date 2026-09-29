@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "core/DataSession.h"
 #include "ui/AppTheme.h"
@@ -31,6 +31,7 @@ public:
     void RefreshLiveData(bool followLatest);
     void ResetXRange();
     void RefreshCharts();
+    void RefreshData();
 
 signals:
     void SignalsDropped(const QVector<int>& indices);
@@ -39,6 +40,7 @@ signals:
     void HideSignalsRequested(const QVector<int>& indices);
     void SplitRequested(const QVector<int>& indices);
     void TransformRequested(int signalIndex);
+    void VisibleRangeChanged(double minX, double maxX);
 
 protected:
     bool eventFilter(QObject* obj, QEvent* event) override;

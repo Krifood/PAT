@@ -1,4 +1,6 @@
 #include "ui/MainWindow.h"
+#include "ui/MixedLoadController.h"
+#include <QtEndian>
 #include "ui/AboutDialog.h"
 #include "ui/AppTheme.h"
 #include "ui/ChartArea.h"
@@ -79,7 +81,65 @@ private slots:
     void signalSearchOperatesOnMainSelection();
     void displayProcessingWorksWithLiveMergedCharts();
     void themesUpdateControlsAndCharts();
+    void indexedLoadingCoalescesAndZooms();
 };
+
+void UiTests::indexedLoadingCoalescesAndZooms() {
+    QTemporaryDir dir;
+    QFile file(dir.filePath("large.bin"));
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QByteArray bytes(800000, '\0');
+    for (int i = 0; i < 100000; ++i) {
+        qToLittleEndian<quint32>(quint32(i), bytes.data()+i*8);
+        qToLittleEndian<quint32>(quint32(i*2), bytes.data()+i*8+4);
+    }
+    file.write(bytes); file.close();
+    MainWindow window;
+    QString error;
+    QVERIFY2(window.formatDocument_.LoadFromJsonText(QStringLiteral(R"({"record_size":8,"signals":[
+        {"name":"x","byte_offset":0,"value_type":"uint32"},
+        {"name":"y","byte_offset":4,"value_type":"uint32"}]})"), error), qPrintable(error));
+    QVERIFY2(window.mixedDataSession_.Open(file.fileName(), window.formatDocument_.Format(), error), qPrintable(error));
+    window.mixedMode_ = true;
+    window.BuildSignalTree();
+    window.signalTreeController_->SetSignalsChecked({0}, true);
+    window.UpdateCharts();
+    QTRY_COMPARE_WITH_TIMEOUT(window.mixedDataSession_.Series()[0].samples.size(), 100000, 10000);
+    auto charts = window.chartArea_->findChildren<SignalChartView*>();
+    QVERIFY(!charts.isEmpty());
+    SignalChartView* original = charts.last();
+    QVERIFY(QMetaObject::invokeMethod(window.chartArea_, "HandleXRangeRequested", Qt::DirectConnection,
+        Q_ARG(double,100.0), Q_ARG(double,110.0)));
+    QVERIFY(QMetaObject::invokeMethod(window.chartArea_, "HandleXRangeRequested", Qt::DirectConnection,
+        Q_ARG(double,200.0), Q_ARG(double,205.0)));
+    QTRY_COMPARE_WITH_TIMEOUT(window.mixedDataSession_.Series()[0].samples.size(), 6, 10000);
+    QCOMPARE(window.mixedDataSession_.Series()[0].samples.first(), QPointF(200,200));
+    QVERIFY(window.chartArea_->findChildren<SignalChartView*>().contains(original));
+    QCOMPARE(window.mixedDataSession_.Statistics().maxX, 99999.0);
+    QVERIFY(window.CreateDifference(0,1,error));
+    QTRY_COMPARE_WITH_TIMEOUT(window.seriesProcessing_.DerivedSeries()[0].samples.size(), 6, 10000);
+    QCOMPARE(window.seriesProcessing_.DerivedSeries()[0].samples.first(), QPointF(200,-200));
+    const auto chartsBeforeTab = window.chartArea_->findChildren<SignalChartView*>();
+    window.dataViewTabs_->setCurrentIndex(1);
+    QTRY_VERIFY_WITH_TIMEOUT(!window.mixedLoader_->Busy(), 10000);
+    auto plots = window.trajectoryView_->findChildren<TrajectoryPlotWidget*>();
+    QVERIFY(!plots.isEmpty());
+    QVERIFY(plots.first()->HistoryPointCount() > 0);
+    const auto history = plots.first()->HistoryPointCount();
+    window.dataViewTabs_->setCurrentIndex(0);
+    QTRY_VERIFY_WITH_TIMEOUT(!window.mixedLoader_->Busy(), 10000);
+    window.trajectoryView_->RefreshNow();
+    QCOMPARE(plots.first()->HistoryPointCount(), history);
+    QCOMPARE(window.chartArea_->findChildren<SignalChartView*>(), chartsBeforeTab);
+
+    MixedLoadController loader;
+    int completed = 0;
+    connect(&loader, &MixedLoadController::Loaded, &window, [&](const pat::MixedDataSession&) { ++completed; });
+    loader.Request(window.mixedDataSession_, {0}, {});
+    loader.Reset();
+    QTest::qWait(150);
+    QCOMPARE(completed, 0);
+}
 
 void UiTests::themesUpdateControlsAndCharts() {
     QCOMPARE(AvailableThemeIds().size(), 3);
