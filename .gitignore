@@ -1,3 +1,80 @@
-# build
-build/
+# CMake / Qt build trees and generated metadata
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+.qt/
+*_autogen/
+
+# Compiled binaries and intermediate files
+*.o
+*.obj
+*.lo
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.exp
+*.ilk
+*.pdb
+*.app/
+*.dSYM/
+
+# Qt-generated files and per-user settings
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+.qmake.stash
+*.pro.user
+*.pro.user.*
+CMakeUserPresets.json
+
+# IDE and editor-local files
+.idea/
+.vs/
+.vscode/
+*.user
+*.suo
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# Logs, temporary files, and test/coverage output
+*.log
+*.tmp
+*.temp
+.cache/
+coverage/
+coverage-*/
+
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100/
+.fseventsd/
+.Spotlight-V100/
+.TemporaryItems/
+.Trashes/
+
+# Windows metadata
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Local agent work files
 agents/
