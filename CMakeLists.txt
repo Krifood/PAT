@@ -82,7 +82,7 @@ if(PAT_BUILD_GUI)
     src/ui/TrajectoryView.cpp
     src/ui/app_resources.qrc
   )
-  add_executable(pat_app src/ui/main.cpp ${PAT_UI_SOURCES})
+  add_executable(pat_app WIN32 src/ui/main.cpp ${PAT_UI_SOURCES})
   target_include_directories(pat_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(pat_app PRIVATE pat_core Qt6::Widgets Qt6::Charts Qt6::Concurrent)
   target_compile_definitions(pat_app PRIVATE PAT_ENABLE_QT_CHARTS=1
@@ -184,6 +184,18 @@ if(PAT_BUILD_GUI)
         message(FATAL_ERROR \"macOS bundle signing failed\")
       endif()
     ")
+  elseif(WIN32)
+    # Keep the executable beside its DLLs in bin. Qt's deploy script also
+    # copies plugins and the compiler runtime so the installed tree can run on
+    # a machine without a Qt SDK.
+    install(TARGETS pat_app RUNTIME DESTINATION bin)
+    qt_generate_deploy_app_script(
+      TARGET pat_app
+      OUTPUT_SCRIPT pat_deploy_script
+      NO_TRANSLATIONS
+      DEPLOY_TOOL_OPTIONS --compiler-runtime
+    )
+    install(SCRIPT ${pat_deploy_script})
   else()
     install(TARGETS pat_app RUNTIME DESTINATION bin)
   endif()

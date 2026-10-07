@@ -609,7 +609,8 @@ void CoreTests::jsonGuideExampleDecodes() {
     QFile guide(QString::fromUtf8(PAT_SOURCE_DIR)
                 + QStringLiteral("/docs/协议模板JSON编辑指南.md"));
     QVERIFY(guide.open(QIODevice::ReadOnly));
-    const QByteArray content = guide.readAll();
+    QByteArray content = guide.readAll();
+    content.replace("\r\n", "\n");
     const qsizetype start = content.indexOf("```json\n");
     QVERIFY(start >= 0);
     const qsizetype jsonStart = start + qsizetype(sizeof("```json\n") - 1);

@@ -30,6 +30,7 @@
 - 调试版：开启 AddressSanitizer/UBSan（Clang/GCC），或 MSVC /RTC。
 - 发布版：开启 LTO，`strip` 二进制以控制体积；按需禁用日志 Debug 级别。
 - 平台注意：Windows 需安装对应 SDK；macOS 需 Xcode 工具链；Linux 建议安装 `build-essential`/`clang`/`ninja`。
+- Windows 一键构建、测试和便携版打包使用 `scripts/build_and_run.ps1`；脚本优先读取 `-QtRoot`、`QT_ROOT`、`CMAKE_PREFIX_PATH`，也会探测 Qt 官方安装目录和 MSYS2。发布目录通过 Qt 部署工具自动收集运行库与插件。
 
 ## 目录与依赖记录方式
 - 当前 `CMakeLists.txt` 提供 `PAT_BUILD_GUI`、`PAT_ENABLE_SERIAL`、`PAT_BUILD_TESTS` 选项，分别控制桌面程序、串口模块和测试；核心目标只链接 Qt Core，桌面目标链接 Widgets/Charts。

@@ -2,6 +2,28 @@
 
 PAT 是基于 C++20、Qt 6 的桌面应用，支持协议模板、离线数据解析和串口实时采集。
 
+## Windows 构建与发布
+
+安装 CMake 3.20+、C++20 编译器和 Qt 6（需要 Core、Widgets、Charts、Concurrent、SerialPort、Test 模块）。支持 Qt 官方的 MSVC/MinGW 套件，也支持 MSYS2 UCRT64。项目根目录执行：
+
+```powershell
+.\scripts\build_and_run.ps1
+```
+
+脚本默认以 Release 配置编译、运行核心测试，并输出可直接分发的便携版：
+
+- 目录：`build/windows/package/PAT-Release/`
+- 压缩包：`build/windows/package/PAT-Release-win64.zip`
+- 校验文件：`build/windows/package/PAT-Release-win64.zip.sha256`
+
+发布目录已包含 Qt DLL、Windows 平台插件和编译器运行库，目标电脑无需安装 Qt；解压后运行 `bin/pat_app.exe`。Qt 未被自动找到时传入路径，例如：
+
+```powershell
+.\scripts\build_and_run.ps1 -QtRoot C:\Qt\6.8.3\msvc2022_64
+```
+
+常用操作：`-Action Build` 只编译，`-Action Test` 编译并测试，`-Action Run` 编译测试后启动，`-Action Package` 生成发布件；加 `-Clean` 可重新生成构建目录。如 Qt SDK 未安装 SerialPort，可用 `-DisableSerial` 构建不含实时串口采集的版本，该降级必须显式指定。
+
 ## macOS 自行构建
 
 安装 CMake、C++ 编译器，以及 Qt 6 的 Core、Widgets、Charts、SerialPort 模块。在本目录运行：
