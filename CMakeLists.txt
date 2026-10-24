@@ -1,13 +1,23 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ParamAnalysisTool
-  VERSION 0.1.1
+  VERSION 0.1.2
   LANGUAGES CXX
 )
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(DEFINED ENV{QT_ROOT} AND NOT "$ENV{QT_ROOT}" STREQUAL "")
+  list(PREPEND CMAKE_PREFIX_PATH "$ENV{QT_ROOT}")
+endif()
+
+# Chinese source strings and C++20 feature detection must behave identically on MSVC.
+if(MSVC)
+  add_compile_options(/utf-8 /Zc:__cplusplus /permissive-)
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
@@ -73,6 +83,7 @@ if(PAT_BUILD_GUI)
     src/ui/MainWindow.cpp
     src/ui/MixedLoadController.cpp
     src/ui/ChartArea.cpp
+    src/ui/CompactValueAxis.cpp
     src/ui/DisplayGroupManager.cpp
     src/ui/FormatEditorDialog.cpp
     src/ui/SignalChartView.cpp

@@ -1,4 +1,5 @@
 #include "ui/TrajectoryView.h"
+#include "ui/CompactValueAxis.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -27,6 +28,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QToolTip>
+#include <QStyle>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
@@ -105,17 +107,9 @@ void SetPaddedRange(QValueAxis* axis, double minimum, double maximum) {
     const double high = maximum + padding;
     if (!std::isfinite(low) || !std::isfinite(high) || high <= low) {
         axis->setRange(-1.0, 1.0);
-        axis->setLabelFormat(QStringLiteral("%.3e"));
         return;
     }
     axis->setRange(low, high);
-    const double largest = std::max(std::abs(low), std::abs(high));
-    if (largest >= 1e6 || (largest > 0.0 && largest < 1e-4)) {
-        axis->setLabelFormat(QStringLiteral("%.3e"));
-    } else {
-        const int decimals = std::clamp(int(std::ceil(-std::log10(high - low))) + 2, 1, 9);
-        axis->setLabelFormat(QString::asprintf("%%.%df", decimals));
-    }
 }
 
 }  // namespace
@@ -303,6 +297,7 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
     headerTitle_->setObjectName(QStringLiteral("trajectoryDragHandle_%1").arg(plotId_));
     headerTitle_->setCursor(Qt::OpenHandCursor);
     headerTitle_->installEventFilter(this);
+    headerTitle_->setToolTip(tr("拖动标题合并；双击标题放大本图 / 返回多图"));
     QFont headerFont = headerTitle_->font();
     headerFont.setBold(true);
     headerTitle_->setFont(headerFont);
@@ -312,16 +307,27 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
     autoRange_->setVisible(dimension_ == TrajectoryDimension::TwoD);
     auto* removeButton = new QToolButton(this);
     removeButton->setObjectName(QStringLiteral("removeTrajectoryPlot_%1").arg(plotId_));
-    removeButton->setText(tr("× 删除子图"));
-    removeButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    removeButton->setAutoRaise(false);
-    removeButton->setMinimumWidth(100);
+    removeButton->setIcon(style()->standardIcon(QStyle::SP_TitleBarCloseButton));
+    removeButton->setAccessibleName(tr("删除子图"));
+    removeButton->setAutoRaise(true);
     removeButton->setToolTip(tr("删除本子图及其会话轨迹历史"));
     connect(removeButton, &QToolButton::clicked, this, [this]() { emit RemoveRequested(plotId_); });
     header->addWidget(headerTitle_);
     header->addWidget(dimensionLabel_);
     header->addStretch();
     header->addWidget(autoRange_);
+    auto* showTracks = new QCheckBox(tr("显示全部轨迹"), this);
+    showTracks->setObjectName(QStringLiteral("trajectoryShowAll"));
+    showTracks->setChecked(true);
+    showTracks->setTristate(true);
+    header->addWidget(showTracks);
+    connect(showTracks, &QCheckBox::clicked, this, [this](bool visible) {
+        for (auto& track : tracks_) {
+            const QSignalBlocker blocker(track.visible);
+            track.visible->setChecked(visible);
+        }
+        Render();
+    });
     header->addWidget(removeButton);
     layout->addLayout(header);
 
@@ -335,8 +341,8 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
         auto* chart = new QChart;
         chart->setPlotAreaBackgroundVisible(true);
         chart->setMargins(QMargins(8, 8, 8, 8));
-        xAxis_ = new QValueAxis(chart);
-        yAxis_ = new QValueAxis(chart);
+        xAxis_ = new CompactValueAxis(chart);
+        yAxis_ = new CompactValueAxis(chart);
         xAxis_->setRange(-1.0, 1.0);
         yAxis_->setRange(-1.0, 1.0);
         xAxis_->setTickCount(5);
@@ -346,7 +352,7 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
         chartView_ = new QChartView(chart, this);
         chartView_->setObjectName(plotId_ == 0 ? QStringLiteral("trajectoryChart")
                                                : QStringLiteral("trajectoryChart_%1").arg(plotId_));
-        chartView_->setRenderHint(QPainter::Antialiasing, false);
+        chartView_->setRenderHint(QPainter::Antialiasing, true);
         chartView_->setRubberBand(QChartView::RectangleRubberBand);
         chartView_->setAcceptDrops(true);
         chartView_->viewport()->setAcceptDrops(true);
@@ -469,6 +475,12 @@ void TrajectoryPlotWidget::AddTrack(const TrackSnapshot* snapshot) {
     auto* rowLayout = new QHBoxLayout(track.row);
     rowLayout->setContentsMargins(0, 0, 0, 0);
     track.label = new QLabel(tr("轨迹 %1").arg(tracks_.size() + 1), track.row);
+    track.visible = new QCheckBox(tr("显示"), track.row);
+    track.visible->setObjectName(QStringLiteral("trajectoryTrackVisible_%1_%2").arg(plotId_).arg(track.id));
+    track.visible->setChecked(!snapshot || snapshot->visible);
+    track.visible->setToolTip(tr("仅控制显示，保留信号选择与轨迹历史"));
+    rowLayout->addWidget(track.visible);
+    connect(track.visible, &QCheckBox::toggled, this, [this] { Render(); });
     track.groupCombo = new QComboBox(track.row);
     track.xCombo = new QComboBox(track.row);
     track.yCombo = new QComboBox(track.row);
@@ -500,7 +512,10 @@ void TrajectoryPlotWidget::AddTrack(const TrackSnapshot* snapshot) {
         rowLayout->addWidget(track.zCombo, 1);
     }
     auto* removeTrackButton = new QToolButton(track.row);
-    removeTrackButton->setText(tr("移除轨迹"));
+    removeTrackButton->setIcon(style()->standardIcon(QStyle::SP_TitleBarCloseButton));
+    removeTrackButton->setAutoRaise(true);
+    removeTrackButton->setToolTip(tr("移除本轨迹（临时隐藏请取消勾选显示）"));
+    removeTrackButton->setAccessibleName(tr("移除轨迹"));
     removeTrackButton->setObjectName(QStringLiteral("removeTrajectoryTrack_%1_%2").arg(plotId_).arg(track.id));
     rowLayout->addWidget(removeTrackButton);
     trackRows_->layout()->addWidget(track.row);
@@ -685,6 +700,8 @@ void TrajectoryPlotWidget::Ensure2DSeries() {
             track.line->attachAxis(yAxis_);
         }
         QPen pen(color, theme_.seriesLineWidth);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
         track.line->setPen(pen);
         if (!track.current) {
             track.current = new QScatterSeries(chart);
@@ -746,6 +763,11 @@ void TrajectoryPlotWidget::CaptureData() {
 }
 
 void TrajectoryPlotWidget::Render() {
+    if (auto* toggle = findChild<QCheckBox*>(QStringLiteral("trajectoryShowAll"))) {
+        const QSignalBlocker blocker(toggle);
+        const int visible = std::count_if(tracks_.begin(), tracks_.end(), [](const TrackState& track) { return track.visible->isChecked(); });
+        toggle->setCheckState(visible == 0 ? Qt::Unchecked : visible == tracks_.size() ? Qt::Checked : Qt::PartiallyChecked);
+    }
     if (dimension_ == TrajectoryDimension::TwoD) Render2D();
     else Render3D();
 }
@@ -777,6 +799,10 @@ void TrajectoryPlotWidget::Render2D() {
     qsizetype drawnCount = 0;
     for (int i = 0; i < tracks_.size(); ++i) {
         auto& track = tracks_[i];
+        const bool visible = track.visible->isChecked();
+        track.line->setVisible(visible);
+        track.current->setVisible(visible);
+        if (!visible) continue;
         const int xSignal = SelectedSignal(track.xCombo);
         const int ySignal = SelectedSignal(track.yCombo);
         const auto xTransform = transforms_.value(xSignal, pat::DisplayTransform{});
@@ -815,6 +841,11 @@ void TrajectoryPlotWidget::Render2D() {
         SetPaddedRange(xAxis_, minX, maxX);
         SetPaddedRange(yAxis_, minY, maxY);
     }
+    for (auto* axis : {xAxis_, yAxis_}) {
+        const auto* compact = dynamic_cast<CompactValueAxis*>(axis);
+        if (compact && !compact->Annotation().isEmpty())
+            axis->setTitleText(axis->titleText() + QStringLiteral(" — ") + compact->Annotation());
+    }
     status_->setText(hasRange
         ? tr("%1 条轨迹；区间点 %2；绘制点 %3")
               .arg(tracks_.size()).arg(historyCount).arg(drawnCount)
@@ -828,6 +859,7 @@ void TrajectoryPlotWidget::Render3D() {
     qsizetype drawnCount = 0;
     for (int i = 0; i < tracks_.size(); ++i) {
         const auto& track = tracks_[i];
+        if (!track.visible->isChecked()) continue;
         const int xSignal = SelectedSignal(track.xCombo);
         const int ySignal = SelectedSignal(track.yCombo);
         const int zSignal = SelectedSignal(track.zCombo);
@@ -870,7 +902,7 @@ QVector<TrajectoryPlotWidget::TrackSnapshot> TrajectoryPlotWidget::Snapshots() c
     for (const auto& track : tracks_) {
         result.append({SelectedSignal(track.xCombo), SelectedSignal(track.yCombo),
                        SelectedSignal(track.zCombo),
-                       track.history2D, track.history3D, track.lastSampleKey});
+                       track.history2D, track.history3D, track.lastSampleKey, track.visible->isChecked()});
     }
     return result;
 }
@@ -937,7 +969,13 @@ bool TrajectoryPlotWidget::HandleDrop(QDropEvent* event) {
 
 bool TrajectoryPlotWidget::eventFilter(QObject* watched, QEvent* event) {
     if (watched == headerTitle_) {
-        if (event->type() == QEvent::MouseButtonPress) {
+        if (event->type() == QEvent::MouseButtonDblClick) {
+            if (static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
+                headerTitle_->setCursor(Qt::OpenHandCursor);
+                emit FocusRequested(plotId_);
+                return true;
+            }
+        } else if (event->type() == QEvent::MouseButtonPress) {
             auto* mouse = static_cast<QMouseEvent*>(event);
             if (mouse->button() == Qt::LeftButton) {
                 dragStart_ = mouse->position().toPoint();
@@ -1028,6 +1066,8 @@ TrajectoryView::TrajectoryView(QWidget* parent) : QWidget(parent) {
 }
 
 TrajectoryPlotWidget* TrajectoryView::AddPlot(TrajectoryDimension dimension) {
+    focusedPlotId_ = -1;
+    for (auto* existing : plots_) existing->show();
     auto* plot = new TrajectoryPlotWidget(nextPlotId_++, dimension, splitter_);
     plot->ConfigureSignals(format_);
     plot->SetDataSource(source_, pairing_);
@@ -1035,6 +1075,10 @@ TrajectoryPlotWidget* TrajectoryView::AddPlot(TrajectoryDimension dimension) {
     plot->SetTheme(theme_);
     plot->SetTimeWindow(windowStart_, windowEnd_);
     connect(plot, &TrajectoryPlotWidget::RemoveRequested, this, &TrajectoryView::RemovePlot);
+    connect(plot, &TrajectoryPlotWidget::FocusRequested, this, [this](int id) {
+        focusedPlotId_ = focusedPlotId_ == id ? -1 : id;
+        for (auto* existing : plots_) existing->setVisible(focusedPlotId_ < 0 || existing->PlotId() == focusedPlotId_);
+    });
     connect(plot, &TrajectoryPlotWidget::SignalsChanged, this, &TrajectoryView::SignalsChanged);
     connect(plot, &TrajectoryPlotWidget::MergeRequested, this,
             [this](int sourceId, int targetId) {
@@ -1095,6 +1139,8 @@ bool TrajectoryView::MergePlots(int sourcePlotId, int targetPlotId, QString& err
 }
 
 void TrajectoryView::RemovePlot(int plotId) {
+    focusedPlotId_ = -1;
+    for (auto* existing : plots_) existing->show();
     for (int i = 0; i < plots_.size(); ++i) {
         if (plots_[i]->PlotId() != plotId) continue;
         auto* plot = plots_.takeAt(i);

@@ -42,7 +42,9 @@ CMakeUserPresets.json
 # IDE and editor-local files
 .idea/
 .vs/
-.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
 *.user
 *.suo
 *.code-workspace

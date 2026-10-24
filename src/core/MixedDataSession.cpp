@@ -48,7 +48,8 @@ bool MixedDataSession::LoadSignals(const QVector<int>& signalIndices,
     for (const auto& alignment : alignments) {
         MixedReadResult paired;
         if (!reader_.ReadAlignedSignals(alignment.indices, cacheBudgetBytes_ / (2 * alignments.size()),
-                paired, errorMessage, window, isCancelled, alignment.operation)) return false;
+                paired, errorMessage, window, isCancelled, alignment.operation,
+                alignment.interpolate, alignment.holdPrevious)) return false;
         loaded.readChunks += paired.readChunks;
         loaded.readBytes += paired.readBytes;
         loaded.reduced = loaded.reduced || paired.reduced;

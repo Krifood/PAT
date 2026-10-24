@@ -1,0 +1,12 @@
+{
+  "cmake.configureOnOpen": true,
+  "cmake.buildDirectory": "${workspaceFolder}/build/vscode",
+  "cmake.configureSettings": {
+    "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+    "PAT_BUILD_GUI": true,
+    "PAT_ENABLE_SERIAL": true,
+    "PAT_BUILD_TESTS": false
+  },
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.default.cppStandard": "c++20"
+}

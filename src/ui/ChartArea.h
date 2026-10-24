@@ -72,6 +72,8 @@ private:
     void UpdateChartHeights();
     void UpdateRangeContext();
     void AlignYAxisMargins();
+    int focusedChart_ = -1;
+    QVector<GuideLine> sharedVerticalGuides_;
     void ApplyThemeSurface();
     const pat::Series* ResolveSeries(int displayIndex) const;
     pat::DisplayTransform ResolveTransform(int displayIndex) const;

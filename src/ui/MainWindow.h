@@ -65,6 +65,7 @@ private:
     void HandleSignalTreeItemChanged(QTreeWidgetItem* item, int column);
     void UpdateCharts();
     void UpdateStatus(const QString& text);
+    void UpdateFileHeader();
     void BuildSignalTree();
     void ShowSignalTreeMenu(const QPoint& pos);
     void ShowSearchResultsMenu(const QPoint& pos);
@@ -82,7 +83,7 @@ private:
     void ShowSignalTransformDialog(int signalIndex);
     void ShowDifferenceDialog(const QVector<int>& suggestedSignals);
     bool CreateDerived(int leftSignal, int rightSignal, pat::SeriesOperation operation,
-                       QString& errorMessage);
+                       QString& errorMessage, bool interpolate = false, bool holdPrevious = false);
     bool CreateDifference(int leftSignal, int rightSignal, QString& errorMessage);
     bool CreateSum(int leftSignal, int rightSignal, QString& errorMessage);
     void ApplyTheme(AppThemeId id, bool persist = true);

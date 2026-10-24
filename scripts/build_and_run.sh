@@ -11,7 +11,7 @@ fi
 CONFIG="${CONFIG:-Release}"
 RUN="${RUN:-1}"
 PACKAGE="${PACKAGE:-0}"
-TEST="${TEST:-1}"
+TEST="${TEST:-0}"
 
 for flag_name in RUN PACKAGE TEST; do
   flag_value="${!flag_name}"
@@ -61,9 +61,11 @@ cmake "${cmake_args[@]}" \
   -DPAT_BUILD_TESTS="$BUILD_TESTS"
 
 if [[ "$TEST" == "1" ]]; then
+  printf '已启用测试：编译后执行回归，失败将停止后续启动或打包。\n'
   cmake --build "$BUILD_DIR" --config "$CONFIG" --parallel "${JOBS:-4}"
   ctest --test-dir "$BUILD_DIR" --build-config "$CONFIG" --output-on-failure
 else
+  printf '已跳过测试：仅编译应用。需要验证时设置 TEST=1。\n'
   cmake --build "$BUILD_DIR" --config "$CONFIG" --target pat_app --parallel "${JOBS:-4}"
 fi
 

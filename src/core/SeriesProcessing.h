@@ -23,6 +23,8 @@ struct DerivedSeriesDefinition {
     SeriesOperation operation = SeriesOperation::Difference;
     QString title;
     QString unit;
+    bool interpolate = false;
+    bool holdPrevious = false;
 };
 
 class SeriesProcessing {
@@ -34,7 +36,7 @@ public:
     void ResetTransform(int signalIndex);
 
     bool AddDerived(int leftSignal, int rightSignal, SeriesOperation operation,
-                    QString& errorMessage);
+                    QString& errorMessage, bool interpolate = false, bool holdPrevious = false);
     bool AddDifference(int leftSignal, int rightSignal, QString& errorMessage);
     bool AddSum(int leftSignal, int rightSignal, QString& errorMessage);
     void RemoveDerivedSignal(int displayIndex);
@@ -51,6 +53,7 @@ public:
 
     static int DerivedDisplayIndex(int derivedIndex) { return -derivedIndex - 1; }
     static int DerivedStorageIndex(int displayIndex) { return -displayIndex - 1; }
+    static void MakeSteps(QVector<QPointF>& samples);
 
 private:
     void InitializeDerivedSeries();

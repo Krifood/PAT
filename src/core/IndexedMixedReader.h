@@ -29,6 +29,8 @@ struct MixedChunkIndex {
 struct MixedAlignment {
     QVector<int> indices;
     int operation = -1;
+    bool interpolate = false;
+    bool holdPrevious = false;
     bool operator==(const MixedAlignment&) const = default;
 };
 
@@ -71,10 +73,13 @@ public:
 
     // Exact timestamp join BEFORE reduction; operation: -1 coordinates only,
     // 0 difference, 1 sum. At most three source columns per query.
+    // interpolate=true evaluates B at A's time using same-segment brackets;
+    // no extrapolation. Arithmetic and interpolation both precede reduction.
     bool ReadAlignedSignals(const QVector<int>& indices, qsizetype budget,
                             MixedReadResult& result, QString& error,
                             const MixedReadWindow& window = {},
-                            const std::function<bool()>& cancelled = {}, int operation = -1) const;
+                            const std::function<bool()>& cancelled = {}, int operation = -1,
+                            bool interpolate = false, bool holdPrevious = false) const;
 
     bool IsOpen() const { return !path_.isEmpty(); }
     const QString& Path() const { return path_; }

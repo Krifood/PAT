@@ -24,5 +24,7 @@ protected:
     void contextMenuEvent(QContextMenuEvent* event) override;
     bool viewportEvent(QEvent* event) override;
     QMimeData* mimeData(const QList<QTreeWidgetItem*>& items) const override;
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dragMoveEvent(QDragMoveEvent* event) override;
     void dropEvent(QDropEvent* event) override;
 };

@@ -6,13 +6,16 @@ param(
   [ValidateSet("Debug", "Release", "RelWithDebInfo", "MinSizeRel")]
   [string]$Config = "Release",
   [string]$QtRoot,
+  [string]$MsvcGenerator = "Visual Studio 17 2022",
   [int]$Jobs = [Environment]::ProcessorCount,
   [switch]$DisableSerial,
+  [switch]$WithTests,
   [switch]$Clean
 )
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$runTests = ($Action -eq "Test") -or $WithTests.IsPresent
 
 function Test-QtRoot([string]$Path) {
   if (-not $Path) { return $false }
@@ -141,8 +144,9 @@ $configureArgs = @(
   "-DCMAKE_PREFIX_PATH=$QtRoot",
   "-DPAT_BUILD_GUI=ON",
   "-DPAT_ENABLE_SERIAL=$(if ($DisableSerial) { 'OFF' } else { 'ON' })",
-  "-DPAT_BUILD_TESTS=ON",
-  "-DPAT_STRICT_WARNINGS=ON"
+  "-DPAT_BUILD_TESTS=$(if ($runTests) { 'ON' } else { 'OFF' })",
+  "-DPAT_STRICT_WARNINGS=ON",
+  "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
 )
 
 if ($qtLooksLikeMingw) {
@@ -162,6 +166,8 @@ if ($qtLooksLikeMingw) {
   if (-not $ninja) { throw "Ninja is required for the detected MinGW Qt installation." }
   $cxx = Find-CommandPath @("g++.exe", "c++.exe") $compilerDirs
   if (-not $cxx) { throw "A MinGW C++ compiler matching this Qt installation was not found." }
+  # The compiler's sibling tools/runtime DLLs must be visible to CMake and tests.
+  $env:PATH = "$(Split-Path $cxx -Parent);$env:PATH"
 
   $generator = "Ninja"
   $configureArgs += @(
@@ -170,6 +176,11 @@ if ($qtLooksLikeMingw) {
     "-DCMAKE_CXX_COMPILER=$cxx",
     "-DCMAKE_BUILD_TYPE=$Config"
   )
+} else {
+  # Do not let an unrelated Ninja/MinGW default choose the ABI for MSVC Qt.
+  $generator = $MsvcGenerator
+  $architecture = if ((Split-Path $QtRoot -Leaf) -match 'arm64') { 'ARM64' } else { 'x64' }
+  $configureArgs += @("-G", $generator, "-A", $architecture)
 }
 
 Write-Host "Qt:      $QtRoot"
@@ -180,7 +191,9 @@ Write-Host "Serial:  $(if ($DisableSerial) { 'disabled' } else { 'enabled' })"
 & $cmake @configureArgs
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE." }
 
-& $cmake --build $buildPath --config $Config --parallel $Jobs
+$buildArgs = @("--build", $buildPath, "--config", $Config, "--parallel", $Jobs)
+if (-not $runTests) { $buildArgs += @("--target", "pat_app") }
+& $cmake @buildArgs
 if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE." }
 
 $exeCandidates = if ($qtLooksLikeMingw) {
@@ -199,11 +212,12 @@ if (-not $exe -or -not (Test-Path $exe)) {
   throw "Build succeeded but pat_app.exe was not found under: $buildPath"
 }
 
-if ($Action -in @("Test", "Run", "Package")) {
-  & $cmake --build $buildPath --config $Config --target pat_core_tests --parallel $Jobs
-  if ($LASTEXITCODE -ne 0) { throw "Test build failed with exit code $LASTEXITCODE." }
+if ($runTests) {
+  Write-Host "Tests enabled; a failure stops subsequent launch or packaging."
   & $cmake -E env "PATH=$qtBin;$env:PATH" ctest --test-dir $buildPath -C $Config --output-on-failure
   if ($LASTEXITCODE -ne 0) { throw "Tests failed with exit code $LASTEXITCODE." }
+} else {
+  Write-Host "Tests skipped. Use -Action Test or -WithTests to enable validation."
 }
 
 if ($Action -eq "Run") {

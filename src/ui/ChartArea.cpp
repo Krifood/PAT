@@ -115,6 +115,7 @@ void ChartArea::SetAxisTitle(const QString& title) {
 }
 
 void ChartArea::ResetSessionView() {
+    sharedVerticalGuides_.clear();
     hasStats_ = false;
     hasCurrentRange_ = false;
     currentMinX_ = 0.0;
@@ -417,6 +418,36 @@ void ChartArea::BuildCharts() {
         view->SetGuideLines(savedGuides.value(guideKey(group.signalIndices)));
 
         connect(view, &SignalChartView::CursorMoved, this, &ChartArea::HandleCursorMoved);
+        connect(view, &SignalChartView::AxisLayoutChanged, this, &ChartArea::AlignYAxisMargins);
+        connect(view, &SignalChartView::FocusRequested, this, [this, groupIndex] {
+            focusedChart_ = focusedChart_ == groupIndex ? -1 : groupIndex;
+            for (int i = 0; i < charts_.size(); ++i) {
+                charts_[i]->setVisible(focusedChart_ < 0 || i == focusedChart_);
+                charts_[i]->SetXAxisVisible(focusedChart_ < 0 ? i == charts_.size() - 1 : i == focusedChart_);
+            }
+            UpdateChartHeights();
+        });
+        connect(view, &SignalChartView::GuidesEdited, this, [this, view] {
+            sharedVerticalGuides_.clear();
+            for (const auto& guide : view->GuideLines())
+                if (guide.orientation == GuideOrientation::Vertical) sharedVerticalGuides_.append(guide);
+            for (auto* other : charts_) {
+                if (other == view) continue;
+                QVector<GuideLine> updated;
+                for (const auto& guide : other->GuideLines())
+                    if (guide.orientation == GuideOrientation::Horizontal) updated.append(guide);
+                updated += sharedVerticalGuides_;
+                other->SetGuideLines(updated);
+            }
+        });
+        auto restored = view->GuideLines();
+        if (!sharedVerticalGuides_.isEmpty()) {
+            restored.erase(std::remove_if(restored.begin(), restored.end(), [](const GuideLine& guide) {
+                return guide.orientation == GuideOrientation::Vertical;
+            }), restored.end());
+            restored += sharedVerticalGuides_;
+            view->SetGuideLines(restored);
+        }
         connect(view, &SignalChartView::CursorLeft, this, &ChartArea::HandleCursorLeft);
         connect(view, &SignalChartView::XRangeRequested, this, &ChartArea::HandleXRangeRequested);
         connect(view, &SignalChartView::ResetXRangeRequested, this, &ChartArea::HandleResetXRange);
@@ -437,6 +468,7 @@ void ChartArea::BuildCharts() {
 }
 
 void ChartArea::ClearCharts() {
+    focusedChart_ = -1;
     charts_.clear();
     cursorActive_ = false;
     if (!splitter_) return;
@@ -559,13 +591,18 @@ QVector<QPointF> ChartArea::DecimateSamples(const QVector<QPointF>& samples,
         auto b0 = std::lower_bound(startIt, endIt, bx0, [](const QPointF& p, double x) { return p.x() < x; });
         auto b1 = std::lower_bound(b0, endIt, bx1, [](const QPointF& p, double x) { return p.x() < x; });
         if (b0 == b1) continue;
+        if (std::any_of(b0, b1, [](const QPointF& p) { return !std::isfinite(p.y()); })) {
+            // Keep a gap in the overview rather than joining across invalid samples.
+            out.append({b0->x(), qQNaN()});
+            continue;
+        }
         auto minIt = b0;
         auto maxIt = b0;
         for (auto it = b0; it != b1; ++it) {
             if (it->y() < minIt->y()) minIt = it;
             if (it->y() > maxIt->y()) maxIt = it;
         }
-        if (minIt->x() <= maxIt->x()) {
+        if (minIt <= maxIt) {
             out.append(*minIt);
             if (maxIt != minIt) out.append(*maxIt);
         } else {
@@ -596,6 +633,7 @@ bool ChartArea::ComputeGroupRange(const QVector<int>& indices, double& outMinY, 
                                           [](double x, const QPointF& point) { return x < point.x(); });
         for (auto it = begin; it != end; ++it) {
             const double value = transform.Apply(it->y());
+            if (!std::isfinite(value)) continue;
             if (!hasRange) {
                 outMinY = outMaxY = value;
                 hasRange = true;
@@ -607,10 +645,14 @@ bool ChartArea::ComputeGroupRange(const QVector<int>& indices, double& outMinY, 
     }
 
     if (!hasRange) return false;
-    if (qFuzzyCompare(outMinY, outMaxY)) {
+    if (outMinY == outMaxY) {
         const double delta = std::abs(outMinY) > 1.0 ? std::abs(outMinY) * 0.1 : 1.0;
         outMinY -= delta;
         outMaxY += delta;
+    } else {
+        const double padding = (outMaxY * .5 - outMinY * .5) * .16;
+        if (std::isfinite(outMinY - padding)) outMinY -= padding;
+        if (std::isfinite(outMaxY + padding)) outMaxY += padding;
     }
     return true;
 }
@@ -649,7 +691,7 @@ void ChartArea::UpdateChartHeights() {
 
     for (auto* chart : charts_) {
         if (!chart) continue;
-        chart->setMinimumHeight(minChartHeight_);
+        chart->setMinimumHeight(focusedChart_ < 0 ? minChartHeight_ : maxChartHeight_);
         chart->setMaximumHeight(maxChartHeight_);
     }
 

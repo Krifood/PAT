@@ -223,6 +223,11 @@ void MainWindow::SetupUi() {
     fileMenu->addSeparator();
     fileMenu->addAction(exitAction);
 
+    auto* analysisMenu = menuBar()->addMenu(tr("分析"));
+    auto* differenceAction = analysisMenu->addAction(tr("信号做差 / 差值趋势..."));
+    differenceAction->setObjectName(QStringLiteral("createDifferenceAction"));
+    connect(differenceAction, &QAction::triggered, this, [this]() { ShowDifferenceDialog({}); });
+
     viewMenu_ = menuBar()->addMenu(tr("视图"));
     auto* memoryMenu = viewMenu_->addMenu(tr("大文件缓存预算"));
     auto* memoryGroup = new QActionGroup(this);
@@ -274,6 +279,10 @@ void MainWindow::SetupUi() {
     connect(signalTree_, &SignalTreeWidget::MergeRequested,
             this, &MainWindow::HandleMergeRequested);
     leftLayout->addWidget(listLabel);
+    auto* differenceButton = new QPushButton(tr("信号做差 / 差值趋势..."), leftPane);
+    differenceButton->setObjectName(QStringLiteral("createDifferenceButton"));
+    connect(differenceButton, &QPushButton::clicked, differenceAction, &QAction::trigger);
+    leftLayout->addWidget(differenceButton);
     leftLayout->addWidget(signalTree_, /*stretch=*/2);
 
     auto* searchLabel = new QLabel(tr("信号检索与快捷操作"), leftPane);
@@ -307,6 +316,12 @@ void MainWindow::SetupUi() {
     rightPane->setObjectName(QStringLiteral("chartPane"));
     auto* rightLayout = new QVBoxLayout(rightPane);
     rightLayout->setContentsMargins(4, 4, 4, 4);
+    auto* fileHeader = new QLabel(rightPane);
+    fileHeader->setObjectName(QStringLiteral("currentFileHeader"));
+    fileHeader->setTextFormat(Qt::PlainText);
+    fileHeader->setMinimumWidth(0);
+    fileHeader->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    rightLayout->addWidget(fileHeader);
 #ifdef PAT_ENABLE_QT_CHARTS
     timeRangeControl_ = new TimeRangeControl(rightPane);
     rightLayout->addWidget(timeRangeControl_);
@@ -1138,7 +1153,20 @@ void MainWindow::HandleSignalTreeItemChanged(QTreeWidgetItem* item, int column) 
     UpdateCharts();
 }
 
+void MainWindow::UpdateFileHeader() {
+    const QString formatPath = formatDocument_.Path();
+    const QString dataPath = mixedMode_ ? mixedDataSession_.Path() : dataSession_.Path();
+    setWindowTitle(tr("PAT — 格式：%1 — 数据：%2")
+        .arg(formatPath.isEmpty() ? tr("未保存/未打开") : QFileInfo(formatPath).fileName(),
+             liveMode_ ? tr("实时采集") : (dataPath.isEmpty() ? tr("未打开") : QFileInfo(dataPath).fileName())));
+    if (auto* label = findChild<QLabel*>(QStringLiteral("currentFileHeader"))) {
+        label->setText(windowTitle().mid(6));
+        label->setToolTip(tr("格式：%1\n数据：%2").arg(formatPath, liveMode_ ? tr("实时采集") : dataPath));
+    }
+}
+
 void MainWindow::UpdateCharts() {
+    UpdateFileHeader();
 #ifdef PAT_ENABLE_QT_CHARTS
     if (!chartArea_) return;
     const bool offlineAvailable = !liveMode_ && HasOfflineData();
@@ -1230,13 +1258,14 @@ void MainWindow::RequestMixedSignalsForCurrentView() {
         if (signalTreeController_) required = signalTreeController_->CollectCheckedSignalIndices();
         for (const auto& definition : seriesProcessing_.DerivedDefinitions()) {
             alignments.append({{definition.leftSignal, definition.rightSignal},
-                definition.operation == pat::SeriesOperation::Difference ? 0 : 1});
+                definition.operation == pat::SeriesOperation::Difference ? 0 : 1, definition.interpolate, definition.holdPrevious});
         }
     }
     mixedLoader_->Request(mixedDataSession_, required, mixedWindow_, alignments);
 }
 
 void MainWindow::UpdateStatus(const QString& text) {
+    UpdateFileHeader();
     if (statusLabel_) statusLabel_->setText(text);
     statusBar()->showMessage(text, 5000);
 }
@@ -1439,7 +1468,8 @@ void MainWindow::ShowSignalActionsMenu(const QVector<int>& targetIndices,
             });
         }
         hasActions = true;
-    } else if (targetIndices.size() == 2) {
+    }
+    if (!targetIndices.isEmpty()) {
         if (hasActions) menu.addSeparator();
         menu.addAction(tr("创建差值/和值关系图..."), this, [this, targetIndices]() {
             ShowDifferenceDialog(targetIndices);
@@ -1525,21 +1555,28 @@ void MainWindow::ShowSignalTransformDialog(int signalIndex) {
 }
 
 void MainWindow::ShowDifferenceDialog(const QVector<int>& suggestedSignals) {
-    if (!formatDocument_.HasFormat()) return;
+    if (!formatDocument_.HasFormat() || formatDocument_.Format().signalFormats.size() < 2) {
+        QMessageBox::information(this, tr("信号做差"), tr("请先加载包含至少两条信号的格式或数据。"));
+        return;
+    }
     const int initialLeft = suggestedSignals.value(0, 0);
     const int initialRight = suggestedSignals.value(1,
         formatDocument_.Format().signalFormats.size() > 1 ? 1 : 0);
     DifferenceDialog dialog(formatDocument_.Format(), initialLeft, initialRight, this);
     if (dialog.exec() != QDialog::Accepted) return;
     QString error;
-    if (!CreateDerived(dialog.LeftSignal(), dialog.RightSignal(), dialog.Operation(), error)) {
+    if (!CreateDerived(dialog.LeftSignal(), dialog.RightSignal(), dialog.Operation(), error, dialog.Interpolate(), dialog.HoldPrevious())) {
         QMessageBox::information(this, tr("无法创建关系图"), error);
+    } else {
+#ifdef PAT_ENABLE_QT_CHARTS
+        dataViewTabs_->setCurrentWidget(chartArea_);
+#endif
     }
 }
 
 bool MainWindow::CreateDerived(int leftSignal, int rightSignal,
-                               pat::SeriesOperation operation, QString& errorMessage) {
-    if (!seriesProcessing_.AddDerived(leftSignal, rightSignal, operation, errorMessage)) return false;
+                               pat::SeriesOperation operation, QString& errorMessage, bool interpolate, bool holdPrevious) {
+    if (!seriesProcessing_.AddDerived(leftSignal, rightSignal, operation, errorMessage, interpolate, holdPrevious)) return false;
     if (!mixedMode_) {
         seriesProcessing_.RebuildDerived(liveMode_ ? liveSession_.SeriesData() : dataSession_.Series());
     }

@@ -2,6 +2,8 @@
 
 #include <QContextMenuEvent>
 #include <QDropEvent>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
 #include <QEvent>
 #include <QMimeData>
 #include <QDataStream>
@@ -63,7 +65,24 @@ QMimeData* SignalTreeWidget::mimeData(const QList<QTreeWidgetItem*>& items) cons
     return mime;
 }
 
+void SignalTreeWidget::dragEnterEvent(QDragEnterEvent* event) {
+    if (event->mimeData()->hasFormat(SIGNAL_INDICES_MIME)) event->acceptProposedAction();
+    else event->ignore();
+}
+
+void SignalTreeWidget::dragMoveEvent(QDragMoveEvent* event) {
+    auto* target = itemAt(event->position().toPoint());
+    if (event->mimeData()->hasFormat(SIGNAL_INDICES_MIME) && target
+        && target->data(0, ITEM_TYPE_ROLE).toInt() == ITEM_TYPE_SIGNAL)
+        event->acceptProposedAction();
+    else event->ignore();
+}
+
 void SignalTreeWidget::dropEvent(QDropEvent* event) {
+    if (!event->mimeData()->hasFormat(SIGNAL_INDICES_MIME)) {
+        event->ignore();
+        return;
+    }
     auto* targetItem = itemAt(event->position().toPoint());
     if (!targetItem) {
         event->ignore();
@@ -76,20 +95,13 @@ void SignalTreeWidget::dropEvent(QDropEvent* event) {
     }
 
     QVector<int> indices;
-    const std::function<void(QTreeWidgetItem*)> collect = [&](QTreeWidgetItem* item) {
-        if (!item) return;
-        const int type = item->data(0, ITEM_TYPE_ROLE).toInt();
-        if (type == ITEM_TYPE_SIGNAL) {
-            const int idx = item->data(0, SIGNAL_INDEX_ROLE).toInt();
-            if (idx >= 0 && !indices.contains(idx)) indices.append(idx);
-            return;
-        }
-        for (int i = 0; i < item->childCount(); ++i) {
-            collect(item->child(i));
-        }
-    };
-
-    for (auto* item : selectedItems()) collect(item);
+    QByteArray payload = event->mimeData()->data(SIGNAL_INDICES_MIME);
+    QDataStream stream(&payload, QIODevice::ReadOnly);
+    stream >> indices;
+    if (stream.status() != QDataStream::Ok || indices.isEmpty()) {
+        event->ignore();
+        return;
+    }
 
     const int targetIndex = targetItem->data(0, SIGNAL_INDEX_ROLE).toInt();
     if (targetIndex >= 0 && !indices.contains(targetIndex)) {

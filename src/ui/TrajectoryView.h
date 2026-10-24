@@ -39,6 +39,7 @@ public:
         QVector<pat::TrajectoryPoint2D> history2D;
         QVector<pat::TrajectoryPoint3D> history3D;
         double lastSampleKey = -1.0;
+        bool visible = true;
     };
 
     TrajectoryPlotWidget(int plotId, TrajectoryDimension dimension, QWidget* parent = nullptr);
@@ -63,6 +64,7 @@ public:
     void SetRemoveEnabled(bool enabled);
 
 signals:
+    void FocusRequested(int plotId);
     void MergeRequested(int sourcePlotId, int targetPlotId);
     void RemoveRequested(int plotId);
     void SignalsChanged();
@@ -78,6 +80,7 @@ private:
         int id = 0;
         QWidget* row = nullptr;
         QLabel* label = nullptr;
+        QCheckBox* visible = nullptr;
         QComboBox* groupCombo = nullptr;
         QComboBox* xCombo = nullptr;
         QComboBox* yCombo = nullptr;
@@ -170,6 +173,7 @@ private:
     QTimer* refreshTimer_ = nullptr;
     QVector<TrajectoryPlotWidget*> plots_;
     int nextPlotId_ = 0;
+    int focusedPlotId_ = -1;
     pat::FormatDefinition format_;
     const QVector<pat::Series>* source_ = nullptr;
     pat::TrajectoryPairing pairing_ = pat::TrajectoryPairing::RecordOrder;

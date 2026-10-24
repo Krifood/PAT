@@ -44,15 +44,10 @@ void DisplayGroupManager::UpdateGroups(const QVector<int>& checkedIndices, const
     QVector<QVector<int>> validMerged;
     QVector<int> mergedIndices;
 
-    for (const auto& group : mergedGroups_) {
-        bool allChecked = true;
-        for (int idx : group) {
-            if (!checkedIndices.contains(idx)) {
-                allChecked = false;
-                break;
-            }
-        }
-        if (!allChecked || group.size() < 2) continue;
+    for (auto group : mergedGroups_) {
+        group.erase(std::remove_if(group.begin(), group.end(),
+            [&](int idx) { return !checkedIndices.contains(idx); }), group.end());
+        if (group.size() < 2) continue;
         validMerged.append(group);
         for (int idx : group) {
             if (!mergedIndices.contains(idx)) mergedIndices.append(idx);
@@ -91,12 +86,31 @@ bool DisplayGroupManager::MergeSignals(const QVector<int>& indices,
                                        const pat::FormatDefinition& format,
                                        QString& errorMessage) {
     errorMessage.clear();
-    Q_UNUSED(format)
-    if (indices.size() < 2) return false;
-
     QVector<int> merged = indices;
+    for (int idx : merged) {
+        if (idx < 0 || idx >= static_cast<int>(format.signalFormats.size())) {
+            errorMessage = QObject::tr("只能合并有效的原始信号；派生关系图暂不支持合并");
+            return false;
+        }
+    }
     std::sort(merged.begin(), merged.end());
     merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+    if (merged.size() < 2) return false;
+
+    // Merging any member of an existing plot brings the whole plot along.
+    // Expand to closure before removing old groups, never replace them by a pair.
+    bool expanded;
+    do {
+        expanded = false;
+        for (const auto& group : mergedGroups_) {
+            if (!std::any_of(group.begin(), group.end(),
+                             [&](int idx) { return merged.contains(idx); })) continue;
+            for (int idx : group) {
+                if (!merged.contains(idx)) { merged.append(idx); expanded = true; }
+            }
+        }
+    } while (expanded);
+    std::sort(merged.begin(), merged.end());
 
     QVector<QVector<int>> filtered;
     for (const auto& group : mergedGroups_) {

@@ -1,6 +1,7 @@
 #include "core/IndexedMixedReader.h"
 #include "core/MixedChunkIO.h"
 #include "core/RecordDecoder.h"
+#include "core/SeriesProcessing.h"
 #include <QFile>
 #include <QtEndian>
 #include <algorithm>
@@ -66,9 +67,11 @@ struct JointReducer {
 
 bool IndexedMixedReader::ReadAlignedSignals(const QVector<int>& indices, qsizetype budget,
     MixedReadResult& output, QString& error, const MixedReadWindow& window,
-    const std::function<bool()>& cancelled, int operation) const {
+    const std::function<bool()>& cancelled, int operation, bool interpolate, bool holdPrevious) const {
     if (!IsOpen() || indices.size() < 2 || indices.size() > 3
-        || (operation >= 0 && indices.size() != 2) || operation < -1 || operation > 1
+        || (operation >= 0 && indices.size() != 2) || ((interpolate || holdPrevious) && operation < 0)
+        || (interpolate && holdPrevious)
+        || operation < -1 || operation > 1
         || !std::isfinite(window.minX) || std::isnan(window.maxX) || window.minX < 0
         || window.minX > window.maxX) {
         error = QStringLiteral("配对读取参数非法"); return false;
@@ -94,6 +97,7 @@ bool IndexedMixedReader::ReadAlignedSignals(const QVector<int>& indices, qsizety
     result.series.resize(qsizetype(format_.signalFormats.size()));
     result.statistics.resize(result.series.size());
     quint64 upperRecords = std::numeric_limits<quint64>::max(), upperChunks = 0;
+    if (holdPrevious) upperRecords = 0;
     for (int i = 0; i < indices.size(); ++i) {
         const int flat = indices[i];
         if (flat < 0 || flat >= result.series.size()) { error = QStringLiteral("配对字段越界"); return false; }
@@ -116,13 +120,23 @@ bool IndexedMixedReader::ReadAlignedSignals(const QVector<int>& indices, qsizety
             if (entry.streamId != stream->streamId) continue;
             const double base = segmentOffset_.value(entry.segmentId);
             const quint64 origin = segmentMin_.value(entry.segmentId);
-            if (base + double(entry.lastTimestamp - origin) * cursor.scale < window.minX
-                || base + double(entry.firstTimestamp - origin) * cursor.scale > window.maxX) continue;
+            const bool before = base + double(entry.lastTimestamp - origin) * cursor.scale < window.minX;
+            const bool after = base + double(entry.firstTimestamp - origin) * cursor.scale > window.maxX;
+            if ((interpolate && i == 1) || holdPrevious) {
+                // Retain the neighboring B chunks for interpolation at window edges.
+                // Only one preceding/following chunk per source segment is needed.
+                if (!cursor.chunks.isEmpty() && cursor.chunks.last()->segmentId == entry.segmentId) {
+                    const auto* previous = cursor.chunks.last();
+                    if (before) { records -= previous->recordCount; cursor.chunks.removeLast(); }
+                    else if (after && base + double(previous->firstTimestamp - origin) * cursor.scale > window.maxX) continue;
+                }
+            } else if (before || after) continue;
             if (entry.payloadSize != quint32(stream->payloadLength)) { error = QStringLiteral("配对流负载长度不符"); return false; }
             cursor.chunks.append(&entry);
             records += entry.recordCount;
         }
-        upperRecords = std::min(upperRecords, records);
+        if (holdPrevious) upperRecords += records;
+        else if (!interpolate || i == 0) upperRecords = std::min(upperRecords, records);
         upperChunks += cursor.chunks.size();
     }
     const quint64 limit = quint64(result.cacheBudgetBytes) / (32 * quint64(indices.size() + (operation >= 0)));
@@ -159,7 +173,8 @@ bool IndexedMixedReader::ReadAlignedSignals(const QVector<int>& indices, qsizety
             cursor.hasPrevious = true; cursor.previousSegment = cursor.segment; cursor.previousTimestamp = cursor.timestamp;
             cursor.x = segmentOffset_.value(cursor.segment)
                 + double(cursor.timestamp - segmentMin_.value(cursor.segment)) * cursor.scale;
-            if (cursor.x < window.minX || cursor.x > window.maxX) continue;
+            if (!holdPrevious && !(interpolate && &cursor == &cursors[1])
+                && (cursor.x < window.minX || cursor.x > window.maxX)) continue;
             if (counting) return true;
             if (!cursor.decoder->Decode(QByteArrayView(bytes + prefix, entry.payloadSize), cursor.values, error)) return false;
             cursor.y = cursor.values[0];
@@ -177,7 +192,7 @@ bool IndexedMixedReader::ReadAlignedSignals(const QVector<int>& indices, qsizety
         if (fixedRecords_ && operation >= 0) {
             // Preserve the existing fixed-record relation's floating time tolerance.
             const double tolerance = 1e-9 * std::max({1.0, std::abs(a.x), std::abs(b.x)});
-            if (std::abs(a.x - b.x) <= tolerance) return 0;
+            if (a.x == b.x || (!holdPrevious && std::abs(a.x - b.x) <= tolerance)) return 0;
             return a.x < b.x ? -1 : 1;
         }
         // Raw uint64 timestamps must not lose bits through double conversion.
@@ -194,7 +209,74 @@ bool IndexedMixedReader::ReadAlignedSignals(const QVector<int>& indices, qsizety
             if (!advance(cursor)) return false;
         }
         quint32 previousSegment = 0; bool hadSegment = false;
-        while (true) {
+        if (holdPrevious) {
+            Key previousKeys[2]{};
+            double previousValues[2]{qQNaN(), qQNaN()};
+            bool valid[2]{false, false};
+            // Merge both event timelines; retain each stream's most recent value.
+            // Once a stream ends, its last value is not extrapolated past its range.
+            while (!cursors[0].ended && !cursors[1].ended) {
+                const Key target = compare(key(cursors[0]), key(cursors[1])) <= 0 ? key(cursors[0]) : key(cursors[1]);
+                for (int i = 0; i < 2; ++i) {
+                    while (!cursors[i].ended && compare(key(cursors[i]), target) == 0) {
+                        previousKeys[i] = key(cursors[i]); previousValues[i] = cursors[i].y; valid[i] = true;
+                        if (!advance(cursors[i])) return false;
+                    }
+                }
+                if (target.x < window.minX || target.x > window.maxX) continue;
+                if (counting) { ++matching; continue; }
+                Row row; row.x = target.x;
+                for (int i = 0; i < 2; ++i) row.values[i] = valid[i] && previousKeys[i].segment == target.segment
+                    && (cursors[i].ended || cursors[i].segment == target.segment || compare(previousKeys[i], target) == 0)
+                    ? previousValues[i] : qQNaN();
+                if (hadSegment && previousSegment != target.segment) {
+                    reducer.Flush();
+                    for (int flat : indices) result.series[flat].samples.append({row.x, qQNaN()});
+                    result.relation.samples.append({row.x, qQNaN()});
+                }
+                previousSegment = target.segment; hadSegment = true;
+                reducer.Add(row);
+                ++result.decodedRecords;
+            }
+        } else if (interpolate) {
+            auto& left = cursors[0];
+            auto& right = cursors[1];
+            Key previousRight{};
+            double previousY = qQNaN();
+            bool hasPreviousRight = false;
+            while (!left.ended) {
+                const Key target = key(left);
+                while (!right.ended && compare(key(right), target) < 0) {
+                    previousRight = key(right); previousY = right.y; hasPreviousRight = true;
+                    if (!advance(right)) return false;
+                }
+                double value = qQNaN();
+                if (!right.ended && compare(key(right), target) == 0) value = right.y;
+                else if (!right.ended && hasPreviousRight
+                         && previousRight.segment == target.segment && right.segment == target.segment
+                         && compare(previousRight, target) < 0 && compare(target, key(right)) < 0
+                         && std::isfinite(previousY) && std::isfinite(right.y)) {
+                    // Subtract uint64 ticks BEFORE conversion: preserve small offsets at huge epochs.
+                    const double fraction = fixedRecords_
+                        ? (left.x - previousRight.x) / (right.x - previousRight.x)
+                        : double(left.timestamp - previousRight.timestamp) / double(right.timestamp - previousRight.timestamp);
+                    value = std::lerp(previousY, right.y, fraction);
+                }
+                if (counting) ++matching;
+                else {
+                    Row row; row.x = left.x; row.values[0] = left.y; row.values[1] = value;
+                    if (hadSegment && previousSegment != left.segment) {
+                        reducer.Flush();
+                        for (int flat : indices) result.series[flat].samples.append({row.x, qQNaN()});
+                        result.relation.samples.append({row.x, qQNaN()});
+                    }
+                    previousSegment = left.segment; hadSegment = true;
+                    reducer.Add(row);
+                    ++result.decodedRecords;
+                }
+                if (!advance(left)) return false;
+            }
+        } else while (true) {
             bool ended = false;
             Key target = key(cursors[0]);
             for (int i = 0; i < indices.size(); ++i) {
@@ -234,6 +316,7 @@ bool IndexedMixedReader::ReadAlignedSignals(const QVector<int>& indices, qsizety
         }
     } // counting pass / data pass
     reducer.Flush();
+    if (holdPrevious) SeriesProcessing::MakeSteps(result.relation.samples);
     for (const auto& series : result.series) result.retainedPoints += series.samples.size();
     result.retainedPoints += result.relation.samples.size();
     output = std::move(result);

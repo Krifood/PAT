@@ -1,6 +1,7 @@
 ﻿#include "ui/SignalChartView.h"
 
 #include "ui/SignalTreeWidget.h"
+#include "ui/CompactValueAxis.h"
 
 #include <QAction>
 #include <QApplication>
@@ -38,6 +39,9 @@
 #include <QtCharts/QValueAxis>
 
 #include <algorithm>
+#include <QSignalBlocker>
+#include <QGraphicsLayout>
+#include <QTimer>
 #include <cmath>
 #include <limits>
 
@@ -73,19 +77,6 @@ public:
 private:
     QColor signalColor_;
 };
-
-QString YAxisLabelFormat(double minY, double maxY) {
-    const double magnitude = std::max(std::abs(minY), std::abs(maxY));
-    const double step = (maxY - minY) / 2.0;
-    if ((magnitude >= 1e6 || (step > 0.0 && step < 1e-6)) && magnitude > 0.0 && step > 0.0) {
-        const int exponent = static_cast<int>(std::floor(std::log10(magnitude)));
-        const int precision = std::clamp(static_cast<int>(std::ceil(exponent - std::log10(step))), 1, 12);
-        return QStringLiteral("%.") + QString::number(precision) + QLatin1Char('e');
-    }
-    if (step <= 0.0 || step >= 0.1) return QStringLiteral("%.1f");
-    const int decimals = std::max(1, static_cast<int>(std::ceil(-std::log10(step))) + 1);
-    return QStringLiteral("%.") + QString::number(decimals) + QLatin1Char('f');
-}
 
 }  // namespace
 
@@ -143,6 +134,7 @@ void SignalChartView::Configure(const QString& title,
         displayTransforms_.append(pat::DisplayTransform{});
     }
     viewIndex_ = viewIndex;
+    autoMinY_ = minY; autoMaxY_ = maxY; yZoom_ = 1.0;
 
     auto* chart = new QChart();
     chart->setTitle(QString());
@@ -164,11 +156,14 @@ void SignalChartView::Configure(const QString& title,
     chart->setMargins(QMargins(4, 0, 4, 2));
 
     series_.clear();
+    segmentSeries_.clear();
     for (int i = 0; i < seriesIndices.size(); ++i) {
         auto* line = new QLineSeries(chart);
         const int colorIndex = palette.isEmpty() ? 0 : (i % palette.size());
         QPen pen(palette.isEmpty() ? Qt::white : palette[colorIndex]);
         pen.setWidthF(theme_.seriesLineWidth);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
         line->setPen(pen);
         const int dataIndex = seriesIndices[i];
         if (sourceSeries_ && dataIndex >= 0 && dataIndex < sourceSeries_->size()) {
@@ -177,11 +172,9 @@ void SignalChartView::Configure(const QString& title,
         } else {
             line->setName(title);
         }
-        if (i < seriesSamples.size()) {
-            line->replace(seriesSamples[i]);
-        }
         chart->addSeries(line);
         series_.append(line);
+        segmentSeries_.append(QVector<QLineSeries*>{line});
     }
 
     auto* axisX = new QValueAxis(chart);
@@ -196,10 +189,9 @@ void SignalChartView::Configure(const QString& title,
         line->attachAxis(axisX);
     }
 
-    auto* axisY = new QValueAxis(chart);
+    auto* axisY = new CompactValueAxis(chart);
     axisY->setRange(minY, maxY);
     axisY->setTickCount(3);
-    axisY->setLabelFormat(YAxisLabelFormat(minY, maxY));
     axisY->setTitleBrush(QBrush(theme_.axisText));
     axisY->setLabelsColor(theme_.axisText);
     axisY->setLinePenColor(theme_.axisLine);
@@ -210,6 +202,7 @@ void SignalChartView::Configure(const QString& title,
     }
 
     setChart(chart);
+    connect(chart, &QGraphicsWidget::geometryChanged, this, &SignalChartView::SchedulePlotLayout);
     connect(chart, &QChart::plotAreaChanged, this, [this](const QRectF&) {
         UpdateHeaderLayout();
         UpdateZeroLine();
@@ -220,6 +213,11 @@ void SignalChartView::Configure(const QString& title,
     headerDescText_ = unit.trimmed();
     headerTitle_ = new QGraphicsSimpleTextItem(chart);
     headerDesc_ = new QGraphicsSimpleTextItem(chart);
+    emptyMessage_ = new QGraphicsSimpleTextItem(
+        tr("当前区间无有效差值/和值\n请检查时间重叠，或使用线性插值模式"), chart);
+    emptyMessage_->setBrush(QBrush(theme_.axisText));
+    emptyMessage_->setZValue(900);
+    emptyMessage_->hide();
     QFont headerFont = chart->titleFont();
     if (headerFont.pointSize() > 0) {
         const int boosted = std::max(14, headerFont.pointSize() + 3);
@@ -293,13 +291,44 @@ void SignalChartView::Configure(const QString& title,
 
     UpdateZeroLine();
     UpdateAlignedPlotArea();
+    SetSeriesSamples(seriesSamples);
 }
 
 void SignalChartView::SetSeriesSamples(const QVector<QVector<QPointF>>& seriesSamples) {
+    bool hasFinite = false;
     for (int i = 0; i < series_.size() && i < seriesSamples.size(); ++i) {
         if (series_[i]) {
-            series_[i]->replace(seriesSamples[i]);
+            // Qt Charts cannot reliably render NaN vertices. Preserve gaps using
+            // separate finite paths instead of submitting invalid coordinates.
+            QVector<QVector<QPointF>> runs;
+            QVector<QPointF> run;
+            for (const auto& point : seriesSamples[i]) {
+                if (std::isfinite(point.x()) && std::isfinite(point.y())) run.append(point);
+                else if (!run.isEmpty()) { runs.append(run); run.clear(); }
+            }
+            if (!run.isEmpty()) runs.append(run);
+            auto& paths = segmentSeries_[i];
+            while (paths.size() < runs.size()) {
+                auto* path = new QLineSeries(chart());
+                path->setPen(series_[i]->pen());
+                chart()->addSeries(path);
+                for (auto* axis : series_[i]->attachedAxes()) path->attachAxis(axis);
+                paths.append(path);
+            }
+            for (int j = 0; j < paths.size(); ++j) {
+                paths[j]->replace(j < runs.size() ? runs[j] : QVector<QPointF>{});
+                paths[j]->setVisible(j == 0 || j < runs.size());
+                paths[j]->setPointsVisible(j < runs.size() && runs[j].size() == 1);
+            }
+            const auto finiteCount = std::count_if(seriesSamples[i].begin(), seriesSamples[i].end(),
+                [](const QPointF& point) { return std::isfinite(point.x()) && std::isfinite(point.y()); });
+            hasFinite = hasFinite || finiteCount > 0;
         }
+    }
+    if (emptyMessage_) {
+        emptyMessage_->setVisible(!hasFinite && std::any_of(seriesIndices_.begin(), seriesIndices_.end(),
+            [](int index) { return index < 0; }));
+        UpdateHeaderLayout();
     }
 }
 
@@ -368,6 +397,7 @@ QVector<GuideLine> SignalChartView::GuideLines() const {
 }
 
 void SignalChartView::SetGuideLines(const QVector<GuideLine>& guides) {
+    const QSignalBlocker blocker(this);
     HideGuideTooltip();
     draggingGuide_ = -1;
     for (const auto& visual : guides_) {
@@ -398,12 +428,36 @@ void SignalChartView::SetYAxisRange(double minY, double maxY) {
     if (!chart() || series_.isEmpty()) return;
     auto* axisY = qobject_cast<QValueAxis*>(chart()->axes(Qt::Vertical, series_.first()).value(0));
     if (!axisY) return;
-    axisY->setRange(minY, maxY);
-    axisY->setLabelFormat(YAxisLabelFormat(minY, maxY));
+    autoMinY_ = minY; autoMaxY_ = maxY;
+    const double center = minY * .5 + maxY * .5;
+    const double half = (maxY * .5 - minY * .5) * yZoom_;
+    if (std::isfinite(center - half) && std::isfinite(center + half) && half > 0)
+        axisY->setRange(center - half, center + half);
     UpdateAlignedPlotArea();
     UpdateZeroLine();
     UpdateHeaderLayout();
     UpdateGuides();
+}
+
+void SignalChartView::ZoomY(double factor) {
+    yZoom_ = std::clamp(yZoom_ * factor, 0.001, 1000.0);
+    SetYAxisRange(autoMinY_, autoMaxY_);
+    emit AxisLayoutChanged();
+}
+
+void SignalChartView::ResetYZoom() {
+    yZoom_ = 1.0;
+    SetYAxisRange(autoMinY_, autoMaxY_);
+    emit AxisLayoutChanged();
+}
+
+void SignalChartView::mouseDoubleClickEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton) {
+        rubberActive_ = false; reorderArmed_ = false;
+        if (rubberBand_) rubberBand_->hide();
+        emit FocusRequested(); event->accept();
+    }
+    else QChartView::mouseDoubleClickEvent(event);
 }
 
 void SignalChartView::SetCursorX(double cursorX) {
@@ -442,6 +496,7 @@ qreal SignalChartView::YLabelWidth() const {
     if (!chart() || series_.isEmpty()) return 0.0;
     auto* axis = qobject_cast<QValueAxis*>(chart()->axes(Qt::Vertical, series_.first()).value(0));
     if (!axis) return 0.0;
+    if (auto* compact = dynamic_cast<CompactValueAxis*>(axis)) return compact->LabelWidth();
     const QFontMetricsF metrics(axis->labelsFont());
     const QByteArray labelFormat = axis->labelFormat().toLatin1();
     return std::max(metrics.horizontalAdvance(QString::asprintf(labelFormat.constData(), axis->min())),
@@ -461,6 +516,7 @@ void SignalChartView::mouseMoveEvent(QMouseEvent* event) {
             if (axis) guide.value = std::clamp(point.x(), axis->min(), axis->max());
         }
         UpdateGuides();
+        emit GuidesEdited();
         emit CursorMoved(MapToValue(event->position().toPoint()).x());
         HideGuideTooltip();
         return;
@@ -618,6 +674,11 @@ void SignalChartView::wheelEvent(QWheelEvent* event) {
     const double delta = static_cast<double>(event->angleDelta().y());
     if (delta == 0.0) return;
     const double zoomFactor = delta > 0.0 ? 0.8 : 1.25;
+    if (event->modifiers() & Qt::ControlModifier) {
+        ZoomY(zoomFactor);
+        event->accept();
+        return;
+    }
 
     const QPoint viewPos = event->position().toPoint();
     const QPointF plotPoint = MapToValue(viewPos);
@@ -658,14 +719,41 @@ void SignalChartView::resizeEvent(QResizeEvent* event) {
     UpdateHeaderLayout();
     UpdateZeroLine();
     UpdateGuides();
+    SchedulePlotLayout();
+}
+
+void SignalChartView::SchedulePlotLayout() {
+    if (plotLayoutPending_ || updatingPlotLayout_) return;
+    plotLayoutPending_ = true;
+    QTimer::singleShot(0, this, [this] {
+        plotLayoutPending_ = false;
+        UpdateAlignedPlotArea();
+        viewport()->update();
+    });
 }
 
 void SignalChartView::UpdateAlignedPlotArea() {
-    if (!chart() || series_.isEmpty()) return;
-    const qreal ownWidth = YLabelWidth();
-    const qreal extra = std::max(0.0, plotLeftMargin_ - ownWidth - 48.0);
-    chart()->setMargins(QMargins(static_cast<int>(std::ceil(4.0 + extra)), 0, 4, 2));
+    if (!chart() || series_.isEmpty() || updatingPlotLayout_) return;
+    updatingPlotLayout_ = true;
+    // Explicit common plot coordinates avoid Qt's per-chart label/endpoint layout drift.
+    const qreal left = std::min(plotLeftMargin_, chart()->size().width() * .45);
+    auto* axis = chart()->axes(Qt::Horizontal).value(0);
+    const qreal bottom = axis && axis->isVisible() ? 34.0 : 12.0;
+    const QRectF target(left, 28.0, std::max(1.0, chart()->size().width() - left - 28.0),
+                        std::max(1.0, chart()->size().height() - 28.0 - bottom));
+    // A fixed plot rectangle can leave Qt's background and axis layout cached at
+    // the old size even while the series domain has already changed. Reset the
+    // layout first, then commit the shared rectangle for every chart component.
+    chart()->setPlotArea(QRectF());
+    chart()->layout()->invalidate();
+    chart()->layout()->activate();
+    chart()->setPlotArea(target);
+    chart()->layout()->invalidate();
+    chart()->layout()->activate();
     UpdateGuides();
+    UpdateHeaderLayout();
+    UpdateZeroLine();
+    updatingPlotLayout_ = false;
 }
 
 void SignalChartView::AddGuide(GuideOrientation orientation, double value) {
@@ -682,6 +770,7 @@ void SignalChartView::AddGuide(GuideOrientation orientation, double value) {
     item->setZValue(960);
     guides_.append({{orientation, value}, item, outline});
     UpdateGuides();
+    emit GuidesEdited();
 }
 
 void SignalChartView::UpdateGuides() {
@@ -855,6 +944,7 @@ void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
             delete guides_[guideIndex].outline;
             guides_.removeAt(guideIndex);
             HideGuideTooltip();
+            emit GuidesEdited();
         });
         menu.addAction(tr("复制本线全部交点"), this, [this, guideIndex]() {
             QApplication::clipboard()->setText(
@@ -870,10 +960,14 @@ void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
         AddGuide(GuideOrientation::Vertical, value.x());
     });
     if (!guides_.isEmpty()) {
-        menu.addAction(tr("清除本图辅助线"), this, [this]() { SetGuideLines({}); });
+        menu.addAction(tr("清除辅助线（垂线同步所有图）"), this, [this]() { SetGuideLines({}); emit GuidesEdited(); });
     }
     menu.addSeparator();
     auto* resetAction = menu.addAction(tr("还原横轴"));
+    menu.addAction(tr("放大本图 / 返回多图（双击）"), this, [this] { emit FocusRequested(); });
+    menu.addAction(tr("纵向放大（Ctrl + 滚轮上）"), this, [this] { ZoomY(.8); });
+    menu.addAction(tr("纵向缩小（Ctrl + 滚轮下）"), this, [this] { ZoomY(1.25); });
+    menu.addAction(tr("还原纵轴自动范围"), this, &SignalChartView::ResetYZoom);
     connect(resetAction, &QAction::triggered, this, &SignalChartView::ResetXRangeRequested);
     if (seriesIndices_.size() > 1) {
         menu.addAction(tr("打散组合画布"), this, [this]() {
@@ -941,8 +1035,7 @@ void SignalChartView::dropEvent(QDropEvent* event) {
             event->ignore();
             return;
         }
-        const QPoint viewPos = event->position().toPoint();
-        if (IsHeaderDragZone(viewPos)) {
+        if (event->modifiers() & Qt::ShiftModifier) {
             emit ReorderRequested(fromIndex, viewIndex_);
         } else {
             emit ChartMergeRequested(fromIndex, viewIndex_);
@@ -1015,6 +1108,12 @@ void SignalChartView::UpdateZeroLine() {
 
 void SignalChartView::UpdateHeaderLayout() {
     if (!chart() || !headerTitle_ || !headerDesc_) return;
+    if (emptyMessage_) {
+        const QRectF area = chart()->plotArea();
+        const QRectF bounds = emptyMessage_->boundingRect();
+        emptyMessage_->setPos(area.center().x() - bounds.width() / 2,
+                             area.center().y() - bounds.height() / 2);
+    }
     const QRectF plotArea = chart()->plotArea();
     if (plotArea.isEmpty()) return;
 
@@ -1027,6 +1126,11 @@ void SignalChartView::UpdateHeaderLayout() {
 
     QString titleText = headerTitleText_;
     QString descText = headerDescText_;
+    if (auto* axis = dynamic_cast<CompactValueAxis*>(chart()->axes(Qt::Vertical).value(0))) {
+        if (!axis->Annotation().isEmpty()) descText += QStringLiteral("  ") + axis->Annotation();
+    }
+    headerDesc_->setToolTip(descText);
+    headerTitle_->setToolTip(tr("拖动到另一图合并全部信号；按住 Shift 拖动排序\n%1").arg(titleText));
     const qreal contentLeft = plotArea.left() + padding;
     const qreal contentRight = plotArea.right() - padding;
     qreal titleRight = contentRight;
@@ -1034,7 +1138,7 @@ void SignalChartView::UpdateHeaderLayout() {
     if (descText.isEmpty()) {
         headerDesc_->setVisible(false);
     } else {
-        const qreal descMaxWidth = std::max(0.0, plotArea.width() * 0.3);
+        const qreal descMaxWidth = std::max(0.0, plotArea.width() * 0.5);
         const QString elidedDesc = descMetrics.elidedText(
             descText, Qt::ElideLeft, static_cast<int>(descMaxWidth));
         const qreal descWidth = descMetrics.horizontalAdvance(elidedDesc);
@@ -1167,7 +1271,12 @@ void SignalChartView::UpdateCursor(double cursorX) {
         auto end = seriesData.samples.end();
         auto it = std::lower_bound(begin, end, clampedX, [](const QPointF& p, double x) { return p.x() < x; });
         double value = 0.0;
-        if (it == begin) {
+        if (it != end && it->x() == clampedX) {
+            // A valid point immediately after a gap must not interpolate with NaN.
+            // At a step, prefer the value AFTER the update at that timestamp.
+            while (it + 1 != end && (it + 1)->x() == clampedX) ++it;
+            value = it->y();
+        } else if (it == begin) {
             value = it->y();
         } else if (it == end) {
             value = (end - 1)->y();
@@ -1191,7 +1300,8 @@ void SignalChartView::UpdateCursor(double cursorX) {
         if (!seriesRef) seriesRef = series_.first();
         const QPointF valuePoint = chart()->mapToPosition(QPointF(cursorX, value), seriesRef);
         const QRectF bounds = label->boundingRect();
-        placements.append({label, valuePoint.y() - bounds.height() * 0.5, 0.0,
+        Q_UNUSED(valuePoint)
+        placements.append({label, chart()->plotArea().top() + 22.0, 0.0,
                            bounds.width(), bounds.height()});
     }
 

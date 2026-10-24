@@ -626,6 +626,14 @@ void CoreTests::indexedFixedRecordsAndCrossStreamPairing() {
     QVERIFY2(reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {100,200}, {}, 0), qPrintable(error));
     QCOMPARE(result.relation.samples.size(), 6);
     QVERIFY(!result.reduced);
+    QVERIFY2(reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {}, {}, 0, true), qPrintable(error));
+    QCOMPARE(result.decodedRecords, quint64(10000));
+    QVERIFY(result.reduced);
+    QVERIFY(result.retainedPoints * qsizetype(sizeof(QPointF)) <= 128*1024);
+    QVERIFY2(reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {100,200}, {}, 0, true), qPrintable(error));
+    QCOMPARE(result.relation.samples.size(), 11);
+    QVERIFY(!result.reduced);
+    for (const auto& point : result.relation.samples) QCOMPARE(point.y(), 0.0);
     // Distinct raw timestamps beyond double's integer precision must never join.
     QByteArray precise = single.left(headerSize) + secondDescriptor;
     for (int i = 0; i < 100; ++i) {
@@ -647,7 +655,52 @@ void CoreTests::indexedFixedRecordsAndCrossStreamPairing() {
     QVERIFY2(reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {}, {}, 0), qPrintable(error));
     QCOMPARE(result.decodedRecords, quint64(0));
     QVERIFY(result.relation.samples.isEmpty());
+    // Offset streams: strict pairing is empty, interpolation uses original ticks,
+    // even beyond double's integer precision. B[i] is delayed by one tick.
+    QVERIFY2(reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {}, {}, 0, true), qPrintable(error));
+    QCOMPARE(result.relation.samples.size(), 100);
+    QVERIFY(std::isnan(result.relation.samples.first().y())); // no left extrapolation
+    for (int i = 1; i < 100; ++i) {
+        // Synthetic temp is linear in record number: interpolate 90% toward B[i].
+        const auto actual = result.relation.samples[i];
+        QVERIFY(std::isfinite(actual.y()));
+        QVERIFY(std::abs(actual.y() - 0.1) < 1e-9);
+    }
+    const auto full = result.relation.samples;
+    const double edge = full[50].x();
+    QVERIFY2(reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {edge, edge}, {}, 0, true), qPrintable(error));
+    QCOMPARE(result.relation.samples.size(), 1);
+    QCOMPARE(result.relation.samples.first(), full[50]); // B brackets outside window
+    QVERIFY(!reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {}, [] { return true; }, 0, true));
     QVERIFY(!reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {}, [] { return true; }, 0));
+
+    pat::MixedDataSession session;
+    QVERIFY(session.Open(preciseBin, format, error));
+    QVERIFY(session.LoadSignals({}, error, {}, {}, {{{0,3}, 0, false}}));
+    QVERIFY(session.Relations().first().samples.isEmpty());
+
+    QVERIFY(reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {}, {}, 0, false, true));
+    const auto held = result.relation.samples;
+    QVERIFY(std::isnan(held.first().y()));
+    QCOMPARE(held[1], QPointF(1, 0));
+    QCOMPARE(held[2], QPointF(10, 0));
+    QCOMPARE(held[3], QPointF(10, 1));
+    QVERIFY(reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {500,505}, {}, 0, false, true));
+    QCOMPARE(result.relation.samples.first(), QPointF(500, 1));
+    QCOMPARE(result.relation.samples.last(), QPointF(501, 0));
+    QVERIFY(session.LoadSignals({}, error, {}, {}, {{{0,3}, 0, true}}));
+    QCOMPARE(session.Relations().first().samples.size(), 100);
+    QVERIFY(session.LoadSignals({}, error, {}, {}, {{{0,3}, 0, false}}));
+    QVERIFY(session.Relations().first().samples.isEmpty());
+
+    const QString segmentedBin = dir.filePath("segments.patbin"), segmentedJson = dir.filePath("segments.json");
+    QVERIFY(writer.ConvertVmcFiles({preciseSource, preciseSource}, segmentedBin, segmentedJson, {}, written, error));
+    QVERIFY(pat::LoadFormatFromJson(segmentedJson, format, error));
+    QVERIFY(reader.Open(segmentedBin, format, error));
+    QVERIFY(reader.ReadAlignedSignals({0,3}, 128*1024, result, error, {}, {}, 0, true));
+    QCOMPARE(std::count_if(result.relation.samples.begin(), result.relation.samples.end(),
+        [](const QPointF& p) { return std::isfinite(p.y()); }), 198);
+    QCOMPARE(result.relation.samples.size(), 201); // two unmatched starts and a segment break
 
 }
 
@@ -805,6 +858,32 @@ void CoreTests::displayTransformAndDifferenceSeries() {
              (QVector<QPointF>{{8, 29}, {9, 38}}));
     processing.ResetTransform(0);
     QVERIFY(processing.Transform(0).IsIdentity());
+
+    processing.Reset(format);
+    QVERIFY(processing.AddDerived(0, 1, pat::SeriesOperation::Difference, error, true));
+    source[0].samples = {{0, 10}, {1, 15}, {2, 18}, {3, 30}, {4, 40}};
+    source[1].samples = {{0.5, 3}, {2.5, 7}};
+    processing.RebuildDerived(source);
+    const auto interpolated = processing.DerivedSeries()[0].samples;
+    QCOMPARE(interpolated.size(), 3);
+    QVERIFY(std::isnan(interpolated[0].y()));
+    QCOMPARE(interpolated[1], QPointF(1, 11));
+    QCOMPARE(interpolated[2], QPointF(2, 12));
+    source[1].samples = {{0.5, 3}, {1.5, qQNaN()}, {2.5, 7}};
+    processing.RebuildDerived(source);
+    for (const auto& point : processing.DerivedSeries()[0].samples) QVERIFY(std::isnan(point.y()));
+
+    processing.Reset(format);
+    QVERIFY(processing.AddDerived(0, 1, pat::SeriesOperation::Difference, error, false, true));
+    QVERIFY(processing.AddDerived(0, 1, pat::SeriesOperation::Sum, error, false, true));
+    source[0].samples = {{0,1}, {.001,2}, {.002,3}, {.003,4}, {.004,5}};
+    source[1].samples = {{0,10}, {.002,20}, {.004,30}};
+    const auto original = source[0].samples;
+    processing.RebuildDerived(source);
+    QCOMPARE(processing.DerivedSeries()[0].samples,
+        (QVector<QPointF>{{0,-9},{.001,-9},{.001,-8},{.002,-8},{.002,-17},{.003,-17},{.003,-16},{.004,-16},{.004,-25}}));
+    QCOMPARE(processing.DerivedSeries()[1].samples.last(), QPointF(.004,35));
+    QCOMPARE(source[0].samples, original);
 }
 
 void CoreTests::trajectoryPairsByRecordOrSampleIndex() {

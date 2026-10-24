@@ -71,6 +71,8 @@ public:
     void SetRangeContext(const ChartRangeContext& context);
     void SetXAxisRange(double minX, double maxX);
     void SetYAxisRange(double minY, double maxY);
+    void ZoomY(double factor);
+    void ResetYZoom();
     void SetCursorX(double cursorX);
     void HideCursor();
     void SetViewIndex(int index);
@@ -83,6 +85,9 @@ public:
     void SetGuideLines(const QVector<GuideLine>& guides);
 
 signals:
+    void FocusRequested();
+    void GuidesEdited();
+    void AxisLayoutChanged();
     void CursorMoved(double cursorX);
     void CursorLeft();
     void XRangeRequested(double minX, double maxX);
@@ -96,6 +101,7 @@ signals:
 
 protected:
     void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
@@ -116,6 +122,9 @@ private:
     void StartReorderDrag();
     void UpdateCursor(double cursorX);
     void UpdateAlignedPlotArea();
+    void SchedulePlotLayout();
+    bool plotLayoutPending_ = false;
+    bool updatingPlotLayout_ = false;
     void UpdateGuides();
     int GuideAt(const QPoint& viewPos) const;
     void AddGuide(GuideOrientation orientation, double value);
@@ -135,6 +144,7 @@ private:
     QVector<QLineSeries*> series_;
     AppTheme theme_ = ThemeFor(AppThemeId::IndoorDark);
     QVector<int> seriesIndices_;
+    QVector<QVector<QLineSeries*>> segmentSeries_;
     const QVector<pat::Series>* sourceSeries_ = nullptr;
     QVector<const pat::Series*> displaySources_;
     QVector<pat::DisplayTransform> displayTransforms_;
@@ -147,6 +157,7 @@ private:
     QGraphicsLineItem* zeroLine_ = nullptr;
     QGraphicsSimpleTextItem* headerTitle_ = nullptr;
     QGraphicsSimpleTextItem* headerDesc_ = nullptr;
+    QGraphicsSimpleTextItem* emptyMessage_ = nullptr;
     QString headerTitleText_;
     QString headerDescText_;
     QRubberBand* rubberBand_ = nullptr;
@@ -162,4 +173,6 @@ private:
     QPoint reorderStartPos_;
     int viewIndex_ = -1;
     qreal plotLeftMargin_ = 80.0;
+    double yZoom_ = 1.0;
+    double autoMinY_ = -1.0, autoMaxY_ = 1.0;
 };
