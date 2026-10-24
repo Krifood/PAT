@@ -152,6 +152,10 @@ void ChartArea::ResetXRange() {
     emit VisibleRangeChanged(currentMinX_, currentMaxX_);
 }
 
+void ChartArea::SetVisibleRange(double minX, double maxX) {
+    HandleXRangeRequested(minX, maxX);
+}
+
 void ChartArea::RefreshData() {
     for (int i = 0; i < charts_.size(); ++i) {
         QVector<const pat::Series*> sources;
@@ -409,7 +413,6 @@ void ChartArea::BuildCharts() {
         }
         view->SetDisplaySources(displaySources, displayTransforms);
         view->SetXAxisVisible(groupIndex == groups_.size() - 1);
-        if (groups_.size() > 8) view->setRenderHint(QPainter::Antialiasing, false);
         view->SetPlotLeftMargin(84.0);
         view->SetGuideLines(savedGuides.value(guideKey(group.signalIndices)));
 

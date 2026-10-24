@@ -374,7 +374,7 @@ bool IndexedMixedReader::ReadSignals(const QVector<int>& signalIndices,
     result.statistics.resize(qsizetype(format_.signalFormats.size()));
     result.series.resize(static_cast<qsizetype>(format_.signalFormats.size()));
     for (int i = 0; i < result.series.size(); ++i) {
-        result.series[i].name = format_.signalFormats[static_cast<size_t>(i)].name;
+        result.series[i].name = format_.signalFormats[static_cast<size_t>(i)].QualifiedDisplayName();
         result.series[i].unit = format_.signalFormats[static_cast<size_t>(i)].unit;
     }
     if (selected.isEmpty()) {

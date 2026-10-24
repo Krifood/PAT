@@ -60,7 +60,8 @@ void SignalTreeController::Build(const pat::FormatDefinition& format) {
         if (!format.HasFraming() && !signal.timeUnit.isEmpty()) {
             timeScaleText = QStringLiteral("%1 %2").arg(timeScaleText, signal.timeUnit);
         }
-        auto* signalItem = new QTreeWidgetItem(parent, {signal.name, signal.description, timeScaleText});
+        auto* signalItem = new QTreeWidgetItem(
+            parent, {signal.DisplayName(), signal.description, timeScaleText});
         signalItem->setFlags(signalItem->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable |
                              Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
         signalItem->setCheckState(0, Qt::Unchecked);

@@ -23,6 +23,7 @@ class SignalTreeController;
 class ChartArea;
 class AboutDialog;
 class TrajectoryView;
+class TimeRangeControl;
 class QTabWidget;
 class QTreeWidgetItem;
 class QMenu;
@@ -111,6 +112,7 @@ private:
     std::unique_ptr<SignalTreeController> signalTreeController_;
     ChartArea* chartArea_ = nullptr;
     TrajectoryView* trajectoryView_ = nullptr;
+    TimeRangeControl* timeRangeControl_ = nullptr;
     QTabWidget* dataViewTabs_ = nullptr;
     QMenu* viewMenu_ = nullptr;
     AboutDialog* infoDialog_ = nullptr;

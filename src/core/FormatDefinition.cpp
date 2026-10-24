@@ -59,6 +59,7 @@ bool ParseSignal(const QJsonObject& obj,
         errorMessage = QStringLiteral("signal.name 缺失");
         return false;
     }
+    outSignal.displayName = outSignal.name;
 
     outSignal.valueType = obj.value(QStringLiteral("value_type")).toString().toLower();
     const int size = TypeSize(outSignal.valueType);

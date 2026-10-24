@@ -11,6 +11,21 @@ fi
 CONFIG="${CONFIG:-Release}"
 RUN="${RUN:-1}"
 PACKAGE="${PACKAGE:-0}"
+TEST="${TEST:-1}"
+
+for flag_name in RUN PACKAGE TEST; do
+  flag_value="${!flag_name}"
+  if [[ "$flag_value" != "0" && "$flag_value" != "1" ]]; then
+    printf '%s 必须为 0 或 1，当前值：%s\n' "$flag_name" "$flag_value" >&2
+    exit 1
+  fi
+done
+
+if [[ "$TEST" == "1" ]]; then
+  BUILD_TESTS=ON
+else
+  BUILD_TESTS=OFF
+fi
 
 detect_qt_root() {
   if [[ -n "${QT_ROOT:-}" ]]; then
@@ -43,9 +58,14 @@ cmake "${cmake_args[@]}" \
   -DCMAKE_BUILD_TYPE="$CONFIG" \
   -DPAT_BUILD_GUI=ON \
   -DPAT_ENABLE_SERIAL="${PAT_ENABLE_SERIAL:-ON}" \
-  -DPAT_BUILD_TESTS="${PAT_BUILD_TESTS:-OFF}"
+  -DPAT_BUILD_TESTS="$BUILD_TESTS"
 
-cmake --build "$BUILD_DIR" --config "$CONFIG" --target pat_app --parallel "${JOBS:-4}"
+if [[ "$TEST" == "1" ]]; then
+  cmake --build "$BUILD_DIR" --config "$CONFIG" --parallel "${JOBS:-4}"
+  ctest --test-dir "$BUILD_DIR" --build-config "$CONFIG" --output-on-failure
+else
+  cmake --build "$BUILD_DIR" --config "$CONFIG" --target pat_app --parallel "${JOBS:-4}"
+fi
 
 APP_ROOT="$BUILD_DIR"
 if [[ "$PACKAGE" == "1" ]]; then
@@ -68,8 +88,20 @@ if [[ ! -x "$EXE_PATH" ]]; then
   echo "构建完成，但未找到程序：$EXE_PATH" >&2
   exit 1
 fi
-printf '构建完成：%s\n' "$APP_PATH"
+printf '本次构建产物：%s\n' "$APP_PATH"
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  LEGACY_EXE="$REPO_ROOT/build/pat_app"
+  if [[ -x "$LEGACY_EXE" && "$LEGACY_EXE" != "$EXE_PATH" ]]; then
+    printf '提示：%s 是遗留裸程序，请勿用它启动；应使用上面的 .app。\n' "$LEGACY_EXE"
+  fi
+fi
 
 if [[ "$RUN" == "1" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    printf '正在通过 macOS LaunchServices 启动：%s\n' "$APP_PATH"
+    exec /usr/bin/open -n -W "$APP_PATH"
+  fi
+  printf '正在启动：%s\n' "$EXE_PATH"
   exec "$EXE_PATH"
 fi

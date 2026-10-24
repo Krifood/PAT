@@ -16,6 +16,7 @@
 #include <QtEndian>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace pat {
@@ -127,6 +128,11 @@ bool UnifiedLogWriter::ConvertVmcFiles(const QStringList& sourcePaths,
     }
     if (QFileInfo(binaryPath).absoluteFilePath() == QFileInfo(jsonPath).absoluteFilePath()) {
         errorMessage = QStringLiteral("BIN 和 JSON 输出路径不能相同");
+        return false;
+    }
+    if (options.timestampScale < 0.0 || !std::isfinite(options.timestampScale)
+        || (options.timestampScale > 0.0 && options.timestampUnit.trimmed().isEmpty())) {
+        errorMessage = QStringLiteral("时间戳单位或比例非法");
         return false;
     }
     const qsizetype targetChunkBytes = std::clamp<qsizetype>(options.targetChunkBytes, 64 * 1024, 4 * 1024 * 1024);
@@ -293,7 +299,7 @@ bool UnifiedLogWriter::ConvertVmcFiles(const QStringList& sourcePaths,
                     if (!flushChunk(oldest.key(), writerError)) return false;
                 }
                 return true;
-            }, summary, errorMessage);
+            }, summary, errorMessage, options.isCancelled);
         if (!visited) {
             if (!writerError.isEmpty()) errorMessage = writerError;
             return false;
@@ -306,6 +312,10 @@ bool UnifiedLogWriter::ConvertVmcFiles(const QStringList& sourcePaths,
         result.sourceRecordCount += summary.recordCount;
         result.routedRecordCount += summary.routedRecordCount;
         result.metadataRecordCount += summary.metadataRecordCount;
+        result.terminalMarkerBytes += summary.terminalMarkerBytes;
+        result.trailingFillBytes += summary.trailingFillBytes;
+        result.discardedTailRecords += summary.discardedTailRecords;
+        result.discardedTailBytes += summary.discardedTailBytes;
         QJsonObject segment;
         segment.insert(QStringLiteral("segment_id"), segmentIndex);
         segment.insert(QStringLiteral("source_file"), QFileInfo(sourcePath).fileName());
@@ -314,7 +324,13 @@ bool UnifiedLogWriter::ConvertVmcFiles(const QStringList& sourcePaths,
         segment.insert(QStringLiteral("record_count"), static_cast<qint64>(summary.recordCount));
         segment.insert(QStringLiteral("routed_record_count"), static_cast<qint64>(summary.routedRecordCount));
         segment.insert(QStringLiteral("metadata_record_count"), static_cast<qint64>(summary.metadataRecordCount));
+        segment.insert(QStringLiteral("terminal_marker_bytes"), static_cast<qint64>(summary.terminalMarkerBytes));
         segment.insert(QStringLiteral("trailing_fill_bytes"), static_cast<qint64>(summary.trailingFillBytes));
+        if (summary.discardedTailRecords > 0) {
+            segment.insert(QStringLiteral("discarded_tail_records"), static_cast<qint64>(summary.discardedTailRecords));
+            segment.insert(QStringLiteral("discarded_tail_bytes"), static_cast<qint64>(summary.discardedTailBytes));
+            segment.insert(QStringLiteral("discarded_tail_offset"), summary.discardedTailOffset);
+        }
         segment.insert(QStringLiteral("metadata_frames"), metadataFrames);
         sourceSegments.append(segment);
     }
@@ -370,8 +386,13 @@ bool UnifiedLogWriter::ConvertVmcFiles(const QStringList& sourcePaths,
     root.insert(QStringLiteral("storage"), storage);
     QJsonObject timestamp;
     timestamp.insert(QStringLiteral("value_type"), QStringLiteral("uint64"));
-    timestamp.insert(QStringLiteral("unit"), QStringLiteral("tick"));
-    timestamp.insert(QStringLiteral("scale"), QJsonValue::Null);
+    timestamp.insert(QStringLiteral("unit"), options.timestampScale > 0.0
+        ? options.timestampUnit.trimmed() : QStringLiteral("tick"));
+    if (options.timestampScale > 0.0) {
+        timestamp.insert(QStringLiteral("scale"), options.timestampScale);
+    } else {
+        timestamp.insert(QStringLiteral("scale"), QJsonValue::Null);
+    }
     root.insert(QStringLiteral("timestamp"), timestamp);
     QJsonArray streamArray;
     for (const auto& stream : streams) {

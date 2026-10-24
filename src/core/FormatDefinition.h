@@ -10,6 +10,8 @@ namespace pat {
 
 struct SignalFormat {
     QString name;
+    // UI-facing name without the stream prefix used to keep schema 3 signals unique.
+    QString displayName;
     int byteOffset = 0;
     QString valueType;  // int16, uint16, int32, uint32, float32, float64
     int bitOffset = 0;  // Optional bit slice of an unsigned integer, bit 0 is the least significant bit.
@@ -21,6 +23,16 @@ struct SignalFormat {
     QString unit;
     QString description;
     QString groupPath;
+
+    QString DisplayName() const {
+        const QString local = displayName.trimmed();
+        return local.isEmpty() ? name : local;
+    }
+    QString QualifiedDisplayName() const {
+        const QString group = groupPath.trimmed();
+        const QString local = DisplayName();
+        return group.isEmpty() ? local : QStringLiteral("%1 - %2").arg(group, local);
+    }
 };
 
 struct StreamFormat {

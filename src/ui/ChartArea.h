@@ -30,6 +30,7 @@ public:
     void ResetSessionView();
     void RefreshLiveData(bool followLatest);
     void ResetXRange();
+    void SetVisibleRange(double minX, double maxX);
     void RefreshCharts();
     void RefreshData();
 

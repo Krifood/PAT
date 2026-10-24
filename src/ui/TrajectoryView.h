@@ -8,6 +8,7 @@
 #include <QFrame>
 #include <QHash>
 #include <QWidget>
+#include <limits>
 
 class QCheckBox;
 class QComboBox;
@@ -51,6 +52,7 @@ public:
     void SetDataSource(const QVector<pat::Series>* series, pat::TrajectoryPairing pairing);
     void SetDisplayTransforms(const QHash<int, pat::DisplayTransform>& transforms);
     void SetTheme(const AppTheme& theme);
+    void SetTimeWindow(double start, double end);
     void CaptureData();
     void Render();
     void ResetHistory();
@@ -76,6 +78,7 @@ private:
         int id = 0;
         QWidget* row = nullptr;
         QLabel* label = nullptr;
+        QComboBox* groupCombo = nullptr;
         QComboBox* xCombo = nullptr;
         QComboBox* yCombo = nullptr;
         QComboBox* zCombo = nullptr;
@@ -89,6 +92,8 @@ private:
     void AddTrack(const TrackSnapshot* snapshot = nullptr);
     void RemoveTrack(int trackId);
     void PopulateTrackCombos(TrackState& track, const TrackSnapshot* snapshot = nullptr);
+    void PopulateCoordinateCombos(TrackState& track, int xSignal, int ySignal, int zSignal);
+    void HandleTrackGroupChanged(int trackId);
     void ResetTrackHistory(int trackId);
     void RebuildTrackRows();
     void Ensure2DSeries();
@@ -96,6 +101,7 @@ private:
     void Render3D();
     QString TrackName(const TrackState& track) const;
     int BestSignal(bool longitude, bool latitude, bool altitude) const;
+    bool InTimeWindow(double sampleKey, int xSignal) const;
     bool DecodeDrag(const QMimeData* mime, int& sourceId, TrajectoryDimension& dimension) const;
     bool HandleDragEnter(QDragEnterEvent* event);
     bool HandleDragMove(QDragMoveEvent* event);
@@ -121,6 +127,8 @@ private:
     QValueAxis* yAxis_ = nullptr;
     QVector<TrackState> tracks_;
     QPoint dragStart_;
+    double windowStart_ = 0.0;
+    double windowEnd_ = std::numeric_limits<double>::infinity();
 };
 
 class TrajectoryView : public QWidget {
@@ -130,6 +138,7 @@ public:
     explicit TrajectoryView(QWidget* parent = nullptr);
 
     void SetTheme(const AppTheme& theme);
+    void SetTimeWindow(double start, double end);
     void ConfigureSignals(const pat::FormatDefinition& format);
     void SetDataSource(const QVector<pat::Series>* series, pat::TrajectoryPairing pairing);
     void SetDisplayTransforms(const QHash<int, pat::DisplayTransform>& transforms);
@@ -168,4 +177,6 @@ private:
     AppTheme theme_ = ThemeFor(AppThemeId::IndoorDark);
     bool paused_ = false;
     bool dirty_ = true;
+    double windowStart_ = 0.0;
+    double windowEnd_ = std::numeric_limits<double>::infinity();
 };

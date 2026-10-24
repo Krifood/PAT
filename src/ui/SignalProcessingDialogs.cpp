@@ -82,8 +82,9 @@ DifferenceDialog::DifferenceDialog(const pat::FormatDefinition& format,
     rightCombo_->setObjectName(QStringLiteral("differenceRightCombo"));
     for (int i = 0; i < static_cast<int>(format.signalFormats.size()); ++i) {
         const auto& signal = format.signalFormats[static_cast<size_t>(i)];
-        const QString label = signal.unit.isEmpty() ? signal.name
-            : tr("%1 (%2)").arg(signal.name, signal.unit);
+        const QString name = signal.QualifiedDisplayName();
+        const QString label = signal.unit.isEmpty() ? name
+            : tr("%1 (%2)").arg(name, signal.unit);
         leftCombo_->addItem(label, i);
         rightCombo_->addItem(label, i);
     }

@@ -16,10 +16,13 @@ class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
 class QEvent;
+class QHideEvent;
+class QLabel;
 class QMouseEvent;
 class QWheelEvent;
 class QResizeEvent;
 class QGraphicsLineItem;
+class QGraphicsRectItem;
 class QGraphicsSimpleTextItem;
 class QLineSeries;
 class QRubberBand;
@@ -97,6 +100,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
     bool viewportEvent(QEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
@@ -116,6 +120,8 @@ private:
     int GuideAt(const QPoint& viewPos) const;
     void AddGuide(GuideOrientation orientation, double value);
     QString GuideTooltip(int index, int maxEntries = 40) const;
+    void ShowGuideTooltip(int index, const QPoint& globalPos);
+    void HideGuideTooltip();
 
     struct GuideVisual {
         GuideLine guide;
@@ -124,6 +130,7 @@ private:
     };
     QVector<GuideVisual> guides_;
     int draggingGuide_ = -1;
+    QLabel* guidePopup_ = nullptr;
 
     QVector<QLineSeries*> series_;
     AppTheme theme_ = ThemeFor(AppThemeId::IndoorDark);
@@ -134,6 +141,9 @@ private:
 
     QGraphicsLineItem* crosshair_ = nullptr;
     QVector<QGraphicsSimpleTextItem*> valueLabels_;
+    QGraphicsRectItem* legendPanel_ = nullptr;
+    QVector<QGraphicsSimpleTextItem*> legendLabels_;
+    QVector<QGraphicsLineItem*> legendSwatches_;
     QGraphicsLineItem* zeroLine_ = nullptr;
     QGraphicsSimpleTextItem* headerTitle_ = nullptr;
     QGraphicsSimpleTextItem* headerDesc_ = nullptr;

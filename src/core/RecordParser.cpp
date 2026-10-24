@@ -25,7 +25,7 @@ bool RecordParser::ParseFile(const QString& path, QVector<Series>& outSeries, QS
 
     QVector<Series> parsed(static_cast<qsizetype>(format_.signalFormats.size()));
     for (qsizetype i = 0; i < parsed.size(); ++i) {
-        parsed[i].name = format_.signalFormats[static_cast<size_t>(i)].name;
+        parsed[i].name = format_.signalFormats[static_cast<size_t>(i)].QualifiedDisplayName();
         parsed[i].unit = format_.signalFormats[static_cast<size_t>(i)].unit;
     }
 

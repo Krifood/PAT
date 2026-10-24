@@ -12,10 +12,12 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QGraphicsLineItem>
-#include <QGraphicsLayout>
+#include <QGraphicsRectItem>
 #include <QGraphicsSimpleTextItem>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QHideEvent>
+#include <QLabel>
 #include <QMenu>
 #include <QEvent>
 #include <QMimeData>
@@ -27,19 +29,50 @@
 #include <QResizeEvent>
 #include <QWheelEvent>
 #include <QSizeF>
-#include <QToolTip>
+#include <QScreen>
 #include <QStringList>
 
 #include <QtCharts/QChart>
+#include <QtCharts/QLegend>
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
-#include <QtCharts/QLegendMarker>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
 namespace {
+
+// Paint a backing plate, not a glyph outline: outlines obscure small text.
+class CursorValueLabel final : public QGraphicsSimpleTextItem {
+public:
+    CursorValueLabel(const QColor& signalColor, QGraphicsItem* parent)
+        : QGraphicsSimpleTextItem(parent), signalColor_(signalColor) {
+        setBrush(QColor("#ffff00"));
+        setPen(QPen(Qt::NoPen));
+    }
+
+    QRectF boundingRect() const override {
+        return QGraphicsSimpleTextItem::boundingRect().adjusted(-4, -2, 4, 2);
+    }
+
+    void paint(QPainter* painter, const QStyleOptionGraphicsItem* option,
+               QWidget* widget) override {
+        painter->save();
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor("#171c22"));
+        painter->drawRoundedRect(boundingRect(), 3, 3);
+        // Keep the association with the curve without coloring the numbers.
+        const QRectF rect = boundingRect();
+        painter->fillRect(QRectF(rect.left(), rect.top() + 2, 2, rect.height() - 4),
+                          signalColor_);
+        painter->restore();
+        QGraphicsSimpleTextItem::paint(painter, option, widget);
+    }
+
+private:
+    QColor signalColor_;
+};
 
 QString YAxisLabelFormat(double minY, double maxY) {
     const double magnitude = std::max(std::abs(minY), std::abs(maxY));
@@ -57,6 +90,20 @@ QString YAxisLabelFormat(double minY, double maxY) {
 }  // namespace
 
 SignalChartView::SignalChartView(QWidget* parent) : QChartView(parent) {
+    // A plain tooltip window has no QToolTip timeout: it lives until hover ends.
+    guidePopup_ = new QLabel(this, Qt::ToolTip | Qt::FramelessWindowHint
+                                  | Qt::WindowTransparentForInput | Qt::WindowDoesNotAcceptFocus);
+    guidePopup_->setObjectName(QStringLiteral("guideHoverPopup"));
+    guidePopup_->setTextFormat(Qt::PlainText);
+    guidePopup_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    guidePopup_->setAttribute(Qt::WA_ShowWithoutActivating);
+    guidePopup_->setStyleSheet(QStringLiteral(
+        "QLabel { color: #ffff00; background: #171c22; border: 1px solid #85909c;"
+        " border-radius: 4px; padding: 6px; }"));
+    connect(qApp, &QGuiApplication::applicationStateChanged, this,
+            [this](Qt::ApplicationState state) {
+        if (state != Qt::ApplicationActive) HideGuideTooltip();
+    });
     setRenderHint(QPainter::Antialiasing);
     setAcceptDrops(true);
     setContextMenuPolicy(Qt::DefaultContextMenu);
@@ -84,6 +131,7 @@ void SignalChartView::Configure(const QString& title,
                                double minX,
                                double maxX,
                                int viewIndex) {
+    HideGuideTooltip();
     seriesIndices_ = seriesIndices;
     sourceSeries_ = sourceSeries;
     displaySources_.clear();
@@ -107,14 +155,7 @@ void SignalChartView::Configure(const QString& title,
                                                           : theme_.plotBackgroundOdd);
     chart->setTitleBrush(QBrush(theme_.axisText));
     auto* legend = chart->legend();
-    legend->setLabelColor(theme_.axisText);
-    legend->setVisible(showLegend);
-    if (showLegend) {
-        legend->detachFromChart();
-        legend->setBackgroundVisible(true);
-        legend->setBrush(QBrush(theme_.legendBackground));
-        legend->setPen(QPen(theme_.legendBorder));
-    }
+    legend->hide();
     QFont titleFont = chart->titleFont();
     if (titleFont.pointSize() > 0) {
         titleFont.setPointSize(std::max(9, titleFont.pointSize() - 1));
@@ -195,8 +236,23 @@ void SignalChartView::Configure(const QString& title,
     headerDesc_->setBrush(QBrush(theme_.axisText));
     headerTitle_->setZValue(900);
     headerDesc_->setZValue(900);
-    if (legend && legend->isVisible()) {
-        legend->setFont(headerFont);
+    legendPanel_ = nullptr;
+    legendLabels_.clear();
+    legendSwatches_.clear();
+    if (showLegend) {
+        legendPanel_ = new QGraphicsRectItem(chart);
+        legendPanel_->setData(0, QStringLiteral("signalLegend"));
+        legendPanel_->setBrush(theme_.legendBackground);
+        legendPanel_->setPen(QPen(theme_.legendBorder));
+        legendPanel_->setZValue(910);
+        // Include one extra row for an overflow summary on short canvases.
+        for (int i = 0; i <= series_.size(); ++i) {
+            auto* label = new QGraphicsSimpleTextItem(legendPanel_);
+            label->setData(0, QStringLiteral("legendLabel"));
+            label->setBrush(theme_.axisText);
+            legendLabels_.append(label);
+            legendSwatches_.append(new QGraphicsLineItem(legendPanel_));
+        }
     }
     UpdateHeaderLayout();
 
@@ -222,8 +278,9 @@ void SignalChartView::Configure(const QString& title,
 
     valueLabels_.clear();
     for (int i = 0; i < series_.size(); ++i) {
-        auto* label = new QGraphicsSimpleTextItem(chart);
-        label->setBrush(theme_.cursorValue);
+        const QColor labelColor = series_.value(i)
+            ? series_[i]->pen().color() : theme_.cursorValue;
+        auto* label = new CursorValueLabel(labelColor, chart);
         label->setZValue(1001 + i);
         label->setVisible(false);
         valueLabels_.append(label);
@@ -253,15 +310,40 @@ void SignalChartView::SetDisplaySources(const QVector<const pat::Series*>& sourc
     while (displayTransforms_.size() < displaySources_.size()) {
         displayTransforms_.append(pat::DisplayTransform{});
     }
+    QStringList compactNames;
+    compactNames.reserve(displaySources_.size());
+    const bool compactLegendLabels = displaySources_.size() > 1;
+    QString commonUnit;
+    bool unitInitialized = false;
+    bool sameUnit = true;
+    for (const auto* source : displaySources_) {
+        if (!source) {
+            compactNames.append(QString());
+            continue;
+        }
+        const int separator = compactLegendLabels
+            ? source->name.lastIndexOf(QStringLiteral(" - ")) : -1;
+        compactNames.append(separator >= 0 ? source->name.mid(separator + 3) : source->name);
+        if (!unitInitialized) {
+            commonUnit = source->unit;
+            unitInitialized = true;
+        } else if (source->unit != commonUnit) {
+            sameUnit = false;
+        }
+    }
+
     for (int i = 0; i < series_.size() && i < displaySources_.size(); ++i) {
         const auto* source = displaySources_[i];
         if (!series_[i] || !source) continue;
-        QString label = source->unit.isEmpty() ? source->name
-            : tr("%1 (%2)").arg(source->name, source->unit);
+        QString displayName = compactNames.value(i);
+        if (compactNames.count(displayName) > 1) displayName = source->name;
+        QString label = (compactLegendLabels && sameUnit) || source->unit.isEmpty()
+            ? displayName : tr("%1 (%2)").arg(displayName, source->unit);
         const auto transform = displayTransforms_.value(i);
         if (!transform.IsIdentity()) {
-            label += tr(" [×%1, 平移 %2]")
+            label += tr(" [×%1, %2%3]")
                          .arg(transform.scale, 0, 'g', 8)
+                         .arg(transform.offset >= 0.0 ? QStringLiteral("+") : QString())
                          .arg(transform.offset, 0, 'g', 8);
         }
         series_[i]->setName(label);
@@ -274,8 +356,8 @@ void SignalChartView::SetDisplaySources(const QVector<const pat::Series*>& sourc
                               .arg(transform.scale, 0, 'g', 8)
                               .arg(transform.offset >= 0.0 ? QStringLiteral("+") : QString())
                               .arg(transform.offset, 0, 'g', 8);
-        UpdateHeaderLayout();
     }
+    UpdateHeaderLayout();
 }
 
 QVector<GuideLine> SignalChartView::GuideLines() const {
@@ -286,6 +368,8 @@ QVector<GuideLine> SignalChartView::GuideLines() const {
 }
 
 void SignalChartView::SetGuideLines(const QVector<GuideLine>& guides) {
+    HideGuideTooltip();
+    draggingGuide_ = -1;
     for (const auto& visual : guides_) {
         delete visual.item;
         delete visual.outline;
@@ -299,6 +383,7 @@ void SignalChartView::SetRangeContext(const ChartRangeContext& context) {
 }
 
 void SignalChartView::SetXAxisRange(double minX, double maxX) {
+    HideGuideTooltip();
     if (!chart() || series_.isEmpty()) return;
     auto* axisX = qobject_cast<QValueAxis*>(chart()->axes(Qt::Horizontal, series_.first()).value(0));
     if (!axisX) return;
@@ -309,6 +394,7 @@ void SignalChartView::SetXAxisRange(double minX, double maxX) {
 }
 
 void SignalChartView::SetYAxisRange(double minY, double maxY) {
+    HideGuideTooltip();
     if (!chart() || series_.isEmpty()) return;
     auto* axisY = qobject_cast<QValueAxis*>(chart()->axes(Qt::Vertical, series_.first()).value(0));
     if (!axisY) return;
@@ -376,7 +462,7 @@ void SignalChartView::mouseMoveEvent(QMouseEvent* event) {
         }
         UpdateGuides();
         emit CursorMoved(MapToValue(event->position().toPoint()).x());
-        QToolTip::hideText();
+        HideGuideTooltip();
         return;
     }
 
@@ -427,16 +513,16 @@ void SignalChartView::mouseMoveEvent(QMouseEvent* event) {
         const int guideIndex = GuideAt(viewPos);
         if (guideIndex >= 0) {
             setCursor(Qt::SizeAllCursor);
-            QToolTip::showText(event->globalPosition().toPoint(),
-                               GuideTooltip(guideIndex), this);
+            ShowGuideTooltip(guideIndex, event->globalPosition().toPoint());
             return;
         }
         unsetCursor();
-        QToolTip::hideText();
+        HideGuideTooltip();
     }
 }
 
 void SignalChartView::mousePressEvent(QMouseEvent* event) {
+    HideGuideTooltip();
     if (event->button() != Qt::LeftButton || !chart()) return;
 
     const QPoint viewPos = event->position().toPoint();
@@ -547,9 +633,14 @@ void SignalChartView::wheelEvent(QWheelEvent* event) {
 
 void SignalChartView::leaveEvent(QEvent* event) {
     Q_UNUSED(event)
-    QToolTip::hideText();
+    HideGuideTooltip();
     unsetCursor();
     emit CursorLeft();
+}
+
+void SignalChartView::hideEvent(QHideEvent* event) {
+    HideGuideTooltip();
+    QChartView::hideEvent(event);
 }
 
 bool SignalChartView::viewportEvent(QEvent* event) {
@@ -732,7 +823,30 @@ QString SignalChartView::GuideTooltip(int index, int maxEntries) const {
     return rows.join('\n');
 }
 
+void SignalChartView::ShowGuideTooltip(int index, const QPoint& globalPos) {
+    const auto* screen = QGuiApplication::screenAt(globalPos);
+    if (!screen) screen = this->screen();
+    const QRect bounds = screen->availableGeometry().adjusted(4, 4, -4, -4);
+    const int maxRows = std::max(1, bounds.height() / guidePopup_->fontMetrics().lineSpacing() - 4);
+    guidePopup_->setText(GuideTooltip(index, std::min(40, maxRows)));
+    guidePopup_->adjustSize();
+    QPoint position = globalPos + QPoint(16, 20);
+    if (position.y() + guidePopup_->height() > bounds.bottom())
+        position.setY(globalPos.y() - guidePopup_->height() - 12);
+    position.setX(std::clamp(position.x(), bounds.left(),
+                           std::max(bounds.left(), bounds.right() - guidePopup_->width())));
+    position.setY(std::clamp(position.y(), bounds.top(),
+                           std::max(bounds.top(), bounds.bottom() - guidePopup_->height())));
+    guidePopup_->move(position);
+    guidePopup_->show();
+}
+
+void SignalChartView::HideGuideTooltip() {
+    if (guidePopup_) guidePopup_->hide();
+}
+
 void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
+    HideGuideTooltip();
     QMenu menu(this);
     const int guideIndex = GuideAt(mapFromGlobal(event->globalPos()));
     if (guideIndex >= 0) {
@@ -740,7 +854,7 @@ void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
             delete guides_[guideIndex].item;
             delete guides_[guideIndex].outline;
             guides_.removeAt(guideIndex);
-            QToolTip::hideText();
+            HideGuideTooltip();
         });
         menu.addAction(tr("复制本线全部交点"), this, [this, guideIndex]() {
             QApplication::clipboard()->setText(
@@ -913,66 +1027,87 @@ void SignalChartView::UpdateHeaderLayout() {
 
     QString titleText = headerTitleText_;
     QString descText = headerDescText_;
-    const qreal centerX = plotArea.center().x();
-    const qreal leftRegionLeft = plotArea.left() + padding;
-    const qreal leftRegionRight = centerX - gap * 0.5;
-    const qreal rightRegionLeft = centerX + gap * 0.5;
-    const qreal rightRegionRight = plotArea.right() - padding;
-    const qreal leftWidth = std::max(0.0, leftRegionRight - leftRegionLeft);
-    const qreal rightWidth = std::max(0.0, rightRegionRight - rightRegionLeft);
-
-    const QString elidedTitle = titleMetrics.elidedText(titleText, Qt::ElideRight, static_cast<int>(leftWidth));
-    const qreal titleWidth = titleMetrics.horizontalAdvance(elidedTitle);
-    qreal titleX = leftRegionLeft + (leftWidth - titleWidth) * 0.5;
-    if (titleX < leftRegionLeft) titleX = leftRegionLeft;
-    headerTitle_->setText(elidedTitle);
-    headerTitle_->setPos(titleX, y);
+    const qreal contentLeft = plotArea.left() + padding;
+    const qreal contentRight = plotArea.right() - padding;
+    qreal titleRight = contentRight;
 
     if (descText.isEmpty()) {
         headerDesc_->setVisible(false);
     } else {
-        const QString elidedDesc = descMetrics.elidedText(descText, Qt::ElideLeft, static_cast<int>(rightWidth));
+        const qreal descMaxWidth = std::max(0.0, plotArea.width() * 0.3);
+        const QString elidedDesc = descMetrics.elidedText(
+            descText, Qt::ElideLeft, static_cast<int>(descMaxWidth));
         const qreal descWidth = descMetrics.horizontalAdvance(elidedDesc);
-        qreal descX = rightRegionLeft + (rightWidth - descWidth) * 0.5;
-        if (descX < rightRegionLeft) descX = rightRegionLeft;
+        const qreal descX = std::max(contentLeft, contentRight - descWidth);
         headerDesc_->setText(elidedDesc);
         headerDesc_->setPos(descX, y);
         headerDesc_->setVisible(true);
+        titleRight = std::max(contentLeft, descX - gap);
     }
 
-    auto* legend = chart()->legend();
-    if (legend && legend->isVisible()) {
-        legend->setFont(headerTitle_->font());
-        const QFontMetricsF legendMetrics(legend->font());
-        qreal maxLabelWidth = 0.0;
-        const auto markers = legend->markers();
-        for (const auto* marker : markers) {
-            if (!marker) continue;
-            maxLabelWidth = std::max(maxLabelWidth, legendMetrics.horizontalAdvance(marker->label()));
-        }
-        const qreal markerPadding = std::max(18.0, legendMetrics.height() * 1.6);
-        qreal legendWidth = maxLabelWidth + markerPadding + 8.0;
-        const qreal maxWidth = plotArea.width() * 0.45;
-        legendWidth = std::clamp(legendWidth, 90.0, std::max(120.0, maxWidth));
+    const qreal titleWidth = std::max(0.0, titleRight - contentLeft);
+    const QString elidedTitle = titleMetrics.elidedText(
+        titleText, Qt::ElideRight, static_cast<int>(titleWidth));
+    headerTitle_->setText(elidedTitle);
+    headerTitle_->setPos(contentLeft, y);
 
+    if (legendPanel_) {
+        QFont legendFont = headerTitle_->font();
+        if (legendFont.pointSizeF() > 0.0) {
+            legendFont.setPointSizeF(std::max(8.0, legendFont.pointSizeF() - 2.0));
+        } else if (legendFont.pixelSize() > 0) {
+            legendFont.setPixelSize(std::max(10, legendFont.pixelSize() - 3));
+        }
+        const QFontMetricsF legendMetrics(legendFont);
+        const qreal rowHeight = legendMetrics.height();
+        constexpr qreal inset = 6.0;
+        constexpr qreal rowGap = 3.0;
+        constexpr qreal textLeft = 22.0;
+        qreal maxLabelWidth = 0.0;
+        QStringList fullNames;
+        for (int i = 0; i < series_.size(); ++i) {
+            maxLabelWidth = std::max(maxLabelWidth,
+                                    legendMetrics.horizontalAdvance(series_[i]->name()));
+            const auto* source = displaySources_.value(i);
+            fullNames.append(source ? source->name : series_[i]->name());
+        }
         const qreal headerHeight = std::max(titleMetrics.height(), descMetrics.height());
-        const qreal legendX = plotArea.right() - padding - legendWidth;
         const qreal legendY = plotArea.top() + headerHeight + 6.0;
-        const qreal maxHeight = std::max(30.0, plotArea.bottom() - padding - legendY);
-        QSizeF legendSize;
-        if (auto* layout = legend->layout()) {
-            layout->invalidate();
-            legendSize = layout->effectiveSizeHint(Qt::PreferredSize, QSizeF(legendWidth, maxHeight));
+        const qreal maxHeight = plotArea.bottom() - padding - legendY;
+        const int capacity = std::max(0, static_cast<int>(
+            (maxHeight - 2 * inset + rowGap) / (rowHeight + rowGap)));
+        const int rows = std::min(capacity, static_cast<int>(series_.size()));
+        const bool overflow = rows < series_.size();
+        const int signalRows = overflow ? std::max(0, rows - 1) : rows;
+        const QString overflowText = tr("另 %1 个信号（悬停查看）")
+                                         .arg(series_.size() - signalRows);
+        if (overflow) {
+            maxLabelWidth = std::max(maxLabelWidth, legendMetrics.horizontalAdvance(overflowText));
         }
-        if (legendSize.isEmpty()) {
-            legendSize = legend->boundingRect().size();
+        const qreal maxWidth = std::max(0.0, std::min<qreal>(240.0, plotArea.width() * 0.3));
+        const qreal legendWidth = std::min(maxWidth, std::ceil(maxLabelWidth) + textLeft + inset);
+        const qreal legendHeight = 2 * inset + rows * rowHeight + std::max(0, rows - 1) * rowGap;
+        legendPanel_->setVisible(rows > 0 && legendWidth > textLeft + inset);
+        legendPanel_->setRect(0, 0, legendWidth, legendHeight);
+        legendPanel_->setPos(plotArea.right() - padding - legendWidth, legendY);
+        legendPanel_->setToolTip(fullNames.join(QLatin1Char('\n')));
+        for (int i = 0; i < legendLabels_.size(); ++i) {
+            auto* label = legendLabels_[i];
+            auto* swatch = legendSwatches_[i];
+            label->setVisible(i < rows);
+            swatch->setVisible(i < signalRows);
+            if (i >= rows) continue;
+            label->setFont(legendFont);
+            const QString name = i < signalRows ? series_[i]->name() : overflowText;
+            label->setText(legendMetrics.elidedText(name, Qt::ElideRight,
+                std::max(0, static_cast<int>(legendWidth - textLeft - inset))));
+            label->setPos(textLeft, inset + i * (rowHeight + rowGap));
+            if (i < signalRows) {
+                const qreal yCenter = label->pos().y() + rowHeight * 0.5;
+                swatch->setPen(QPen(series_[i]->pen().color(), 2));
+                swatch->setLine(inset, yCenter, textLeft - 5, yCenter);
+            }
         }
-        if (legendSize.isEmpty()) {
-            legendSize = QSizeF(legendWidth, std::min(60.0, maxHeight));
-        }
-        legendSize.setWidth(legendWidth);
-        if (legendSize.height() > maxHeight) legendSize.setHeight(maxHeight);
-        legend->setGeometry(QRectF(QPointF(legendX, legendY), legendSize));
     }
 }
 
@@ -1003,6 +1138,20 @@ void SignalChartView::UpdateCursor(double cursorX) {
         crosshair_->setVisible(true);
     }
 
+    for (auto* label : valueLabels_) {
+        if (label) label->setVisible(false);
+    }
+
+    struct CursorLabelPlacement {
+        QGraphicsSimpleTextItem* label = nullptr;
+        qreal desiredTop = 0.0;
+        qreal top = 0.0;
+        qreal width = 0.0;
+        qreal height = 0.0;
+    };
+    QVector<CursorLabelPlacement> placements;
+    placements.reserve(valueLabels_.size());
+
     for (int i = 0; i < valueLabels_.size() && i < displaySources_.size(); ++i) {
         if (!displaySources_[i]) continue;
         const auto& seriesData = *displaySources_[i];
@@ -1030,14 +1179,115 @@ void SignalChartView::UpdateCursor(double cursorX) {
         }
 
         value = displayTransforms_.value(i).Apply(value);
+        if (!std::isfinite(value)) continue;
         auto* label = valueLabels_[i];
         if (!label) continue;
-        label->setText(QStringLiteral("key=%1\nval=%2").arg(cursorX, 0, 'f', 2).arg(value, 0, 'f', 4));
+        const QString keyText = QString::number(cursorX, 'f', 2);
+        const QString valueText = QString::number(value, 'f', 4);
+        label->setText(series_.size() > 1
+                           ? QStringLiteral("k:%1  v:%2").arg(keyText, valueText)
+                           : QStringLiteral("k:%1\nv:%2").arg(keyText, valueText));
         auto* seriesRef = series_.value(i);
         if (!seriesRef) seriesRef = series_.first();
         const QPointF valuePoint = chart()->mapToPosition(QPointF(cursorX, value), seriesRef);
-        const QPointF labelPos = valuePoint + QPointF(6, -12 - (12 * i));
-        label->setPos(labelPos);
-        label->setVisible(true);
+        const QRectF bounds = label->boundingRect();
+        placements.append({label, valuePoint.y() - bounds.height() * 0.5, 0.0,
+                           bounds.width(), bounds.height()});
+    }
+
+    if (placements.isEmpty()) return;
+    std::stable_sort(placements.begin(), placements.end(),
+                     [](const auto& left, const auto& right) {
+        return left.desiredTop < right.desiredTop;
+    });
+
+    const QRectF labelArea = chart()->plotArea().adjusted(2.0, 2.0, -2.0, -2.0);
+    if (labelArea.width() <= 0.0 || labelArea.height() <= 0.0) return;
+    const qreal gap = 3.0;
+    qreal maxHeight = 0.0;
+    for (const auto& placement : placements) {
+        maxHeight = std::max(maxHeight, placement.height);
+    }
+    const int laneCapacity = std::max(
+        1, static_cast<int>((labelArea.height() + gap) / std::max(1.0, maxHeight + gap)));
+    const int laneCount = (placements.size() + laneCapacity - 1) / laneCapacity;
+
+    struct LaneLayout {
+        int begin = 0;
+        int end = 0;
+        qreal width = 0.0;
+        bool placeRight = true;
+        qreal x = 0.0;
+    };
+    QVector<LaneLayout> lanes;
+    lanes.reserve(laneCount);
+    for (int laneIndex = 0; laneIndex < laneCount; ++laneIndex) {
+        LaneLayout lane;
+        lane.begin = laneIndex * laneCapacity;
+        lane.end = std::min(lane.begin + laneCapacity,
+                            static_cast<int>(placements.size()));
+        for (int i = lane.begin; i < lane.end; ++i) {
+            lane.width = std::max(lane.width, placements[i].width);
+        }
+
+        qreal nextTop = labelArea.top();
+        for (int i = lane.begin; i < lane.end; ++i) {
+            auto& placement = placements[i];
+            const qreal latestTop = std::max(
+                labelArea.top(), labelArea.bottom() - placement.height);
+            placement.top = std::clamp(placement.desiredTop, labelArea.top(), latestTop);
+            placement.top = std::max(placement.top, nextTop);
+            nextTop = placement.top + placement.height + gap;
+        }
+        for (int i = lane.end - 1; i >= lane.begin; --i) {
+            auto& placement = placements[i];
+            const qreal latestTop = i == lane.end - 1
+                ? labelArea.bottom() - placement.height
+                : placements[i + 1].top - gap - placement.height;
+            placement.top = std::min(placement.top, latestTop);
+        }
+        if (placements[lane.begin].top < labelArea.top()) {
+            placements[lane.begin].top = labelArea.top();
+            for (int i = lane.begin + 1; i < lane.end; ++i) {
+                placements[i].top = std::max(
+                    placements[i].top,
+                    placements[i - 1].top + placements[i - 1].height + gap);
+            }
+        }
+        lanes.append(lane);
+    }
+
+    const qreal cursorPixelX = top.x();
+    qreal rightBoundary = labelArea.right();
+    if (legendPanel_ && legendPanel_->isVisible()) {
+        rightBoundary = std::min(rightBoundary, legendPanel_->pos().x() - gap);
+    }
+    qreal rightX = cursorPixelX + 6.0;
+    qreal leftX = cursorPixelX - 6.0;
+    for (auto& lane : lanes) {
+        const qreal rightSpace = rightBoundary - rightX;
+        const qreal leftSpace = leftX - labelArea.left();
+        lane.placeRight = rightSpace >= lane.width
+            && (leftSpace < lane.width || rightSpace >= leftSpace);
+        if (lane.placeRight) {
+            lane.x = std::clamp(rightX, labelArea.left(),
+                                std::max(labelArea.left(), rightBoundary - lane.width));
+            rightX = lane.x + lane.width + gap;
+        } else {
+            lane.x = std::clamp(leftX - lane.width, labelArea.left(),
+                                std::max(labelArea.left(), labelArea.right() - lane.width));
+            leftX = lane.x - gap;
+        }
+    }
+
+    for (const auto& lane : lanes) {
+        for (int i = lane.begin; i < lane.end; ++i) {
+            auto& placement = placements[i];
+            const qreal x = lane.placeRight ? lane.x
+                                            : lane.x + lane.width - placement.width;
+            placement.label->setPos(QPointF(x, placement.top)
+                                    - placement.label->boundingRect().topLeft());
+            placement.label->setVisible(true);
+        }
     }
 }

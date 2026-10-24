@@ -4,14 +4,18 @@
 #include "ui/AboutDialog.h"
 #include "ui/AppTheme.h"
 #include "ui/ChartArea.h"
+#include "ui/DisplayGroupManager.h"
 #include "ui/SignalChartView.h"
 #include "ui/SignalTreeWidget.h"
 #include "ui/TrajectoryView.h"
+#include "ui/TimeRangeControl.h"
 
 #include <QComboBox>
+#include <QCompleter>
 #include <QAction>
 #include <QApplication>
 #include <QDockWidget>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFontMetricsF>
@@ -22,8 +26,11 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QMessageBox>
 #include <QPushButton>
+#include <QProgressDialog>
 #include <QScopeGuard>
+#include <QSet>
 #include <QSettings>
 #include <QSplitter>
 #include <QTabWidget>
@@ -31,8 +38,8 @@
 #include <QTextBrowser>
 #include <QTimer>
 #include <QToolButton>
-#include <QToolTip>
 #include <QtCharts/QChart>
+#include <QtCharts/QLegend>
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
 #include <algorithm>
@@ -70,8 +77,14 @@ class UiTests : public QObject {
 
 private slots:
     void informationMenuShowsVersionAndBundledChangelog();
+    void importVmcMenuOpensSourceDialog();
+    void vmcScanReportsErrorsAndTailWarnings_data();
+    void vmcScanReportsErrorsAndTailWarnings();
     void openFormatMenuLoadsFile();
     void liveChartsAppearBeforeFirstFrame();
+    void mixedSignalLabelsUseGroupContext();
+    void mergedCursorLabelsAvoidCollisionsAndKeepLegendCompact_data();
+    void mergedCursorLabelsAvoidCollisionsAndKeepLegendCompact();
     void chartGroupsGuidesAndAxes();
     void guideShowsAllCrossingsAndKeepsCursor();
     void liveChartsLimitVisibleWork();
@@ -82,7 +95,295 @@ private slots:
     void displayProcessingWorksWithLiveMergedCharts();
     void themesUpdateControlsAndCharts();
     void indexedLoadingCoalescesAndZooms();
+    void timeRangeControlSupportsHandlesAndPanning();
+    void spatialRangeUsesTimeAndRestoresHistory();
 };
+
+void UiTests::mixedSignalLabelsUseGroupContext() {
+    MainWindow window;
+    QString error;
+    QVERIFY2(window.formatDocument_.LoadFromJsonText(QStringLiteral(R"({
+      "schema_version":3,
+      "template_id":"mixed_labels",
+      "storage":{
+        "kind":"indexed_stream_chunks",
+        "version":1,
+        "layout_sha256":"0000000000000000000000000000000000000000000000000000000000000000",
+        "data_file":"mixed.patbin"
+      },
+      "timestamp":{"value_type":"uint64","unit":"s","scale":0.000000001},
+      "streams":[{
+        "stream_id":231,
+        "source_message_id":"0X00E7",
+        "name":"ah_nav",
+        "payload_length":8,
+        "endianness":"big",
+        "signals":[
+          {"name":"cur_pos_x","byte_offset":0,"value_type":"float32",
+           "group":"AH_NAV [0X00E7]","unit":"m"},
+          {"name":"cur_pos_y","byte_offset":4,"value_type":"float32",
+           "group":"AH_NAV [0X00E7]","unit":"m"}
+        ]
+      }]
+    })"), error), qPrintable(error));
+    window.BuildSignalTree();
+
+    const auto& format = window.formatDocument_.Format();
+    QCOMPARE(format.signalFormats[0].name, QStringLiteral("ah_nav.cur_pos_x"));
+    QCOMPARE(format.signalFormats[0].DisplayName(), QStringLiteral("cur_pos_x"));
+    auto* groupItem = window.signalTree_->topLevelItem(0);
+    QVERIFY(groupItem);
+    auto* signalItem = groupItem->child(0);
+    QVERIFY(signalItem);
+    QCOMPARE(signalItem->text(0), QStringLiteral("cur_pos_x"));
+
+    DisplayGroupManager manager;
+    manager.UpdateGroups({0}, format);
+    QCOMPARE(manager.Groups().size(), 1);
+    const QString expectedTitle = QStringLiteral("AH_NAV [0X00E7] - cur_pos_x");
+    QCOMPARE(manager.Groups().first().title, expectedTitle);
+
+    QVector<pat::Series> source(1);
+    source[0].name = expectedTitle;
+    source[0].unit = QStringLiteral("m");
+    source[0].samples = {{0.0, 1.0}, {1.0, 2.0}};
+    SignalChartView view;
+    view.resize(900, 300);
+    view.Configure(expectedTitle, source[0].unit, QStringLiteral("s"), false,
+                   {QColor(Qt::cyan)}, {0}, {source[0].samples}, &source,
+                   0.0, 3.0, 0.0, 1.0, 0);
+    view.show();
+    QTest::qWait(50);
+
+    QGraphicsSimpleTextItem* titleItem = nullptr;
+    for (auto* item : view.chart()->scene()->items()) {
+        auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item);
+        if (label && label->text() == expectedTitle) {
+            titleItem = label;
+            break;
+        }
+    }
+    QVERIFY(titleItem);
+    const QRectF plotArea = view.chart()->plotArea();
+    QVERIFY(qAbs(titleItem->pos().x() - (plotArea.left() + 4.0)) < 0.5);
+    QVERIFY(qAbs(titleItem->pos().y() - (plotArea.top() + 2.0)) < 0.5);
+}
+
+void UiTests::mergedCursorLabelsAvoidCollisionsAndKeepLegendCompact_data() {
+    QTest::addColumn<int>("signalCount");
+    QTest::newRow("two") << 2;
+    QTest::newRow("three") << 3;
+    QTest::newRow("six") << 6;
+}
+
+void UiTests::mergedCursorLabelsAvoidCollisionsAndKeepLegendCompact() {
+    QFETCH(int, signalCount);
+    QVector<pat::Series> source(signalCount);
+    const QString group = QStringLiteral("超长混合数据分组 [0X00E7]");
+    for (int i = 0; i < source.size(); ++i) {
+        source[i].name = QStringLiteral("%1 - signal_%2").arg(group).arg(i + 1);
+        source[i].unit = QStringLiteral("m/s");
+        const double value = 5.0 + i * 0.002;
+        source[i].samples = {{0.0, value}, {1.0, value}};
+    }
+
+    SignalChartView view;
+    view.resize(760, 260);
+    const QVector<QColor> colors = {QColor("#5ac8ff"), QColor("#ff8c00"),
+                                    QColor("#78dc78")};
+    QVector<int> indices;
+    QVector<QVector<QPointF>> samples;
+    QVector<const pat::Series*> sources;
+    for (int i = 0; i < source.size(); ++i) {
+        indices.append(i);
+        samples.append(source[i].samples);
+        sources.append(&source[i]);
+    }
+    view.Configure(QStringLiteral("合并信号"), QStringLiteral("m/s"), QStringLiteral("s"), true,
+                   colors, indices, samples, &source,
+                   0.0, 10.0, 0.0, 1.0, 0);
+    view.SetDisplaySources(sources, {});
+    view.show();
+    QTest::qWait(50);
+    view.SetCursorX(0.5);
+
+    QVector<QRectF> valueRects;
+    QSet<QRgb> labelColors;
+    for (auto* item : view.chart()->scene()->items()) {
+        auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item);
+        if (!label || !label->isVisible() || !label->text().startsWith(QStringLiteral("k:"))) {
+            continue;
+        }
+        QVERIFY(!label->text().contains(QLatin1Char('\n')));
+        QCOMPARE(label->pen().style(), Qt::NoPen);
+        valueRects.append(label->sceneBoundingRect());
+        labelColors.insert(label->brush().color().rgb());
+    }
+    QCOMPARE(valueRects.size(), signalCount);
+    QCOMPARE(labelColors, QSet<QRgb>{QColor("#ffff00").rgb()});
+    for (int i = 0; i < valueRects.size(); ++i) {
+        for (int j = i + 1; j < valueRects.size(); ++j) {
+            QVERIFY2(!valueRects[i].intersects(valueRects[j]),
+                     "merged cursor value labels must not overlap");
+        }
+    }
+
+    for (auto* plotted : view.chart()->series()) {
+        QVERIFY(!plotted->name().contains(group));
+        QVERIFY(plotted->name().startsWith(QStringLiteral("signal_")));
+    }
+    QGraphicsItem* legend = nullptr;
+    for (auto* item : view.chart()->childItems()) {
+        if (item->data(0).toString() == QStringLiteral("signalLegend")) legend = item;
+    }
+    QVERIFY(legend);
+    QVERIFY(legend->isVisible());
+    const qreal expectedMaxWidth = std::max(
+        72.0, std::min<qreal>(240.0, view.chart()->plotArea().width() * 0.3));
+    QVERIFY(legend->boundingRect().width() <= expectedMaxWidth + 1.0);
+    QVector<QRectF> rows;
+    for (auto* item : legend->childItems()) {
+        if (!item->isVisible() || item->data(0).toString() != QStringLiteral("legendLabel")) continue;
+        const auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item);
+        QVERIFY(label);
+        QVERIFY(!label->text().contains(QChar(0x2026)));
+        rows.append(item->mapRectToParent(item->boundingRect()));
+        QVERIFY(legend->boundingRect().contains(rows.last()));
+    }
+    QCOMPARE(rows.size(), source.size());
+    std::sort(rows.begin(), rows.end(), [](const QRectF& a, const QRectF& b) {
+        return a.top() < b.top();
+    });
+    for (int i = 1; i < rows.size(); ++i) QVERIFY(rows[i].top() > rows[i - 1].bottom());
+    const qreal topPadding = rows.first().top() - legend->boundingRect().top();
+    const qreal bottomPadding = legend->boundingRect().bottom() - rows.last().bottom();
+    QVERIFY(qAbs(topPadding - bottomPadding) < 1.0);
+}
+
+void UiTests::importVmcMenuOpensSourceDialog() {
+    MainWindow window;
+    window.show();
+    auto* action = window.findChild<QAction*>(QStringLiteral("importVmcLogAction"));
+    QVERIFY(action);
+    QVERIFY(action->isEnabled());
+
+    bool dialogObserved = false;
+    QTimer::singleShot(0, &window, [&]() {
+        auto* dialog = window.findChild<QFileDialog*>(QStringLiteral("vmcSourceDialog"));
+        if (!dialog) return;
+        dialogObserved = dialog->isVisible()
+            && !dialog->testOption(QFileDialog::DontUseNativeDialog)
+            && dialog->fileMode() == QFileDialog::ExistingFiles;
+        dialog->reject();
+    });
+    action->trigger();
+    QVERIFY(dialogObserved);
+}
+
+void UiTests::vmcScanReportsErrorsAndTailWarnings_data() {
+    QTest::addColumn<int>("kind");
+    QTest::newRow("invalid-file-is-not-user-cancellation") << 0;
+    QTest::newRow("normal-file-confirms") << 1;
+    QTest::newRow("partial-tail-warning-before-conversion") << 2;
+    QTest::newRow("user-cancel-remains-cancel") << 3;
+}
+
+void UiTests::vmcScanReportsErrorsAndTailWarnings() {
+    QFETCH(int, kind);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QByteArray bytes(84, '\0');
+    bytes.append(QByteArray::fromHex("a5012301"));
+    QByteArray topic(16, '\0'); topic.replace(0, 6, "sensor");
+    bytes.append(topic);
+    const QByteArray fields("value@u8");
+    bytes.append(char(0)); bytes.append(char(fields.size())); bytes.append(fields);
+    bytes.append(QByteArray::fromHex("5a01230100000000000003e80107"));
+    if (kind == 3) bytes.append(QByteArray::fromHex("5a01230100000000000003e80107").repeated(2000000));
+    if (kind == 2) {
+        bytes.append(QByteArray::fromHex("5a01230100000121f148ffffff"));
+        bytes.append(QByteArray(53, char(0xFF)));
+    }
+    if (kind == 0) bytes = "invalid";
+    const QString path = dir.filePath("source.bin");
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(bytes), qint64(bytes.size())); file.close();
+
+    MainWindow window;
+    window.show();
+    bool selected = false, confirmed = false, timedOut = false, cancelled = false;
+    QString errorText, warningText;
+    QTimer dialogs;
+    connect(&dialogs, &QTimer::timeout, &window, [&] {
+        if (auto* picker = window.findChild<QFileDialog*>("vmcSourceDialog")) {
+            if (picker->isVisible() && !selected) {
+                selected = true;
+                picker->setDirectory(dir.path());
+                picker->selectFile(path);
+                QMetaObject::invokeMethod(picker, "accept", Qt::DirectConnection);
+                return;
+            }
+        }
+        if (kind == 3 && !cancelled) {
+            if (auto* progress = window.findChild<QProgressDialog*>("vmcScanProgress")) {
+                if (progress->isVisible()) {
+                    cancelled = true;
+                    progress->close(); // Simulate the user's close-window action.
+                    return;
+                }
+            }
+        }
+        for (auto* message : window.findChildren<QMessageBox*>()) {
+            if (message->isVisible()) {
+                errorText = message->text();
+                message->accept();
+                return;
+            }
+        }
+        if (auto* inspection = window.findChild<QDialog*>("vmcInspectionDialog")) {
+            if (inspection->isVisible()) {
+                confirmed = true;
+                if (auto* warning = inspection->findChild<QLabel*>("vmcTailWarning"))
+                    warningText = warning->text();
+                inspection->reject(); // Read-only test: never choose output files.
+            }
+        }
+    });
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    connect(&timeout, &QTimer::timeout, &window, [&] {
+        timedOut = true;
+        for (auto* dialog : window.findChildren<QDialog*>()) dialog->reject();
+    });
+    dialogs.start(10);
+    timeout.start(5000);
+    window.ImportVmcLog();
+    dialogs.stop(); timeout.stop();
+    QVERIFY(!timedOut);
+    QVERIFY(selected);
+    if (kind == 3) {
+        QVERIFY(cancelled);
+        QVERIFY(!confirmed);
+        QVERIFY(errorText.isEmpty());
+        QVERIFY(window.statusLabel_->text().contains(QStringLiteral("扫描已取消")));
+        return;
+    }
+    QVERIFY(!window.statusLabel_->text().contains(QStringLiteral("扫描已取消")));
+    if (kind == 0) {
+        QVERIFY2(errorText.contains(QStringLiteral("日志过短")), qPrintable(errorText));
+        QVERIFY(!confirmed);
+    } else {
+        QVERIFY2(errorText.isEmpty(), qPrintable(errorText));
+        QVERIFY(confirmed);
+        if (kind == 2) {
+            QVERIFY(warningText.contains(QStringLiteral("不完整记录 1 条")));
+            QVERIFY(warningText.contains(QStringLiteral("66 字节")));
+            QVERIFY(warningText.contains(QStringLiteral("偏移 0x")));
+        } else QVERIFY(warningText.isEmpty());
+    }
+    QVERIFY(!QFileInfo::exists(dir.filePath("source.patbin")));
+}
 
 void UiTests::indexedLoadingCoalescesAndZooms() {
     QTemporaryDir dir;
@@ -116,6 +417,12 @@ void UiTests::indexedLoadingCoalescesAndZooms() {
     QCOMPARE(window.mixedDataSession_.Series()[0].samples.first(), QPointF(200,200));
     QVERIFY(window.chartArea_->findChildren<SignalChartView*>().contains(original));
     QCOMPARE(window.mixedDataSession_.Statistics().maxX, 99999.0);
+    QVERIFY(window.timeRangeControl_->isEnabled());
+    auto* rangeStart = window.timeRangeControl_->findChild<QDoubleSpinBox*>("timeRangeStart");
+    auto* rangeEnd = window.timeRangeControl_->findChild<QDoubleSpinBox*>("timeRangeEnd");
+    QVERIFY(rangeStart && rangeEnd);
+    QCOMPARE(rangeStart->value(), 200.0);
+    QCOMPARE(rangeEnd->value(), 205.0);
     QVERIFY(window.CreateDifference(0,1,error));
     QTRY_COMPARE_WITH_TIMEOUT(window.seriesProcessing_.DerivedSeries()[0].samples.size(), 6, 10000);
     QCOMPARE(window.seriesProcessing_.DerivedSeries()[0].samples.first(), QPointF(200,-200));
@@ -124,7 +431,14 @@ void UiTests::indexedLoadingCoalescesAndZooms() {
     QTRY_VERIFY_WITH_TIMEOUT(!window.mixedLoader_->Busy(), 10000);
     auto plots = window.trajectoryView_->findChildren<TrajectoryPlotWidget*>();
     QVERIFY(!plots.isEmpty());
-    QVERIFY(plots.first()->HistoryPointCount() > 0);
+    QCOMPARE(plots.first()->HistoryPointCount(), 6);
+    // Changing the shared control on the spatial tab must reload only that interval.
+    rangeStart->setValue(201);
+    QVERIFY(QMetaObject::invokeMethod(rangeStart, "editingFinished", Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(!window.mixedLoader_->Busy(), 10000);
+    QCOMPARE(plots.first()->HistoryPointCount(), 5);
+    QCOMPARE(window.mixedDataSession_.Series()[0].samples.first().x(), 201.0);
+    QCOMPARE(window.mixedDataSession_.Series()[0].samples.last().x(), 205.0);
     const auto history = plots.first()->HistoryPointCount();
     window.dataViewTabs_->setCurrentIndex(0);
     QTRY_VERIFY_WITH_TIMEOUT(!window.mixedLoader_->Busy(), 10000);
@@ -289,7 +603,7 @@ void UiTests::displayProcessingWorksWithLiveMergedCharts() {
     bool sawTransformedCursor = false;
     for (auto* item : merged->chart()->scene()->items()) {
         auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item);
-        if (label && label->text().contains(QStringLiteral("val=20.0000"))) {
+        if (label && label->text().contains(QStringLiteral("v:20.0000"))) {
             sawTransformedCursor = true;
         }
     }
@@ -459,10 +773,15 @@ void UiTests::trajectoryTabPlotsOfflineCoordinates() {
     QVERIFY(view);
     auto* xCombo = view->findChild<QComboBox*>(QStringLiteral("trajectoryXCombo"));
     auto* yCombo = view->findChild<QComboBox*>(QStringLiteral("trajectoryYCombo"));
+    auto* groupCombo = view->findChild<QComboBox*>(QStringLiteral("trajectoryGroupCombo"));
     QVERIFY(xCombo);
     QVERIFY(yCombo);
+    QVERIFY(groupCombo);
+    QVERIFY(groupCombo->isEditable());
+    QVERIFY(xCombo->isEditable());
     QCOMPARE(xCombo->currentText(), QStringLiteral("组合经度 (°)"));
     QCOMPARE(yCombo->currentText(), QStringLiteral("组合纬度 (°)"));
+    QCOMPARE(groupCombo->currentData().toString(), QStringLiteral("组合导航/位置"));
 
     auto* chartView = view->findChild<QChartView*>(QStringLiteral("trajectoryChart"));
     QVERIFY(chartView);
@@ -474,6 +793,12 @@ void UiTests::trajectoryTabPlotsOfflineCoordinates() {
     QCOMPARE(path->points().first().x(), window.dataSession_.Series()[xIndex].samples.first().y());
     QCOMPARE(path->points().first().y(), window.dataSession_.Series()[yIndex].samples.first().y());
 
+    const int gnssGroup = groupCombo->findData(QStringLiteral("GNSS/位置"));
+    QVERIFY(gnssGroup >= 0);
+    groupCombo->setCurrentIndex(gnssGroup);
+    QCOMPARE(xCombo->count(), 5);  // Placeholder plus four position signals.
+    xCombo->completer()->setCompletionPrefix(QStringLiteral("经度"));
+    QVERIFY(xCombo->completer()->completionCount() >= 1);
     const int gnssX = xCombo->findText(QStringLiteral("GNSS经度 (°)"));
     const int gnssY = yCombo->findText(QStringLiteral("GNSS纬度 (°)"));
     QVERIFY(gnssX >= 0);
@@ -523,6 +848,7 @@ void UiTests::informationMenuShowsVersionAndBundledChangelog() {
     auto* changelog = dialog->findChild<QTextBrowser*>(QStringLiteral("changelogView"));
     QVERIFY(changelog);
     QVERIFY(changelog->toPlainText().contains(QStringLiteral("PAT 更新日志")));
+    QVERIFY(changelog->toPlainText().contains(QStringLiteral(PAT_APP_VERSION)));
     QVERIFY(changelog->toPlainText().contains(QStringLiteral("2026-09-21")));
 }
 
@@ -703,8 +1029,8 @@ void UiTests::chartGroupsGuidesAndAxes() {
     bool sawTwoLineValue = false;
     for (auto* item : views[0]->chart()->scene()->items()) {
         auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item);
-        if (!label || !label->text().startsWith(QStringLiteral("key="))) continue;
-        QVERIFY(label->text().contains(QStringLiteral("\nval=")));
+        if (!label || !label->text().startsWith(QStringLiteral("k:"))) continue;
+        QVERIFY(label->text().contains(QStringLiteral("\nv:")));
         QVERIFY(label->boundingRect().height() > QFontMetricsF(label->font()).height() * 1.5);
         sawTwoLineValue = true;
     }
@@ -798,17 +1124,133 @@ void UiTests::guideShowsAllCrossingsAndKeepsCursor() {
     QCoreApplication::sendEvent(view.viewport(), &move);
     QVERIFY(moved.count() > 0);
     QCOMPARE(left.count(), 0);
-    const QString tooltip = QToolTip::text();
+    auto* popup = view.findChild<QLabel*>(QStringLiteral("guideHoverPopup"));
+    QVERIFY(popup);
+    QVERIFY(popup->isVisible());
+    const QString tooltip = popup->text();
     QVERIFY2(tooltip.contains(QStringLiteral("key=0.5")), qPrintable(tooltip));
     QVERIFY2(tooltip.contains(QStringLiteral("key=1.5")), qPrintable(tooltip));
     QVERIFY2(tooltip.contains(QStringLiteral("key=2.5")), qPrintable(tooltip));
     QVERIFY2(tooltip.contains(QStringLiteral("key=3.5")), qPrintable(tooltip));
     QVERIFY2(tooltip.contains(QStringLiteral("斜线")), qPrintable(tooltip));
-    QToolTip::hideText();
+    // Keep the mouse stationary beyond the normal short-tooltip timeout.
+    QTest::qWait(11000);
+    QVERIFY(popup->isVisible());
+    QCOMPARE(left.count(), 0);
+    QEvent leave(QEvent::Leave);
+    QCoreApplication::sendEvent(&view, &leave);
+    QVERIFY(!popup->isVisible());
+    QCoreApplication::sendEvent(view.viewport(), &move);
+    QVERIFY(popup->isVisible());
+    view.SetGuideLines({});
+    QVERIFY(!popup->isVisible());
+}
+
+void UiTests::timeRangeControlSupportsHandlesAndPanning() {
+    TimeRangeControl control;
+    control.resize(800, 90);
+    QVERIFY(!control.isEnabled());
+    control.SetExtent(100.0, QStringLiteral("s"), true);
+    control.SetSelection(0.0, 100.0);
+    control.show();
+    QTest::qWait(30);
+    auto* bar = control.findChild<QWidget*>("timeRangeBar");
+    auto* start = control.findChild<QDoubleSpinBox*>("timeRangeStart");
+    auto* end = control.findChild<QDoubleSpinBox*>("timeRangeEnd");
+    auto* reset = control.findChild<QPushButton*>("timeRangeReset");
+    QVERIFY(bar && start && end && reset);
+    QSignalSpy selected(&control, &TimeRangeControl::RangeSelected);
+    const auto at = [bar](double fraction) {
+        return QPoint(qRound(10 + fraction * (bar->width() - 20)), bar->height() / 2);
+    };
+    const auto drag = [&](double from, double to) {
+        const int previousCount = selected.count();
+        QTest::mousePress(bar, Qt::LeftButton, Qt::NoModifier, at(from));
+        QMouseEvent move(QEvent::MouseMove, QPointF(at(to)),
+                         QPointF(bar->mapToGlobal(at(to))),
+                         Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(bar, &move);
+        QCOMPARE(selected.count(), previousCount); // No data reload while dragging.
+        QTest::mouseRelease(bar, Qt::LeftButton, Qt::NoModifier, at(to));
+        QCOMPARE(selected.count(), previousCount + 1);
+    };
+    drag(0.0, 0.2);
+    QVERIFY(std::abs(start->value() - 20.0) < 0.2);
+    drag(1.0, 0.6);
+    QVERIFY(std::abs(end->value() - 60.0) < 0.2);
+    const double span = end->value() - start->value();
+    drag(0.4, 0.6);
+    QVERIFY(std::abs(start->value() - 40.0) < 0.3);
+    QVERIFY(std::abs(end->value() - start->value() - span) < 1e-6);
+    reset->click();
+    QCOMPARE(start->value(), 0.0);
+    QCOMPARE(end->value(), 100.0);
+    auto* next = control.findChild<QPushButton*>("timeRangeNext");
+    auto* previous = control.findChild<QPushButton*>("timeRangePrevious");
+    QVERIFY(next && previous);
+    control.SetSelection(20, 40);
+    next->click();
+    QCOMPARE(start->value(), 40.0);
+    QCOMPARE(end->value(), 60.0);
+    previous->click();
+    QCOMPARE(start->value(), 20.0);
+    QCOMPARE(end->value(), 40.0);
+    start->setValue(80);
+    QVERIFY(QMetaObject::invokeMethod(start, "editingFinished", Qt::DirectConnection));
+    QVERIFY(start->value() >= 79.99);
+    QVERIFY(end->value() > start->value());
+    control.SetExtent(100, QStringLiteral("s"), false);
+    QVERIFY(!control.isEnabled());
+}
+
+void UiTests::spatialRangeUsesTimeAndRestoresHistory() {
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY2(pat::LoadFormatFromJson(QString::fromUtf8(PAT_SOURCE_DIR)
+                                     + "/samples/cp01_b3_navigation.json", format, error),
+             qPrintable(error));
+    QVector<pat::Series> source(static_cast<qsizetype>(format.signalFormats.size()));
+    for (int signal = 0; signal < source.size(); ++signal) {
+        for (int i = 0; i < 10; ++i)
+            source[signal].samples.append(QPointF(i * 0.25, signal * 100.0 + i));
+    }
+    TrajectoryView view;
+    view.ConfigureSignals(format);
+    auto* plot = view.findChild<TrajectoryPlotWidget*>();
+    QVERIFY(plot);
+    auto* plot3D = view.AddPlot(TrajectoryDimension::ThreeD);
+    view.SetDataSource(&source, pat::TrajectoryPairing::RecordOrder);
+    view.SetTimeWindow(0.5, 1.0);
+    auto* chart = plot->findChild<QChartView*>();
+    QVERIFY(chart);
+    QLineSeries* line = nullptr;
+    for (auto* series : chart->chart()->series()) {
+        if ((line = qobject_cast<QLineSeries*>(series))) break;
+    }
+    QVERIFY(line);
+    auto* x = plot->findChild<QComboBox*>("trajectoryXCombo");
+    QVERIFY(x);
+    QCOMPARE(line->count(), 3);
+    QCOMPARE(line->points().first().x(), x->currentData().toInt() * 100.0 + 2);
+    QCOMPARE(line->points().last().x(), x->currentData().toInt() * 100.0 + 4);
+    auto* status3D = plot3D->findChild<QLabel*>(
+        QStringLiteral("trajectoryStatus_%1").arg(plot3D->PlotId()));
+    QVERIFY(status3D);
+    QVERIFY(status3D->text().contains(QStringLiteral("区间点 3")));
+    QCOMPARE(plot->HistoryPointCount(), 10); // Filtering must not erase source history.
+    view.SetTimeWindow(2.3, 2.4);
+    QCOMPARE(line->count(), 0);
+    view.SetTimeWindow(0, 2.25);
+    QCOMPARE(line->count(), 10);
+    QCOMPARE(source.first().samples.size(), 10);
+    // Timestamp-based mixed logs use the same interval semantics.
+    view.SetDataSource(&source, pat::TrajectoryPairing::OfflineTimestamp);
+    view.SetTimeWindow(0.5, 1.0);
+    QCOMPARE(line->count(), 3);
 }
 
 void UiTests::liveChartsLimitVisibleWork() {
-    QVector<pat::Series> source(3);
+    QVector<pat::Series> source(9);
     QVector<DisplayGroup> groups;
     for (int signal = 0; signal < source.size(); ++signal) {
         source[signal].name = QStringLiteral("信号%1").arg(signal);
@@ -833,8 +1275,9 @@ void UiTests::liveChartsLimitVisibleWork() {
     area.RefreshLiveData(true);
 
     const auto views = area.findChildren<SignalChartView*>();
-    QCOMPARE(views.size(), 3);
+    QCOMPARE(views.size(), 9);
     for (auto* view : views) {
+        QVERIFY(view->renderHints().testFlag(QPainter::Antialiasing));
         auto* yAxis = qobject_cast<QValueAxis*>(view->chart()->axes(Qt::Vertical).first());
         QVERIFY(yAxis);
         QVERIFY(yAxis->max() < 100.0);

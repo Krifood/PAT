@@ -183,10 +183,18 @@ if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXI
 & $cmake --build $buildPath --config $Config --parallel $Jobs
 if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE." }
 
-$exe = @(
-  (Join-Path $buildPath "pat_app.exe"),
-  (Join-Path $buildPath "$Config/pat_app.exe")
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
+$exeCandidates = if ($qtLooksLikeMingw) {
+  @(
+    (Join-Path $buildPath "pat_app.exe"),
+    (Join-Path $buildPath "$Config/pat_app.exe")
+  )
+} else {
+  @(
+    (Join-Path $buildPath "$Config/pat_app.exe"),
+    (Join-Path $buildPath "pat_app.exe")
+  )
+}
+$exe = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $exe -or -not (Test-Path $exe)) {
   throw "Build succeeded but pat_app.exe was not found under: $buildPath"
 }

@@ -76,8 +76,9 @@ bool SeriesProcessing::AddDerived(int leftSignal, int rightSignal, SeriesOperati
         ? QStringLiteral("差值") : QStringLiteral("和值");
     const QString symbol = operation == SeriesOperation::Difference
         ? QStringLiteral("-") : QStringLiteral("+");
-    definition.title = QStringLiteral("%1: %2 %3 %4（来源: %2、%4）")
-                           .arg(operationName, left.name, symbol, right.name);
+    definition.title = QStringLiteral("%1: %2 %3 %4（来源: %5、%6）")
+                           .arg(operationName, left.DisplayName(), symbol, right.DisplayName(),
+                                left.QualifiedDisplayName(), right.QualifiedDisplayName());
     definition.unit = left.unit;
     definitions_.append(definition);
     InitializeDerivedSeries();

@@ -8,11 +8,13 @@
 #include "ui/SignalTreeWidget.h"
 #include "ui/SignalProcessingDialogs.h"
 #include "ui/TrajectoryView.h"
+#include "ui/TimeRangeControl.h"
 #include "core/FrameExporter.h"
 #include "core/InputReader.h"
 #include "core/RecordDecoder.h"
 #include "core/SerialFrameAssembler.h"
 #include "core/UnifiedLogWriter.h"
+#include "core/VmcLogReader.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -22,6 +24,8 @@
 #include <QCheckBox>
 #include <QBuffer>
 #include <QDir>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDockWidget>
 #include <QEventLoop>
 #include <QFileDialog>
@@ -57,6 +61,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <limits>
 
 namespace {
 
@@ -71,6 +76,16 @@ bool UseIndexedFile(const QString& path, const pat::FormatDefinition& format) {
 QString FileLeaf(const QString& path) {
     QFileInfo info(path);
     return info.fileName();
+}
+
+QString HumanBytes(quint64 bytes) {
+    constexpr quint64 kKiB = 1024;
+    constexpr quint64 kMiB = 1024 * kKiB;
+    constexpr quint64 kGiB = 1024 * kMiB;
+    if (bytes >= kGiB) return QStringLiteral("%1 GiB").arg(double(bytes) / kGiB, 0, 'f', 2);
+    if (bytes >= kMiB) return QStringLiteral("%1 MiB").arg(double(bytes) / kMiB, 0, 'f', 1);
+    if (bytes >= kKiB) return QStringLiteral("%1 KiB").arg(double(bytes) / kKiB, 0, 'f', 1);
+    return QStringLiteral("%1 B").arg(bytes);
 }
 
 QString DefaultFormatTemplate() {
@@ -293,12 +308,21 @@ void MainWindow::SetupUi() {
     auto* rightLayout = new QVBoxLayout(rightPane);
     rightLayout->setContentsMargins(4, 4, 4, 4);
 #ifdef PAT_ENABLE_QT_CHARTS
+    timeRangeControl_ = new TimeRangeControl(rightPane);
+    rightLayout->addWidget(timeRangeControl_);
     dataViewTabs_ = new QTabWidget(rightPane);
     dataViewTabs_->setObjectName(QStringLiteral("dataViewTabs"));
     chartArea_ = new ChartArea(dataViewTabs_);
+    connect(timeRangeControl_, &TimeRangeControl::RangeSelected, this,
+            [this](double minX, double maxX) {
+        if (!liveMode_ && HasOfflineData()) chartArea_->SetVisibleRange(minX, maxX);
+    });
     connect(chartArea_, &ChartArea::VisibleRangeChanged, this, [this](double minX, double maxX) {
+        if (liveMode_) return;
+        mixedWindow_ = {minX, maxX};
+        timeRangeControl_->SetSelection(minX, maxX);
+        if (trajectoryView_) trajectoryView_->SetTimeWindow(minX, maxX);
         if (mixedMode_ && !liveMode_) {
-            mixedWindow_ = {minX, maxX};
             RequestMixedSignalsForCurrentView();
         }
     });
@@ -411,9 +435,7 @@ void MainWindow::OpenFormatFile() {
     const QString path = QFileDialog::getOpenFileName(this,
                                                       tr("选择格式文件"),
                                                       QString(),
-                                                      tr("JSON (*.json);;所有文件 (*)"),
-                                                      nullptr,
-                                                      QFileDialog::DontUseNativeDialog);
+                                                      tr("JSON (*.json);;所有文件 (*)"));
     if (path.isEmpty()) return;
 
     const QString previousPath = mixedMode_
@@ -551,10 +573,171 @@ void MainWindow::ImportVmcLog() {
         return;
     }
 #endif
-    const QStringList sources = QFileDialog::getOpenFileNames(
-        this, tr("选择一个或多个 VMC 日志"), QString(),
-        tr("VMC 日志 (*.bin *.log);;所有文件 (*)"));
+    // Keep Qt's native-dialog preference: macOS and Windows use their system
+    // file pickers, while headless/test platforms can fall back automatically.
+    QFileDialog sourceDialog(this);
+    sourceDialog.setObjectName(QStringLiteral("vmcSourceDialog"));
+    sourceDialog.setWindowTitle(tr("选择一个或多个 VMC 日志"));
+    sourceDialog.setFileMode(QFileDialog::ExistingFiles);
+    sourceDialog.setAcceptMode(QFileDialog::AcceptOpen);
+    sourceDialog.setNameFilters({tr("VMC 日志 (*.bin *.log)"), tr("所有文件 (*)")});
+    sourceDialog.setLabelText(QFileDialog::Accept, tr("扫描并导入"));
+    QSettings settings;
+    const QString previousDirectory = settings.value(
+        QStringLiteral("vmcImport/lastDirectory")).toString();
+    if (!previousDirectory.isEmpty() && QDir(previousDirectory).exists()) {
+        sourceDialog.setDirectory(previousDirectory);
+    }
+    UpdateStatus(tr("请选择 VMC 混合日志文件"));
+    if (sourceDialog.exec() != QDialog::Accepted) {
+        UpdateStatus(tr("已取消 VMC 日志导入"));
+        return;
+    }
+    const QStringList sources = sourceDialog.selectedFiles();
     if (sources.isEmpty()) return;
+    settings.setValue(QStringLiteral("vmcImport/lastDirectory"),
+                      QFileInfo(sources.first()).absolutePath());
+
+    struct InspectionOutcome {
+        bool ok = false;
+        QVector<pat::VmcLogInspection> files;
+        QString error;
+    };
+    auto scanCancelled = std::make_shared<std::atomic_bool>(false);
+    QFutureWatcher<InspectionOutcome> scanWatcher;
+    QProgressDialog scanProgress(tr("正在扫描日志结构和记录完整性..."), tr("取消"), 0, 0, this);
+    scanProgress.setObjectName(QStringLiteral("vmcScanProgress"));
+    scanProgress.setWindowTitle(tr("检查 VMC 混合日志"));
+    scanProgress.setWindowModality(Qt::WindowModal);
+    scanProgress.setMinimumDuration(0);
+    const auto scanCancelConnection = connect(&scanProgress, &QProgressDialog::canceled, this,
+            [scanCancelled, &scanProgress]() {
+        scanCancelled->store(true);
+        scanProgress.setLabelText(QObject::tr("正在安全取消扫描..."));
+    });
+    QEventLoop scanLoop;
+    connect(&scanWatcher, &QFutureWatcher<InspectionOutcome>::finished,
+            &scanLoop, &QEventLoop::quit);
+    scanWatcher.setFuture(QtConcurrent::run([sources, scanCancelled]() {
+        InspectionOutcome outcome;
+        pat::VmcLogReader reader;
+        for (const QString& source : sources) {
+            pat::VmcLogInspection inspection;
+            if (!reader.Inspect(source, inspection, outcome.error,
+                                [scanCancelled]() { return scanCancelled->load(); })) {
+                return outcome;
+            }
+            outcome.files.append(std::move(inspection));
+        }
+        outcome.ok = true;
+        return outcome;
+    }));
+    scanProgress.show();
+    if (!scanWatcher.isFinished()) scanLoop.exec();
+    // close() emits canceled(), even on successful programmatic completion.
+    disconnect(scanCancelConnection);
+    scanProgress.close();
+    const InspectionOutcome inspected = scanWatcher.result();
+    if (scanCancelled->load()) {
+        UpdateStatus(tr("VMC 日志扫描已取消"));
+        return;
+    }
+    if (!inspected.ok) {
+        QMessageBox::warning(this, tr("日志检查失败"), inspected.error);
+        return;
+    }
+
+    quint64 sourceBytes = 0;
+    quint64 records = 0;
+    quint64 routedRecords = 0;
+    quint64 metadataRecords = 0;
+    quint64 terminalBytes = 0;
+    quint64 trailingBytes = 0;
+    quint64 discardedRecords = 0;
+    quint64 discardedBytes = 0;
+    QStringList tailWarnings;
+    quint64 estimatedOutputBytes = 0;
+    int descriptors = 0;
+    int fields = 0;
+    int activeStreams = 0;
+    for (qsizetype i = 0; i < inspected.files.size(); ++i) {
+        const auto& inspection = inspected.files[i];
+        sourceBytes += quint64(std::max<qint64>(0, inspection.sourceBytes));
+        records += inspection.summary.recordCount;
+        routedRecords += inspection.summary.routedRecordCount;
+        metadataRecords += inspection.summary.metadataRecordCount;
+        terminalBytes += inspection.summary.terminalMarkerBytes;
+        trailingBytes += inspection.summary.trailingFillBytes;
+        discardedRecords += inspection.summary.discardedTailRecords;
+        discardedBytes += inspection.summary.discardedTailBytes;
+        if (inspection.summary.discardedTailRecords > 0) {
+            tailWarnings.append(tr("%1：末尾残帧偏移 0x%2，忽略 %3 字节（含 FF 填充）")
+                .arg(FileLeaf(sources[i]))
+                .arg(inspection.summary.discardedTailOffset, 0, 16)
+                .arg(inspection.summary.discardedTailBytes));
+        }
+        estimatedOutputBytes += inspection.estimatedConvertedDataBytes;
+        descriptors += inspection.descriptorCount;
+        fields += inspection.fieldCount;
+        activeStreams += inspection.activeStreamCount;
+    }
+
+    QDialog inspectionDialog(this);
+    inspectionDialog.setObjectName(QStringLiteral("vmcInspectionDialog"));
+    inspectionDialog.setWindowTitle(tr("确认 VMC 日志导入"));
+    inspectionDialog.resize(600, 360);
+    auto* inspectionLayout = new QVBoxLayout(&inspectionDialog);
+    auto* summaryLabel = new QLabel(
+        tr("已完成只读扫描。\n\n"
+           "源文件：%1 个，共 %2\n"
+           "描述项合计：%3 个（其中 %4 个有数据），字段项合计：%5 个\n"
+           "正常记录：%6 条；可解析：%7 条；元数据：%8 条\n"
+           "终止标记：%9 字节；尾部 FF：%10 字节\n"
+           "预计 PAT 数据区：约 %11（另有少量索引和 JSON）")
+            .arg(sources.size()).arg(HumanBytes(sourceBytes)).arg(descriptors)
+            .arg(activeStreams).arg(fields).arg(records).arg(routedRecords)
+            .arg(metadataRecords).arg(terminalBytes).arg(trailingBytes)
+            .arg(HumanBytes(estimatedOutputBytes)),
+        &inspectionDialog);
+    summaryLabel->setWordWrap(true);
+    summaryLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    inspectionLayout->addWidget(summaryLabel);
+    if (discardedRecords > 0) {
+        auto* warning = new QLabel(tr("注意：将忽略末尾不完整记录 %1 条，共 %2 字节。\n%3\n"
+                                     "仅转换此前完整记录，不补造残帧、不修改原文件；详情写入输出 JSON。")
+            .arg(discardedRecords).arg(discardedBytes).arg(tailWarnings.join('\n')), &inspectionDialog);
+        warning->setObjectName(QStringLiteral("vmcTailWarning"));
+        warning->setWordWrap(true);
+        warning->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        inspectionLayout->addWidget(warning);
+    }
+    auto* timeForm = new QFormLayout();
+    auto* timestampCombo = new QComboBox(&inspectionDialog);
+    timestampCombo->addItem(tr("纳秒 → 秒（HA/VMC 推荐）"), 1e-9);
+    timestampCombo->addItem(tr("微秒 → 秒"), 1e-6);
+    timestampCombo->addItem(tr("毫秒 → 秒"), 1e-3);
+    timestampCombo->addItem(tr("秒"), 1.0);
+    timestampCombo->addItem(tr("未知，保留原始 tick"), 0.0);
+    timeForm->addRow(tr("原始时间戳："), timestampCombo);
+    inspectionLayout->addLayout(timeForm);
+    auto* hint = new QLabel(
+        tr("本类日志的配套文本已验证 systime = 原始时间戳 × 1e-9。"
+           "若导入其他来源且时间基准不确定，请选择保留原始 tick。"),
+        &inspectionDialog);
+    hint->setWordWrap(true);
+    inspectionLayout->addWidget(hint);
+    inspectionLayout->addStretch(1);
+    auto* inspectionButtons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &inspectionDialog);
+    inspectionButtons->button(QDialogButtonBox::Ok)->setText(tr("选择输出位置并转换"));
+    connect(inspectionButtons, &QDialogButtonBox::accepted, &inspectionDialog, &QDialog::accept);
+    connect(inspectionButtons, &QDialogButtonBox::rejected, &inspectionDialog, &QDialog::reject);
+    inspectionLayout->addWidget(inspectionButtons);
+    if (inspectionDialog.exec() != QDialog::Accepted) return;
+    const double timestampScale = timestampCombo->currentData().toDouble();
+    const QString timestampUnit = timestampScale > 0.0 ? QStringLiteral("s")
+                                                        : QStringLiteral("tick");
+
     const QFileInfo first(sources.first());
     const QString suggested = first.dir().filePath(first.completeBaseName() + QStringLiteral("_pat.json"));
     QString jsonPath = QFileDialog::getSaveFileName(
@@ -581,15 +764,18 @@ void MainWindow::ImportVmcLog() {
     progress.setWindowTitle(tr("导入 VMC 混合日志"));
     progress.setWindowModality(Qt::WindowModal);
     progress.setMinimumDuration(0);
-    connect(&progress, &QProgressDialog::canceled, this, [cancelled, &progress]() {
+    const auto cancelConnection = connect(&progress, &QProgressDialog::canceled, this, [cancelled, &progress]() {
         cancelled->store(true);
         progress.setLabelText(QObject::tr("正在安全取消转换..."));
     });
     QEventLoop loop;
     connect(&watcher, &QFutureWatcher<ConversionOutcome>::finished, &loop, &QEventLoop::quit);
-    watcher.setFuture(QtConcurrent::run([sources, binaryPath, jsonPath, cancelled]() {
+    watcher.setFuture(QtConcurrent::run(
+        [sources, binaryPath, jsonPath, timestampUnit, timestampScale, cancelled]() {
         ConversionOutcome outcome;
         pat::UnifiedLogWriteOptions options;
+        options.timestampUnit = timestampUnit;
+        options.timestampScale = timestampScale;
         options.isCancelled = [cancelled]() { return cancelled->load(); };
         pat::UnifiedLogWriter writer;
         outcome.ok = writer.ConvertVmcFiles(sources, binaryPath, jsonPath, options,
@@ -597,7 +783,8 @@ void MainWindow::ImportVmcLog() {
         return outcome;
     }));
     progress.show();
-    loop.exec();
+    if (!watcher.isFinished()) loop.exec();
+    disconnect(cancelConnection);
     progress.close();
     const ConversionOutcome outcome = watcher.result();
     if (!outcome.ok) {
@@ -625,11 +812,17 @@ void MainWindow::ImportVmcLog() {
     if (chartArea_) chartArea_->ResetSessionView();
     BuildSignalTree();
     UpdateCharts();
-    UpdateStatus(tr("导入完成：%1 个流，%2 条记录，%3 个数据块，峰值写缓冲 %4 MiB")
+    UpdateStatus(tr("导入完成：%1 个流，%2 条记录，%3 个数据块，峰值写缓冲 %4 MiB%5%6")
                      .arg(outcome.result.streamCount)
                      .arg(outcome.result.routedRecordCount)
                      .arg(outcome.result.chunkCount)
-                     .arg(double(outcome.result.peakBufferedBytes) / (1024.0 * 1024.0), 0, 'f', 1));
+                     .arg(double(outcome.result.peakBufferedBytes) / (1024.0 * 1024.0), 0, 'f', 1)
+                     .arg(outcome.result.terminalMarkerBytes > 0
+                              ? tr("；已识别日志终止标记") : QString())
+                     .arg(outcome.result.discardedTailRecords > 0
+                              ? tr("；已忽略末尾残帧 %1 条，%2 字节（含填充）")
+                                    .arg(outcome.result.discardedTailRecords)
+                                    .arg(outcome.result.discardedTailBytes) : QString()));
 }
 
 void MainWindow::ExportRawFrames() {
@@ -678,7 +871,9 @@ void MainWindow::ExportRawFrames() {
     if (categoryIndex == 4) {
         options.category = pat::FrameCategory::SignalValue;
         QStringList names;
-        for (const auto& signal : formatDocument_.Format().signalFormats) names.append(signal.name);
+        for (const auto& signal : formatDocument_.Format().signalFormats) {
+            names.append(signal.QualifiedDisplayName());
+        }
         const QString chosen = QInputDialog::getItem(this, tr("分类字段"), tr("信号"),
                                                      names, 0, false, &accepted);
         if (!accepted) return;
@@ -746,7 +941,8 @@ void MainWindow::PreviewFrame() {
     for (qsizetype i = 0; i < values.size(); ++i) {
         const auto& signal = formatDocument_.Format().signalFormats[static_cast<size_t>(i)];
         rows.append(QStringLiteral("%1 = %2 %3")
-                        .arg(signal.name, QString::number(values[i], 'g', 17), signal.unit));
+                        .arg(signal.QualifiedDisplayName(), QString::number(values[i], 'g', 17),
+                             signal.unit));
     }
     QMessageBox::information(this, tr("解码预览"), rows.join('\n'));
 }
@@ -945,6 +1141,18 @@ void MainWindow::HandleSignalTreeItemChanged(QTreeWidgetItem* item, int column) 
 void MainWindow::UpdateCharts() {
 #ifdef PAT_ENABLE_QT_CHARTS
     if (!chartArea_) return;
+    const bool offlineAvailable = !liveMode_ && HasOfflineData();
+    if (timeRangeControl_) {
+        const QString unit = formatDocument_.Format().HasFraming()
+            ? tr("采样序号") : (mixedMode_ ? mixedDataSession_.TimeUnit() : dataSession_.TimeUnit());
+        timeRangeControl_->SetExtent(offlineAvailable ? OfflineStatistics().maxX : 0.0,
+                                     unit.isEmpty() ? QStringLiteral("s") : unit, offlineAvailable);
+        timeRangeControl_->SetSelection(mixedWindow_.minX, mixedWindow_.maxX);
+    }
+    if (trajectoryView_) {
+        trajectoryView_->SetTimeWindow(liveMode_ ? 0.0 : mixedWindow_.minX,
+            liveMode_ ? std::numeric_limits<double>::infinity() : mixedWindow_.maxX);
+    }
     if (!liveMode_ && mixedMode_ && mixedDataSession_.HasData()) {
         RequestMixedSignalsForCurrentView();
     } else if (mixedLoader_) {
@@ -1025,7 +1233,7 @@ void MainWindow::RequestMixedSignalsForCurrentView() {
                 definition.operation == pat::SeriesOperation::Difference ? 0 : 1});
         }
     }
-    mixedLoader_->Request(mixedDataSession_, required, spatial ? pat::MixedReadWindow{} : mixedWindow_, alignments);
+    mixedLoader_->Request(mixedDataSession_, required, mixedWindow_, alignments);
 }
 
 void MainWindow::UpdateStatus(const QString& text) {
@@ -1084,8 +1292,9 @@ void MainWindow::UpdateSignalSearchResults(const QString& query) {
     const auto& format = formatDocument_.Format();
     for (int i = 0; i < static_cast<int>(format.signalFormats.size()); ++i) {
         const auto& signal = format.signalFormats[static_cast<size_t>(i)];
-        const QString searchable = QStringLiteral("%1 %2 %3 %4")
-            .arg(signal.name, signal.description, signal.groupPath, signal.unit).toLower();
+        const QString searchable = QStringLiteral("%1 %2 %3 %4 %5")
+            .arg(signal.name, signal.DisplayName(), signal.description, signal.groupPath, signal.unit)
+            .toLower();
         bool matches = true;
         for (const auto& term : terms) {
             if (!searchable.contains(term)) { matches = false; break; }
@@ -1094,7 +1303,7 @@ void MainWindow::UpdateSignalSearchResults(const QString& query) {
         const QString detail = signal.unit.isEmpty() ? signal.description
             : tr("%1  [%2]").arg(signal.description, signal.unit);
         auto* item = new QTreeWidgetItem(signalSearchResults_,
-                                         {signal.name, signal.groupPath, detail});
+                                         {signal.DisplayName(), signal.groupPath, detail});
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable
                        | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
         item->setData(0, SignalTreeWidget::ITEM_TYPE_ROLE, SignalTreeWidget::ITEM_TYPE_SIGNAL);
@@ -1308,7 +1517,8 @@ void MainWindow::ShowSignalTransformDialog(int signalIndex) {
     if (!formatDocument_.HasFormat() || signalIndex < 0
         || signalIndex >= static_cast<int>(formatDocument_.Format().signalFormats.size())) return;
     const auto& signal = formatDocument_.Format().signalFormats[static_cast<size_t>(signalIndex)];
-    SignalTransformDialog dialog(signal.name, seriesProcessing_.Transform(signalIndex), this);
+    SignalTransformDialog dialog(signal.QualifiedDisplayName(),
+                                 seriesProcessing_.Transform(signalIndex), this);
     if (dialog.exec() != QDialog::Accepted) return;
     seriesProcessing_.SetTransform(signalIndex, dialog.Transform());
     UpdateCharts();
@@ -1512,7 +1722,9 @@ void MainWindow::StartSerialCapture() {
     followLatestCheck_->setChecked(true);
     if (liveFrameTable_) {
         QStringList headers = {tr("序号")};
-        for (const auto& signal : formatDocument_.Format().signalFormats) headers.append(signal.name);
+        for (const auto& signal : formatDocument_.Format().signalFormats) {
+            headers.append(signal.QualifiedDisplayName());
+        }
         liveFrameTable_->setColumnCount(headers.size());
         liveFrameTable_->setHorizontalHeaderLabels(headers);
         liveFrameTable_->setRowCount(0);

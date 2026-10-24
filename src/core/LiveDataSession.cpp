@@ -9,7 +9,7 @@ void LiveDataSession::Reset(const FormatDefinition& format, int maxSamplesPerSig
     series_.clear();
     series_.resize(static_cast<qsizetype>(format.signalFormats.size()));
     for (qsizetype i = 0; i < series_.size(); ++i) {
-        series_[i].name = format.signalFormats[static_cast<size_t>(i)].name;
+        series_[i].name = format.signalFormats[static_cast<size_t>(i)].QualifiedDisplayName();
         series_[i].unit = format.signalFormats[static_cast<size_t>(i)].unit;
     }
     maxSamplesPerSignal_ = std::max(1, maxSamplesPerSignal);

@@ -21,7 +21,7 @@ bool MixedDataSession::Open(const QString& path, const FormatDefinition& format,
     loadedBudget_ = 0;
     series_.resize(static_cast<qsizetype>(format.signalFormats.size()));
     for (int i = 0; i < series_.size(); ++i) {
-        series_[i].name = format.signalFormats[static_cast<size_t>(i)].name;
+        series_[i].name = format.signalFormats[static_cast<size_t>(i)].QualifiedDisplayName();
         series_[i].unit = format.signalFormats[static_cast<size_t>(i)].unit;
     }
     timeUnit_ = format.timeAxisUnit;

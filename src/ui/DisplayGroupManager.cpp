@@ -66,7 +66,7 @@ void DisplayGroupManager::UpdateGroups(const QVector<int>& checkedIndices, const
         QStringList names;
         for (int idx : group) {
             if (idx >= 0 && idx < static_cast<int>(format.signalFormats.size())) {
-                names.append(format.signalFormats[static_cast<size_t>(idx)].name);
+                names.append(format.signalFormats[static_cast<size_t>(idx)].QualifiedDisplayName());
             }
         }
         displayGroup.title = QObject::tr("合并: %1").arg(names.join(QStringLiteral(" + ")));
@@ -80,7 +80,7 @@ void DisplayGroupManager::UpdateGroups(const QVector<int>& checkedIndices, const
         group.signalIndices = {idx};
         group.merged = false;
         if (idx >= 0 && idx < static_cast<int>(format.signalFormats.size())) {
-            group.title = format.signalFormats[static_cast<size_t>(idx)].name;
+            group.title = format.signalFormats[static_cast<size_t>(idx)].QualifiedDisplayName();
             group.unit = format.signalFormats[static_cast<size_t>(idx)].unit;
         }
         groups_.append(group);

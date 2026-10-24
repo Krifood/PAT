@@ -2,8 +2,11 @@
 
 #include <QCryptographicHash>
 #include <QFile>
+#include <QFileInfo>
 #include <QSet>
 #include <QtEndian>
+
+#include <utility>
 
 namespace pat {
 namespace {
@@ -18,6 +21,38 @@ bool ReadExact(QFile& file, qint64 size, QByteArray& output, QString& errorMessa
         errorMessage = QStringLiteral("日志在偏移 0x%1 处截断：需要 %2 字节，实际 %3 字节")
                            .arg(file.pos() - output.size(), 0, 16).arg(size).arg(output.size());
         return false;
+    }
+    return true;
+}
+
+bool IsAllByte(QByteArrayView bytes, quint8 expected) {
+    for (char byte : bytes) {
+        if (quint8(byte) != expected) return false;
+    }
+    return true;
+}
+
+bool ConsumeFfTail(QFile& file, quint64& byteCount, QString& errorMessage,
+                   const VmcLogReader::CancelCheck& isCancelled) {
+    while (!file.atEnd()) {
+        if (isCancelled && isCancelled()) {
+            errorMessage = QStringLiteral("日志读取已取消");
+            return false;
+        }
+        const qint64 offset = file.pos();
+        const QByteArray tail = file.read(64 * 1024);
+        if (tail.isEmpty() && file.error() != QFileDevice::NoError) {
+            errorMessage = file.errorString();
+            return false;
+        }
+        for (qsizetype i = 0; i < tail.size(); ++i) {
+            if (quint8(tail[i]) != 0xFF) {
+                errorMessage = QStringLiteral("数据尾部包含非 FF 字节，偏移 0x%1")
+                                   .arg(offset + i, 0, 16);
+                return false;
+            }
+        }
+        byteCount += static_cast<quint64>(tail.size());
     }
     return true;
 }
@@ -153,7 +188,7 @@ bool VmcLogReader::ReadHeader(const QString& path, VmcSourceHeader& outHeader,
 
 bool VmcLogReader::VisitRecords(const QString& path, const VmcSourceHeader& header,
                                 const RecordVisitor& visitor, VmcReadSummary& outSummary,
-                                QString& errorMessage) const {
+                                QString& errorMessage, const CancelCheck& isCancelled) const {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly) || !file.seek(header.dataOffset)) {
         errorMessage = QStringLiteral("无法定位 VMC 数据区：%1").arg(path);
@@ -161,23 +196,14 @@ bool VmcLogReader::VisitRecords(const QString& path, const VmcSourceHeader& head
     }
     VmcReadSummary summary;
     while (!file.atEnd()) {
+        if (isCancelled && isCancelled()) {
+            errorMessage = QStringLiteral("日志读取已取消");
+            return false;
+        }
         const QByteArray marker = file.peek(1);
         if (marker.isEmpty()) break;
         if (quint8(marker[0]) == 0xFF) {
-            while (!file.atEnd()) {
-                const QByteArray tail = file.read(64 * 1024);
-                if (tail.isEmpty() && file.error() != QFileDevice::NoError) {
-                    errorMessage = file.errorString(); return false;
-                }
-                for (char byte : tail) {
-                    if (quint8(byte) != 0xFF) {
-                        errorMessage = QStringLiteral("数据尾部包含非 FF 字节，偏移 0x%1")
-                                           .arg(file.pos() - tail.size(), 0, 16);
-                        return false;
-                    }
-                }
-                summary.trailingFillBytes += static_cast<quint64>(tail.size());
-            }
+            if (!ConsumeFfTail(file, summary.trailingFillBytes, errorMessage, isCancelled)) return false;
             break;
         }
         const qint64 recordOffset = file.pos();
@@ -187,10 +213,37 @@ bool VmcLogReader::VisitRecords(const QString& path, const VmcSourceHeader& head
             errorMessage = QStringLiteral("数据帧同步字非法，偏移 0x%1").arg(recordOffset, 0, 16);
             return false;
         }
+        const quint16 candidateMessageId = qFromLittleEndian<quint16>(
+            reinterpret_cast<const uchar*>(fixed.constData() + 2));
+        const auto descriptorIt = header.descriptorByMessageId.constFind(candidateMessageId);
+        // Some HA/VMC loggers close the data region with a record-shaped sentinel:
+        // 5A, control/id, an all-FF timestamp and an FF payload length, followed only by FF.
+        // Require a known ID whose declared payload is not 255 bytes, then accept the marker
+        // exclusively at EOF; the same byte pattern in the middle remains corruption.
+        if (descriptorIt != header.descriptorByMessageId.constEnd()
+            && header.descriptors[*descriptorIt].payloadLength != 255
+            && IsAllByte(QByteArrayView(fixed).sliced(4, 9), 0xFF)) {
+            summary.terminalMarkerBytes = kRecordFixedSize;
+            if (!ConsumeFfTail(file, summary.trailingFillBytes, errorMessage, isCancelled)) return false;
+            break;
+        }
+        // Some loggers stop writing inside the timestamp. Only recover a known,
+        // non-255-byte message whose timestamp ends in FF and whose length is FF.
+        // Verify EVERY remaining byte before discarding this incomplete record;
+        // a matching pattern inside the data region is still corruption.
+        if (descriptorIt != header.descriptorByMessageId.constEnd()
+            && header.descriptors[*descriptorIt].payloadLength != 255
+            && quint8(fixed[11]) == 0xFF && quint8(fixed[12]) == 0xFF) {
+            quint64 tailBytes = 0;
+            if (!ConsumeFfTail(file, tailBytes, errorMessage, isCancelled)) return false;
+            summary.discardedTailRecords = 1;
+            summary.discardedTailBytes = kRecordFixedSize + tailBytes;
+            summary.discardedTailOffset = recordOffset;
+            break;
+        }
         VmcRecord record;
         record.sourceControl = quint8(fixed[1]);
-        record.messageId = qFromLittleEndian<quint16>(
-            reinterpret_cast<const uchar*>(fixed.constData() + 2));
+        record.messageId = candidateMessageId;
         record.timestamp = qFromBigEndian<quint64>(
             reinterpret_cast<const uchar*>(fixed.constData() + 4));
         record.sourceSequence = summary.recordCount;
@@ -198,7 +251,6 @@ bool VmcLogReader::VisitRecords(const QString& path, const VmcSourceHeader& head
         if (!ReadExact(file, payloadLength, record.payload, errorMessage)) return false;
 
         const VmcStreamDescriptor* descriptor = nullptr;
-        const auto descriptorIt = header.descriptorByMessageId.constFind(record.messageId);
         if (descriptorIt != header.descriptorByMessageId.constEnd()) {
             descriptor = &header.descriptors[*descriptorIt];
             if (descriptor->payloadLength != payloadLength) {
@@ -219,6 +271,39 @@ bool VmcLogReader::VisitRecords(const QString& path, const VmcSourceHeader& head
         }
     }
     outSummary = summary;
+    return true;
+}
+
+bool VmcLogReader::Inspect(const QString& path, VmcLogInspection& outInspection,
+                           QString& errorMessage, const CancelCheck& isCancelled) const {
+    VmcSourceHeader header;
+    if (!ReadHeader(path, header, errorMessage)) return false;
+
+    VmcLogInspection inspection;
+    inspection.sourceBytes = QFileInfo(path).size();
+    inspection.descriptorCount = header.descriptors.size();
+    for (const auto& descriptor : header.descriptors) {
+        inspection.fieldCount += descriptor.fields.size();
+    }
+    QSet<quint16> activeStreams;
+    VmcReadSummary summary;
+    const bool visited = VisitRecords(
+        path, header,
+        [&](const VmcRecord& record, const VmcStreamDescriptor* descriptor) {
+            if (isCancelled && isCancelled()) return false;
+            if (descriptor) {
+                activeStreams.insert(record.messageId);
+                inspection.estimatedConvertedDataBytes += quint64(15 + record.payload.size());
+            }
+            return true;
+        }, summary, errorMessage, isCancelled);
+    if (!visited) {
+        if (isCancelled && isCancelled()) errorMessage = QStringLiteral("日志扫描已取消");
+        return false;
+    }
+    inspection.activeStreamCount = activeStreams.size();
+    inspection.summary = summary;
+    outInspection = std::move(inspection);
     return true;
 }
 

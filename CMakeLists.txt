@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ParamAnalysisTool
-  VERSION 0.1.0
+  VERSION 0.1.1
   LANGUAGES CXX
 )
 
@@ -80,6 +80,7 @@ if(PAT_BUILD_GUI)
     src/ui/SignalTreeWidget.cpp
     src/ui/SignalProcessingDialogs.cpp
     src/ui/TrajectoryView.cpp
+    src/ui/TimeRangeControl.cpp
     src/ui/app_resources.qrc
   )
   add_executable(pat_app WIN32 src/ui/main.cpp ${PAT_UI_SOURCES})
@@ -151,6 +152,7 @@ if(PAT_BUILD_GUI)
     set_target_properties(pat_app PROPERTIES
       MACOSX_BUNDLE TRUE
       MACOSX_BUNDLE_BUNDLE_NAME "PAT"
+      MACOSX_BUNDLE_GUI_IDENTIFIER "com.krifood.pat"
       MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
       MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
       INSTALL_RPATH "${PAT_QT_LIB_DIR}"

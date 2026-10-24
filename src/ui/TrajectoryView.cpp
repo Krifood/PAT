@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCompleter>
 #include <QDataStream>
 #include <QDrag>
 #include <QDragEnterEvent>
@@ -10,6 +11,7 @@
 #include <QDropEvent>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QMouseEvent>
@@ -18,6 +20,7 @@
 #include <QPen>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSet>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSplitter>
@@ -62,6 +65,35 @@ int CoordinateScore(const QString& name, bool longitude, bool latitude, bool alt
     if (score >= 0 && normalized.contains(QStringLiteral("组合"))) score += 40;
     else if (score >= 0 && normalized.contains(QStringLiteral("gnss"))) score += 20;
     return score;
+}
+
+int SelectedSignal(const QComboBox* combo) {
+    if (!combo || combo->currentIndex() < 0) return -1;
+    bool ok = false;
+    const int signal = combo->currentData().toInt(&ok);
+    return ok ? signal : -1;
+}
+
+bool SignalInGroup(const pat::SignalFormat& signal, const QString& groupPath) {
+    if (groupPath.isEmpty()) return true;
+    const QString signalGroup = signal.groupPath.trimmed();
+    return signalGroup == groupPath || signalGroup.startsWith(groupPath + QLatin1Char('/'));
+}
+
+void ConfigureSearchableCombo(QComboBox* combo, const QString& placeholder) {
+    if (!combo) return;
+    combo->setEditable(true);
+    combo->setInsertPolicy(QComboBox::NoInsert);
+    combo->setMaxVisibleItems(24);
+    combo->setMinimumContentsLength(14);
+    combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    combo->lineEdit()->setPlaceholderText(placeholder);
+    if (auto* completer = combo->completer()) {
+        completer->setCaseSensitivity(Qt::CaseInsensitive);
+        completer->setCompletionMode(QCompleter::PopupCompletion);
+        completer->setFilterMode(Qt::MatchContains);
+        completer->setMaxVisibleItems(24);
+    }
 }
 
 void SetPaddedRange(QValueAxis* axis, double minimum, double maximum) {
@@ -347,8 +379,7 @@ qsizetype TrajectoryPlotWidget::HistoryPointCount(int trackIndex) const {
 QVector<int> TrajectoryPlotWidget::SelectedSignalIndices() const {
     QVector<int> indices;
     const auto append = [&indices](const QComboBox* combo) {
-        if (!combo) return;
-        const int index = combo->currentData().toInt();
+        const int index = SelectedSignal(combo);
         if (index >= 0 && !indices.contains(index)) indices.append(index);
     };
     for (const auto& track : tracks_) {
@@ -362,8 +393,8 @@ QVector<int> TrajectoryPlotWidget::SelectedSignalIndices() const {
 QVector<QVector<int>> TrajectoryPlotWidget::SelectedSignalGroups() const {
     QVector<QVector<int>> result;
     for (const auto& track : tracks_) {
-        QVector<int> group{track.xCombo->currentData().toInt(), track.yCombo->currentData().toInt()};
-        if (track.zCombo) group.append(track.zCombo->currentData().toInt());
+        QVector<int> group{SelectedSignal(track.xCombo), SelectedSignal(track.yCombo)};
+        if (track.zCombo) group.append(SelectedSignal(track.zCombo));
         bool valid = true;
         for (int i = 0; i < group.size(); ++i) {
             valid = valid && group[i] >= 0;
@@ -419,7 +450,7 @@ int TrajectoryPlotWidget::BestSignal(bool longitude, bool latitude, bool altitud
     int best = -1;
     int bestScore = -1;
     for (int i = 0; i < static_cast<int>(format_.signalFormats.size()); ++i) {
-        const int score = CoordinateScore(format_.signalFormats[static_cast<size_t>(i)].name,
+        const int score = CoordinateScore(format_.signalFormats[static_cast<size_t>(i)].DisplayName(),
                                           longitude, latitude, altitude);
         if (score > bestScore) {
             bestScore = score;
@@ -438,10 +469,13 @@ void TrajectoryPlotWidget::AddTrack(const TrackSnapshot* snapshot) {
     auto* rowLayout = new QHBoxLayout(track.row);
     rowLayout->setContentsMargins(0, 0, 0, 0);
     track.label = new QLabel(tr("轨迹 %1").arg(tracks_.size() + 1), track.row);
+    track.groupCombo = new QComboBox(track.row);
     track.xCombo = new QComboBox(track.row);
     track.yCombo = new QComboBox(track.row);
     if (dimension_ == TrajectoryDimension::ThreeD) track.zCombo = new QComboBox(track.row);
     const bool primary = plotId_ == 0 && track.id == 0;
+    track.groupCombo->setObjectName(primary ? QStringLiteral("trajectoryGroupCombo")
+                                            : QStringLiteral("trajectoryGroupCombo_%1_%2").arg(plotId_).arg(track.id));
     track.xCombo->setObjectName(primary ? QStringLiteral("trajectoryXCombo")
                                         : QStringLiteral("trajectoryXCombo_%1_%2").arg(plotId_).arg(track.id));
     track.yCombo->setObjectName(primary ? QStringLiteral("trajectoryYCombo")
@@ -450,7 +484,13 @@ void TrajectoryPlotWidget::AddTrack(const TrackSnapshot* snapshot) {
         track.zCombo->setObjectName(primary ? QStringLiteral("trajectoryZCombo")
                                             : QStringLiteral("trajectoryZCombo_%1_%2").arg(plotId_).arg(track.id));
     }
+    ConfigureSearchableCombo(track.groupCombo, tr("搜索分组"));
+    ConfigureSearchableCombo(track.xCombo, tr("搜索 X 信号"));
+    ConfigureSearchableCombo(track.yCombo, tr("搜索 Y 信号"));
+    ConfigureSearchableCombo(track.zCombo, tr("搜索 Z 信号"));
     rowLayout->addWidget(track.label);
+    rowLayout->addWidget(new QLabel(tr("分组"), track.row));
+    rowLayout->addWidget(track.groupCombo, 1);
     rowLayout->addWidget(new QLabel(tr("X"), track.row));
     rowLayout->addWidget(track.xCombo, 1);
     rowLayout->addWidget(new QLabel(tr("Y"), track.row));
@@ -475,6 +515,10 @@ void TrajectoryPlotWidget::AddTrack(const TrackSnapshot* snapshot) {
     connect(track.xCombo, &QComboBox::currentIndexChanged, this, changed);
     connect(track.yCombo, &QComboBox::currentIndexChanged, this, changed);
     if (track.zCombo) connect(track.zCombo, &QComboBox::currentIndexChanged, this, changed);
+    connect(track.groupCombo, &QComboBox::currentIndexChanged, this,
+            [this, trackId](int index) {
+        if (index >= 0) HandleTrackGroupChanged(trackId);
+    });
     connect(removeTrackButton, &QToolButton::clicked, this, [this, trackId]() { RemoveTrack(trackId); });
     PopulateTrackCombos(tracks_.last(), snapshot);
     if (snapshot) {
@@ -507,29 +551,104 @@ void TrajectoryPlotWidget::RemoveTrack(int trackId) {
 }
 
 void TrajectoryPlotWidget::PopulateTrackCombos(TrackState& track, const TrackSnapshot* snapshot) {
+    const int x = snapshot ? snapshot->xSignal : BestSignal(true, false, false);
+    const int y = snapshot ? snapshot->ySignal : BestSignal(false, true, false);
+    const int z = snapshot ? snapshot->zSignal : BestSignal(false, false, true);
+
+    QSignalBlocker blockGroup(track.groupCombo);
+    track.groupCombo->clear();
+    track.groupCombo->addItem(tr("全部分组 (%1)").arg(format_.signalFormats.size()), QString());
+    QSet<QString> groupPaths;
+    for (const auto& signal : format_.signalFormats) {
+        const QString path = signal.groupPath.trimmed();
+        if (path.isEmpty()) continue;
+        const QStringList parts = path.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        QString prefix;
+        for (const auto& part : parts) {
+            prefix = prefix.isEmpty() ? part : prefix + QLatin1Char('/') + part;
+            groupPaths.insert(prefix);
+        }
+    }
+    QStringList sortedGroups = groupPaths.values();
+    sortedGroups.sort(Qt::CaseInsensitive);
+    for (const auto& path : sortedGroups) {
+        int count = 0;
+        for (const auto& signal : format_.signalFormats) {
+            if (SignalInGroup(signal, path)) ++count;
+        }
+        const QString description = format_.groupDescriptions.value(path).trimmed();
+        const QString label = description.isEmpty()
+            ? tr("%1 (%2)").arg(path).arg(count)
+            : tr("%1 — %2 (%3)").arg(path, description).arg(count);
+        track.groupCombo->addItem(label, path);
+        track.groupCombo->setItemData(track.groupCombo->count() - 1, path, Qt::ToolTipRole);
+    }
+
+    QString commonGroup;
+    bool commonGroupKnown = false;
+    bool sameGroup = true;
+    for (int signalIndex : {x, y, track.zCombo ? z : -1}) {
+        if (signalIndex < 0 || signalIndex >= static_cast<int>(format_.signalFormats.size())) continue;
+        const QString group = format_.signalFormats[static_cast<size_t>(signalIndex)].groupPath.trimmed();
+        if (!commonGroupKnown) {
+            commonGroup = group;
+            commonGroupKnown = true;
+        } else if (group != commonGroup) {
+            sameGroup = false;
+        }
+    }
+    const int groupIndex = sameGroup && commonGroupKnown
+        ? track.groupCombo->findData(commonGroup) : 0;
+    track.groupCombo->setCurrentIndex(groupIndex >= 0 ? groupIndex : 0);
+    PopulateCoordinateCombos(track, x, y, z);
+}
+
+void TrajectoryPlotWidget::PopulateCoordinateCombos(TrackState& track, int xSignal,
+                                                     int ySignal, int zSignal) {
     QSignalBlocker blockX(track.xCombo);
     QSignalBlocker blockY(track.yCombo);
     std::unique_ptr<QSignalBlocker> blockZ;
     if (track.zCombo) blockZ = std::make_unique<QSignalBlocker>(track.zCombo);
-    const auto fill = [this](QComboBox* combo) {
+    const QString selectedGroup = track.groupCombo->currentIndex() >= 0
+        ? track.groupCombo->currentData().toString() : QString();
+    const auto fill = [this, &selectedGroup](QComboBox* combo) {
         if (!combo) return;
         combo->clear();
         combo->addItem(tr("请选择..."), -1);
         for (int i = 0; i < static_cast<int>(format_.signalFormats.size()); ++i) {
             const auto& signal = format_.signalFormats[static_cast<size_t>(i)];
-            combo->addItem(signal.unit.isEmpty() ? signal.name
-                : tr("%1 (%2)").arg(signal.name, signal.unit), i);
+            if (!SignalInGroup(signal, selectedGroup)) continue;
+            const QString name = selectedGroup.isEmpty()
+                ? signal.QualifiedDisplayName() : signal.DisplayName();
+            const QString label = signal.unit.isEmpty() ? name
+                : tr("%1 (%2)").arg(name, signal.unit);
+            combo->addItem(label, i);
+            const QString tooltip = signal.description.trimmed().isEmpty()
+                ? signal.groupPath : tr("%1\n%2").arg(signal.groupPath, signal.description);
+            combo->setItemData(combo->count() - 1, tooltip, Qt::ToolTipRole);
         }
     };
     fill(track.xCombo);
     fill(track.yCombo);
     fill(track.zCombo);
-    const int x = snapshot ? snapshot->xSignal : BestSignal(true, false, false);
-    const int y = snapshot ? snapshot->ySignal : BestSignal(false, true, false);
-    const int z = snapshot ? snapshot->zSignal : BestSignal(false, false, true);
-    track.xCombo->setCurrentIndex(std::max(0, track.xCombo->findData(x)));
-    track.yCombo->setCurrentIndex(std::max(0, track.yCombo->findData(y)));
-    if (track.zCombo) track.zCombo->setCurrentIndex(std::max(0, track.zCombo->findData(z)));
+    track.xCombo->setCurrentIndex(std::max(0, track.xCombo->findData(xSignal)));
+    track.yCombo->setCurrentIndex(std::max(0, track.yCombo->findData(ySignal)));
+    if (track.zCombo) track.zCombo->setCurrentIndex(std::max(0, track.zCombo->findData(zSignal)));
+}
+
+void TrajectoryPlotWidget::HandleTrackGroupChanged(int trackId) {
+    for (auto& track : tracks_) {
+        if (track.id != trackId) continue;
+        const int x = SelectedSignal(track.xCombo);
+        const int y = SelectedSignal(track.yCombo);
+        const int z = SelectedSignal(track.zCombo);
+        PopulateCoordinateCombos(track, x, y, z);
+        ResetTrackHistory(trackId);
+        emit SignalsChanged();
+        CaptureData();
+        Render();
+        return;
+    }
 }
 
 void TrajectoryPlotWidget::ResetTrackHistory(int trackId) {
@@ -592,9 +711,9 @@ QString TrajectoryPlotWidget::TrackName(const TrackState& track) const {
 void TrajectoryPlotWidget::CaptureData() {
     if (!source_) return;
     for (auto& track : tracks_) {
-        const int x = track.xCombo ? track.xCombo->currentData().toInt() : -1;
-        const int y = track.yCombo ? track.yCombo->currentData().toInt() : -1;
-        const int z = track.zCombo ? track.zCombo->currentData().toInt() : -1;
+        const int x = SelectedSignal(track.xCombo);
+        const int y = SelectedSignal(track.yCombo);
+        const int z = SelectedSignal(track.zCombo);
         if (x < 0 || y < 0 || x >= source_->size() || y >= source_->size() || x == y) continue;
         if (dimension_ == TrajectoryDimension::TwoD) {
             const auto paired = pat::PairTrajectorySamplesWithKeys(source_->at(x), source_->at(y), pairing_);
@@ -631,6 +750,24 @@ void TrajectoryPlotWidget::Render() {
     else Render3D();
 }
 
+void TrajectoryPlotWidget::SetTimeWindow(double start, double end) {
+    windowStart_ = start;
+    windowEnd_ = end;
+    Render();
+}
+
+bool TrajectoryPlotWidget::InTimeWindow(double sampleKey, int xSignal) const {
+    double time = sampleKey;
+    if (pairing_ == pat::TrajectoryPairing::RecordOrder && source_
+        && xSignal >= 0 && xSignal < source_->size()) {
+        const auto& samples = source_->at(xSignal).samples;
+        const qsizetype index = static_cast<qsizetype>(sampleKey);
+        if (index < 0 || index >= samples.size()) return false;
+        time = samples[index].x();
+    }
+    return time >= windowStart_ && time <= windowEnd_;
+}
+
 void TrajectoryPlotWidget::Render2D() {
     if (!chartView_ || !xAxis_ || !yAxis_) return;
     Ensure2DSeries();
@@ -640,13 +777,14 @@ void TrajectoryPlotWidget::Render2D() {
     qsizetype drawnCount = 0;
     for (int i = 0; i < tracks_.size(); ++i) {
         auto& track = tracks_[i];
-        const int xSignal = track.xCombo->currentData().toInt();
-        const int ySignal = track.yCombo->currentData().toInt();
+        const int xSignal = SelectedSignal(track.xCombo);
+        const int ySignal = SelectedSignal(track.yCombo);
         const auto xTransform = transforms_.value(xSignal, pat::DisplayTransform{});
         const auto yTransform = transforms_.value(ySignal, pat::DisplayTransform{});
         QVector<QPointF> displayed;
         displayed.reserve(track.history2D.size());
         for (const auto& sample : track.history2D) {
+            if (!InTimeWindow(sample.sampleKey, xSignal)) continue;
             const QPointF point(xTransform.Apply(sample.value.x()),
                                 yTransform.Apply(sample.value.y()));
             displayed.append(point);
@@ -678,9 +816,9 @@ void TrajectoryPlotWidget::Render2D() {
         SetPaddedRange(yAxis_, minY, maxY);
     }
     status_->setText(hasRange
-        ? tr("%1 条轨迹；历史点 %2；绘制点 %3；边界操作不清除历史")
+        ? tr("%1 条轨迹；区间点 %2；绘制点 %3")
               .arg(tracks_.size()).arg(historyCount).arg(drawnCount)
-        : tr("等待所选 X/Y 数据列在同一采样点出现有效值"));
+        : tr("当前区间没有有效的 X/Y 配对数据"));
 }
 
 void TrajectoryPlotWidget::Render3D() {
@@ -690,15 +828,16 @@ void TrajectoryPlotWidget::Render3D() {
     qsizetype drawnCount = 0;
     for (int i = 0; i < tracks_.size(); ++i) {
         const auto& track = tracks_[i];
-        const int xSignal = track.xCombo->currentData().toInt();
-        const int ySignal = track.yCombo->currentData().toInt();
-        const int zSignal = track.zCombo ? track.zCombo->currentData().toInt() : -1;
+        const int xSignal = SelectedSignal(track.xCombo);
+        const int ySignal = SelectedSignal(track.yCombo);
+        const int zSignal = SelectedSignal(track.zCombo);
         const auto xTransform = transforms_.value(xSignal, pat::DisplayTransform{});
         const auto yTransform = transforms_.value(ySignal, pat::DisplayTransform{});
         const auto zTransform = transforms_.value(zSignal, pat::DisplayTransform{});
         QVector<pat::TrajectoryPoint3D> displayed;
         displayed.reserve(track.history3D.size());
         for (const auto& point : track.history3D) {
+            if (!InTimeWindow(point.sampleKey, xSignal)) continue;
             displayed.append({point.sampleKey, xTransform.Apply(point.x),
                               yTransform.Apply(point.y), zTransform.Apply(point.z)});
         }
@@ -711,9 +850,9 @@ void TrajectoryPlotWidget::Render3D() {
     }
     canvas3D_->SetTracks(std::move(rendered));
     status_->setText(historyCount > 0
-        ? tr("%1 条三维轨迹；历史点 %2；绘制点 %3；三轴分别归一化")
+        ? tr("%1 条三维轨迹；区间点 %2；绘制点 %3；三轴分别归一化")
               .arg(tracks_.size()).arg(historyCount).arg(drawnCount)
-        : tr("等待所选 X/Y/Z 数据列在同一采样点出现有效值"));
+        : tr("当前区间没有有效的 X/Y/Z 配对数据"));
 }
 
 void TrajectoryPlotWidget::ResetHistory() {
@@ -729,8 +868,8 @@ QVector<TrajectoryPlotWidget::TrackSnapshot> TrajectoryPlotWidget::Snapshots() c
     QVector<TrackSnapshot> result;
     result.reserve(tracks_.size());
     for (const auto& track : tracks_) {
-        result.append({track.xCombo->currentData().toInt(), track.yCombo->currentData().toInt(),
-                       track.zCombo ? track.zCombo->currentData().toInt() : -1,
+        result.append({SelectedSignal(track.xCombo), SelectedSignal(track.yCombo),
+                       SelectedSignal(track.zCombo),
                        track.history2D, track.history3D, track.lastSampleKey});
     }
     return result;
@@ -894,6 +1033,7 @@ TrajectoryPlotWidget* TrajectoryView::AddPlot(TrajectoryDimension dimension) {
     plot->SetDataSource(source_, pairing_);
     plot->SetDisplayTransforms(transforms_);
     plot->SetTheme(theme_);
+    plot->SetTimeWindow(windowStart_, windowEnd_);
     connect(plot, &TrajectoryPlotWidget::RemoveRequested, this, &TrajectoryView::RemovePlot);
     connect(plot, &TrajectoryPlotWidget::SignalsChanged, this, &TrajectoryView::SignalsChanged);
     connect(plot, &TrajectoryPlotWidget::MergeRequested, this,
@@ -1003,6 +1143,12 @@ void TrajectoryView::SetDataSource(const QVector<pat::Series>* series,
     pairing_ = pairing;
     for (auto* plot : plots_) plot->SetDataSource(source_, pairing_);
     RequestRefresh();
+}
+
+void TrajectoryView::SetTimeWindow(double start, double end) {
+    windowStart_ = start;
+    windowEnd_ = end;
+    for (auto* plot : plots_) plot->SetTimeWindow(start, end);
 }
 
 void TrajectoryView::SetDisplayTransforms(

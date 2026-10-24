@@ -108,7 +108,7 @@ bool IndexedMixedReader::ReadAlignedSignals(const QVector<int>& indices, qsizety
         single.recordSize = stream->payloadLength;
         single.endianness = stream->endianness;
         single.signalFormats.push_back(format_.signalFormats[size_t(flat)]);
-        result.series[flat].name = single.signalFormats[0].name;
+        result.series[flat].name = single.signalFormats[0].QualifiedDisplayName();
         result.series[flat].unit = single.signalFormats[0].unit;
         cursor.decoder = std::make_unique<RecordDecoder>(single);
         quint64 records = 0;

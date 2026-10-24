@@ -18,6 +18,9 @@
 #include <QBuffer>
 #include <QCryptographicHash>
 #include <QTemporaryDir>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <QtEndian>
 #include <QtTest>
 
@@ -108,8 +111,139 @@ private slots:
     void mixedWindowQueriesAndAlignment();
     void indexedFixedRecordsAndCrossStreamPairing();
     void vmcProvidedSampleRegression();
+    void vmcHaSampleRegression();
+    void vmcPartialTailRecovery();
+    void vmcKangdingSampleRegression_data();
+    void vmcKangdingSampleRegression();
     void vmcTwentyFoldStress();
 };
+
+void CoreTests::vmcPartialTailRecovery() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QByteArray prefix = SyntheticVmcLog(5, false);
+    prefix.chop(17);
+    const QByteArray partial = QByteArray::fromHex("5a80123400000121f148ffffff");
+    QByteArray tail = partial;
+    tail[2] = char(0x23); tail[3] = char(0x01); // Known sensor message.
+    tail.append(QByteArray(53, char(0xFF)));
+    const auto writeSource = [&](const QByteArray& bytes) {
+        QFile file(dir.filePath("source.bin"));
+        if (!file.open(QIODevice::WriteOnly)) return false;
+        return file.write(bytes) == bytes.size();
+    };
+    const QString path = dir.filePath("source.bin");
+    QString error;
+    pat::VmcLogReader reader;
+    pat::VmcLogInspection inspected;
+    QVERIFY(writeSource(prefix + tail));
+    QVERIFY2(reader.Inspect(path, inspected, error), qPrintable(error));
+    QCOMPARE(inspected.summary.recordCount, quint64(5));
+    QCOMPARE(inspected.summary.discardedTailRecords, quint64(1));
+    QCOMPARE(inspected.summary.discardedTailBytes, quint64(tail.size()));
+    QCOMPARE(inspected.summary.discardedTailOffset, qint64(prefix.size()));
+    QCOMPARE(inspected.summary.terminalMarkerBytes, quint64(0));
+    QCOMPARE(inspected.summary.trailingFillBytes, quint64(0));
+
+    pat::UnifiedLogWriter writer;
+    pat::UnifiedLogWriteResult converted;
+    const QString bin = dir.filePath("out.patbin"), json = dir.filePath("out.json");
+    QVERIFY2(writer.ConvertVmcFiles({path, path}, bin, json, {}, converted, error), qPrintable(error));
+    QCOMPARE(converted.sourceRecordCount, quint64(10));
+    QCOMPARE(converted.discardedTailRecords, quint64(2));
+    QCOMPARE(converted.discardedTailBytes, quint64(2 * tail.size()));
+    QFile jsonFile(json);
+    QVERIFY(jsonFile.open(QIODevice::ReadOnly));
+    const auto root = QJsonDocument::fromJson(jsonFile.readAll()).object();
+    const auto segments = root.value("source_segments").toArray();
+    QCOMPARE(segments.size(), 2);
+    for (const auto& value : segments) {
+        const auto segment = value.toObject();
+        QCOMPARE(segment.value("discarded_tail_records").toInteger(), qint64(1));
+        QCOMPARE(segment.value("discarded_tail_bytes").toInteger(), qint64(tail.size()));
+        QCOMPARE(segment.value("discarded_tail_offset").toInteger(), qint64(prefix.size()));
+    }
+    pat::FormatDefinition format;
+    QVERIFY2(pat::LoadFormatFromJson(json, format, error), qPrintable(error));
+    pat::MixedDataSession session;
+    QVERIFY2(session.Open(bin, format, error), qPrintable(error));
+    QCOMPARE(session.RecordCount(), quint64(10));
+    QVERIFY2(session.LoadSignals({0}, error), qPrintable(error));
+    QFile original(path);
+    QVERIFY(original.open(QIODevice::ReadOnly));
+    QCOMPARE(original.readAll(), prefix + tail);
+    original.close();
+
+    // A single non-FF byte, even beyond the first tail-read block, is corruption.
+    QVERIFY(writeSource(prefix + tail + QByteArray(65536, char(0xFF)) + char(0)));
+    QVERIFY(!reader.Inspect(path, inspected, error));
+    QVERIFY(error.contains(QStringLiteral("非 FF")));
+    QVERIFY(!writer.ConvertVmcFiles({path}, dir.filePath("bad.patbin"),
+                                    dir.filePath("bad.json"), {}, converted, error));
+    QVERIFY(!QFileInfo::exists(dir.filePath("bad.patbin")));
+    // An unknown ID, a non-FF timestamp end, or an ordinary truncated record is not recoverable.
+    QByteArray unknown = tail; unknown[2] = char(0xFE);
+    QVERIFY(writeSource(prefix + unknown));
+    QVERIFY(!reader.Inspect(path, inspected, error));
+    QByteArray noTimestampTail = tail; noTimestampTail[11] = char(0x01);
+    QVERIFY(writeSource(prefix + noTimestampTail));
+    QVERIFY(!reader.Inspect(path, inspected, error));
+    QVERIFY(writeSource(prefix.left(prefix.size() - 1)));
+    QVERIFY(!reader.Inspect(path, inspected, error));
+    // Cancellation is also observed while validating a long FF suffix.
+    QVERIFY(writeSource(prefix + tail + QByteArray(200000, char(0xFF))));
+    int checks = 0;
+    QVERIFY(!reader.Inspect(path, inspected, error, [&] { return ++checks > 13; }));
+    QVERIFY(error.contains(QStringLiteral("取消")));
+    pat::UnifiedLogWriteOptions options;
+    options.isCancelled = [] { return true; };
+    QVERIFY(!writer.ConvertVmcFiles({path}, dir.filePath("cancel.patbin"),
+                                    dir.filePath("cancel.json"), options, converted, error));
+    QVERIFY(!QFileInfo::exists(dir.filePath("cancel.patbin")));
+}
+
+void CoreTests::vmcKangdingSampleRegression_data() {
+    QTest::addColumn<QString>("name");
+    QTest::addColumn<quint64>("records");
+    QTest::addColumn<qint64>("offset");
+    QTest::newRow("driving") << QStringLiteral("康定1024开车数据.bin") << quint64(1311942) << qint64(0x2e59ff8);
+    QTest::newRow("hovering") << QStringLiteral("康定1024悬停数据.bin") << quint64(1280944) << qint64(0x2d41ff6);
+}
+
+void CoreTests::vmcKangdingSampleRegression() {
+    QFETCH(QString, name);
+    QFETCH(quint64, records);
+    QFETCH(qint64, offset);
+    const QString path = QString::fromUtf8(PAT_SOURCE_DIR) + "/samples/ha_log/" + name;
+    if (!QFileInfo::exists(path)) QSKIP("optional Kangding sample is not present");
+    QString error;
+    pat::VmcLogInspection inspected;
+    pat::VmcLogReader reader;
+    QVERIFY2(reader.Inspect(path, inspected, error), qPrintable(error));
+    QCOMPARE(inspected.summary.recordCount, records);
+    QCOMPARE(inspected.summary.discardedTailRecords, quint64(1));
+    QCOMPARE(inspected.summary.discardedTailOffset, offset);
+    QCOMPARE(inspected.summary.discardedTailBytes, quint64(QFileInfo(path).size() - offset));
+    if (qEnvironmentVariable("PAT_RUN_KANGDING_CONVERSION_TEST") != QStringLiteral("1")) return;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    pat::UnifiedLogWriter writer;
+    pat::UnifiedLogWriteOptions options;
+    options.timestampUnit = "s";
+    options.timestampScale = 1e-9;
+    pat::UnifiedLogWriteResult converted;
+    const QString bin = dir.filePath("out.patbin"), json = dir.filePath("out.json");
+    QVERIFY2(writer.ConvertVmcFiles({path}, bin, json, options, converted, error), qPrintable(error));
+    QCOMPARE(converted.sourceRecordCount, records);
+    QCOMPARE(converted.discardedTailRecords, quint64(1));
+    QCOMPARE(converted.discardedTailBytes, inspected.summary.discardedTailBytes);
+    pat::FormatDefinition format;
+    QVERIFY2(pat::LoadFormatFromJson(json, format, error), qPrintable(error));
+    pat::MixedDataSession session;
+    QVERIFY2(session.Open(bin, format, error), qPrintable(error));
+    QCOMPARE(session.RecordCount(), inspected.summary.routedRecordCount);
+    QVERIFY2(session.LoadSignals({0}, error), qPrintable(error));
+}
 
 void CoreTests::vmcTwentyFoldStress() {
     if (qEnvironmentVariable("PAT_RUN_LARGE_VMC_TEST") != QStringLiteral("1")) {
@@ -225,6 +359,54 @@ void CoreTests::vmcProvidedSampleRegression() {
     QVERIFY(qAbs(session.Series()[abz].samples.first().y() - (-9.75662)) < 1e-4);
 }
 
+void CoreTests::vmcHaSampleRegression() {
+    const QString sourcePath = QString::fromUtf8(PAT_SOURCE_DIR)
+        + QStringLiteral("/samples/ha_log/log_203_data_2026_09_22__11_16_12.bin");
+    if (!QFileInfo::exists(sourcePath)) QSKIP("optional HA sample is not present");
+    pat::VmcLogReader reader;
+    pat::VmcLogInspection inspection;
+    QString error;
+    QVERIFY2(reader.Inspect(sourcePath, inspection, error), qPrintable(error));
+    QCOMPARE(inspection.sourceBytes, qint64(333585314));
+    QCOMPARE(inspection.descriptorCount, 55);
+    QCOMPARE(inspection.fieldCount, 587);
+    QCOMPARE(inspection.activeStreamCount, 47);
+    QCOMPARE(inspection.summary.recordCount, quint64(9114441));
+    QCOMPARE(inspection.summary.routedRecordCount, quint64(9114297));
+    QCOMPARE(inspection.summary.metadataRecordCount, quint64(144));
+    QCOMPARE(inspection.summary.terminalMarkerBytes, quint64(13));
+    QCOMPARE(inspection.summary.trailingFillBytes, quint64(921));
+    QCOMPARE(inspection.estimatedConvertedDataBytes, quint64(351800531));
+    if (qEnvironmentVariable("PAT_RUN_HA_CONVERSION_TEST") != QStringLiteral("1")) return;
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString binPath = dir.filePath(QStringLiteral("ha-sample.patbin"));
+    const QString jsonPath = dir.filePath(QStringLiteral("ha-sample.json"));
+    pat::UnifiedLogWriteOptions options;
+    options.timestampUnit = QStringLiteral("s");
+    options.timestampScale = 1e-9;
+    pat::UnifiedLogWriteResult result;
+    pat::UnifiedLogWriter writer;
+    QVERIFY2(writer.ConvertVmcFiles({sourcePath}, binPath, jsonPath, options, result, error),
+             qPrintable(error));
+    QCOMPARE(result.streamCount, 55);
+    QCOMPARE(result.sourceRecordCount, quint64(9114441));
+    QCOMPARE(result.routedRecordCount, quint64(9114297));
+    QCOMPARE(result.metadataRecordCount, quint64(144));
+    QCOMPARE(result.terminalMarkerBytes, quint64(13));
+    QCOMPARE(result.trailingFillBytes, quint64(921));
+
+    pat::FormatDefinition format;
+    QVERIFY2(pat::LoadFormatFromJson(jsonPath, format, error), qPrintable(error));
+    QVERIFY(format.timestampScaleKnown);
+    QCOMPARE(format.timestampUnit, QStringLiteral("s"));
+    QCOMPARE(format.timestampScale, 1e-9);
+    pat::MixedDataSession session;
+    QVERIFY2(session.Open(binPath, format, error), qPrintable(error));
+    QCOMPARE(session.RecordCount(), quint64(9114297));
+}
+
 void CoreTests::vmcReaderAndUnifiedRoundTrip() {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -248,7 +430,15 @@ void CoreTests::vmcReaderAndUnifiedRoundTrip() {
     QCOMPARE(sourceSummary.recordCount, quint64(6));
     QCOMPARE(sourceSummary.routedRecordCount, quint64(5));
     QCOMPARE(sourceSummary.metadataRecordCount, quint64(1));
+    QCOMPARE(sourceSummary.terminalMarkerBytes, quint64(0));
     QCOMPARE(sourceSummary.trailingFillBytes, quint64(17));
+    pat::VmcLogInspection sourceInspection;
+    QVERIFY2(sourceReader.Inspect(sourcePath, sourceInspection, error), qPrintable(error));
+    QCOMPARE(sourceInspection.descriptorCount, 1);
+    QCOMPARE(sourceInspection.fieldCount, 3);
+    QCOMPARE(sourceInspection.activeStreamCount, 1);
+    QCOMPARE(sourceInspection.summary.recordCount, quint64(6));
+    QCOMPARE(sourceInspection.estimatedConvertedDataBytes, quint64(5 * (15 + 11)));
 
     const QString binPath = dir.filePath(QStringLiteral("unified.patbin"));
     const QString jsonPath = dir.filePath(QStringLiteral("unified.json"));
@@ -266,10 +456,14 @@ void CoreTests::vmcReaderAndUnifiedRoundTrip() {
     QVERIFY(formatDefinition.IsIndexedMixed());
     QCOMPARE(formatDefinition.signalFormats.size(), size_t(3));
     QCOMPARE(formatDefinition.signalFormats[0].name, QStringLiteral("sensor.temp"));
+    QCOMPARE(formatDefinition.signalFormats[0].DisplayName(), QStringLiteral("temp"));
+    QCOMPARE(formatDefinition.signalFormats[0].QualifiedDisplayName(),
+             QStringLiteral("SENSOR [0X0123] - temp"));
     pat::MixedDataSession session;
     QVERIFY2(session.Open(binPath, formatDefinition, error), qPrintable(error));
     QCOMPARE(session.RecordCount(), quint64(5));
     QVERIFY2(session.LoadSignals({0, 1, 2}, error), qPrintable(error));
+    QCOMPARE(session.Series()[0].name, QStringLiteral("SENSOR [0X0123] - temp"));
     QCOMPARE(session.Series()[0].samples.size(), 5);
     QCOMPARE(session.Series()[0].samples[0], QPointF(0, -100));
     QCOMPARE(session.Series()[1].samples[4], QPointF(40, 4));
@@ -290,6 +484,56 @@ void CoreTests::vmcReaderAndUnifiedRoundTrip() {
         failedResult, error));
     QVERIFY(oldOutput.open(QIODevice::ReadOnly));
     QCOMPARE(oldOutput.readAll(), QByteArrayLiteral("previous"));
+
+    QByteArray terminalSourceBytes = SyntheticVmcLog(2, false);
+    terminalSourceBytes.chop(17);
+    terminalSourceBytes.append(char(0x5A));
+    terminalSourceBytes.append(char(0xA4));
+    AppendLittle<quint16>(terminalSourceBytes, 0x0123);
+    terminalSourceBytes.append(QByteArray(9, char(0xFF)));  // timestamp + payload length
+    terminalSourceBytes.append(QByteArray(31, char(0xFF)));
+    const QString terminalSourcePath = dir.filePath(QStringLiteral("terminal-source.bin"));
+    QFile terminalSource(terminalSourcePath);
+    QVERIFY(terminalSource.open(QIODevice::WriteOnly));
+    QCOMPARE(terminalSource.write(terminalSourceBytes), qint64(terminalSourceBytes.size()));
+    terminalSource.close();
+    pat::VmcSourceHeader terminalHeader;
+    QVERIFY2(sourceReader.ReadHeader(terminalSourcePath, terminalHeader, error), qPrintable(error));
+    pat::VmcReadSummary terminalSummary;
+    QVERIFY2(sourceReader.VisitRecords(terminalSourcePath, terminalHeader, {}, terminalSummary, error),
+             qPrintable(error));
+    QCOMPARE(terminalSummary.recordCount, quint64(2));
+    QCOMPARE(terminalSummary.routedRecordCount, quint64(2));
+    QCOMPARE(terminalSummary.terminalMarkerBytes, quint64(13));
+    QCOMPARE(terminalSummary.trailingFillBytes, quint64(31));
+
+    pat::UnifiedLogWriteOptions terminalOptions;
+    terminalOptions.timestampUnit = QStringLiteral("s");
+    terminalOptions.timestampScale = 1e-9;
+    pat::UnifiedLogWriteResult terminalResult;
+    const QString terminalBin = dir.filePath(QStringLiteral("terminal.patbin"));
+    const QString terminalJson = dir.filePath(QStringLiteral("terminal.json"));
+    QVERIFY2(writer.ConvertVmcFiles({terminalSourcePath}, terminalBin, terminalJson,
+                                    terminalOptions, terminalResult, error), qPrintable(error));
+    QCOMPARE(terminalResult.routedRecordCount, quint64(2));
+    QCOMPARE(terminalResult.terminalMarkerBytes, quint64(13));
+    QCOMPARE(terminalResult.trailingFillBytes, quint64(31));
+    pat::FormatDefinition terminalFormat;
+    QVERIFY2(pat::LoadFormatFromJson(terminalJson, terminalFormat, error), qPrintable(error));
+    QVERIFY(terminalFormat.timestampScaleKnown);
+    QCOMPARE(terminalFormat.timestampUnit, QStringLiteral("s"));
+    QCOMPARE(terminalFormat.timestampScale, 1e-9);
+
+    const QString malformedTailPath = dir.filePath(QStringLiteral("malformed-tail.bin"));
+    QFile malformedTail(malformedTailPath);
+    QVERIFY(malformedTail.open(QIODevice::WriteOnly));
+    terminalSourceBytes.append(char(0x00));
+    QCOMPARE(malformedTail.write(terminalSourceBytes), qint64(terminalSourceBytes.size()));
+    malformedTail.close();
+    pat::VmcSourceHeader malformedHeader;
+    QVERIFY2(sourceReader.ReadHeader(malformedTailPath, malformedHeader, error), qPrintable(error));
+    QVERIFY(!sourceReader.VisitRecords(malformedTailPath, malformedHeader, {}, terminalSummary, error));
+    QVERIFY(error.contains(QStringLiteral("非 FF")));
 
     const QString multiBin = dir.filePath(QStringLiteral("multi.patbin"));
     const QString multiJson = dir.filePath(QStringLiteral("multi.json"));
