@@ -94,9 +94,10 @@ private:
 TimeRangeControl::TimeRangeControl(QWidget* parent) : QWidget(parent) {
     setObjectName(QStringLiteral("timeRangeControl"));
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(4, 2, 4, 2);
-    layout->setSpacing(2);
+    layout->setContentsMargins(2, 1, 2, 1);
+    layout->setSpacing(1);
     auto* row = new QHBoxLayout;
+    row->setSpacing(4);
     caption_ = new QLabel(tr("显示区间"), this);
     row->addWidget(caption_);
     start_ = new QDoubleSpinBox(this);

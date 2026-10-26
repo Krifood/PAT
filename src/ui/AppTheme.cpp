@@ -23,11 +23,11 @@ AppTheme IndoorDarkTheme() {
         QColor("#d2d2d2"), QColor("#8c8c8c"), QColor("#3c3c3c"),
         QColor(20, 20, 22, 220), QColor(90, 90, 90, 220),
         QColor("#ff3030"), QColor("#ffd700"), QColor("#5a5a5a"),
-        QColor("#ffe35a"), QColor("#091016"),
+        QColor("#ffff00"), QColor("#091016"),
         {QColor("#5ac8ff"), QColor("#ff8c00"), QColor("#78dc78"),
          QColor("#dc78dc"), QColor("#ff5a5a"), QColor("#78a0ff"),
          QColor("#f1d84b"), QColor("#3dd6c6")},
-        1.6, 2.5
+        1.0, 1.0
     };
 }
 
@@ -44,11 +44,11 @@ AppTheme IndoorLightTheme() {
         QColor("#17232b"), QColor("#4d5b63"), QColor("#ced8de"),
         QColor(255, 255, 255, 235), QColor(117, 132, 142, 220),
         QColor("#c1121f"), QColor("#8a3f00"), QColor("#78868e"),
-        QColor("#d05a00"), QColor("#ffffff"),
+        QColor("#ffff00"), QColor("#303030"),
         {QColor("#0067b9"), QColor("#d04a00"), QColor("#008552"),
          QColor("#7b3fb2"), QColor("#c21f30"), QColor("#007b83"),
          QColor("#785400"), QColor("#a62773")},
-        1.8, 2.7
+        1.0, 1.0
     };
 }
 
@@ -65,11 +65,11 @@ AppTheme OutdoorHighContrastTheme() {
         QColor("#000000"), QColor("#000000"), QColor("#a0a0a0"),
         QColor(255, 255, 255, 245), QColor(20, 20, 20, 235),
         QColor("#d00000"), QColor("#000000"), QColor("#676767"),
-        QColor("#ff9f00"), QColor("#000000"),
+        QColor("#ffff00"), QColor("#000000"),
         {QColor("#0047ab"), QColor("#c43b00"), QColor("#006b3c"),
          QColor("#6f2da8"), QColor("#c00000"), QColor("#00737a"),
          QColor("#6b3e00"), QColor("#9b005d")},
-        2.4, 3.2
+        1.2, 1.0
     };
 }
 

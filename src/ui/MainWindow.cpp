@@ -315,7 +315,8 @@ void MainWindow::SetupUi() {
     auto* rightPane = new QWidget(splitter);
     rightPane->setObjectName(QStringLiteral("chartPane"));
     auto* rightLayout = new QVBoxLayout(rightPane);
-    rightLayout->setContentsMargins(4, 4, 4, 4);
+    rightLayout->setContentsMargins(2, 2, 2, 2);
+    rightLayout->setSpacing(2);
     auto* fileHeader = new QLabel(rightPane);
     fileHeader->setObjectName(QStringLiteral("currentFileHeader"));
     fileHeader->setTextFormat(Qt::PlainText);

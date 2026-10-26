@@ -46,8 +46,8 @@ struct AppTheme {
     QColor guideLine;
     QColor guideOutline;
     QVector<QColor> seriesColors;
-    qreal seriesLineWidth = 1.6;
-    qreal guideLineWidth = 2.5;
+    qreal seriesLineWidth = 1.0;
+    qreal guideLineWidth = 1.0;
 };
 
 const AppTheme& ThemeFor(AppThemeId id);

@@ -7,6 +7,7 @@
 #include <QtCharts/QChartView>
 
 #include <QColor>
+#include <QHash>
 #include <QPoint>
 #include <QPointF>
 #include <QVector>
@@ -66,6 +67,7 @@ public:
                    int viewIndex);
 
     void SetSeriesSamples(const QVector<QVector<QPointF>>& seriesSamples);
+    void SetExtremaText(const QStringList& lines);
     void SetDisplaySources(const QVector<const pat::Series*>& sources,
                            const QVector<pat::DisplayTransform>& transforms);
     void SetRangeContext(const ChartRangeContext& context);
@@ -119,6 +121,14 @@ private:
     bool IsHeaderDragZone(const QPoint& viewPos) const;
     void UpdateZeroLine();
     void UpdateHeaderLayout();
+    QGraphicsItem* InfoBlockAt(const QPoint& viewPos) const;
+    void PlaceInfoBlocks();
+    void RememberInfoBlock(QGraphicsItem* block);
+    bool cursorBlocksDetached_ = false;
+    QHash<QGraphicsItem*, QPointF> infoPositions_;
+    QGraphicsItem* draggingInfo_ = nullptr;
+    QPointF infoDragOffset_;
+    double lastCursorX_ = 0.0;
     void StartReorderDrag();
     void UpdateCursor(double cursorX);
     void UpdateAlignedPlotArea();
@@ -128,6 +138,8 @@ private:
     void UpdateGuides();
     int GuideAt(const QPoint& viewPos) const;
     void AddGuide(GuideOrientation orientation, double value);
+    void InputGuidePosition(GuideOrientation orientation, double initial, int index = -1);
+    QLabel* mousePositionLabel_ = nullptr;
     QString GuideTooltip(int index, int maxEntries = 40) const;
     void ShowGuideTooltip(int index, const QPoint& globalPos);
     void HideGuideTooltip();
@@ -157,6 +169,8 @@ private:
     QGraphicsLineItem* zeroLine_ = nullptr;
     QGraphicsSimpleTextItem* headerTitle_ = nullptr;
     QGraphicsSimpleTextItem* headerDesc_ = nullptr;
+    QGraphicsSimpleTextItem* extremaLabel_ = nullptr;
+    QStringList extremaLines_;
     QGraphicsSimpleTextItem* emptyMessage_ = nullptr;
     QString headerTitleText_;
     QString headerDescText_;

@@ -101,6 +101,10 @@ private:
     void RebuildTrackRows();
     void Ensure2DSeries();
     void Render2D();
+    void ScheduleEqualAspect();
+    void ApplyEqualAspect();
+    void UpdateExtrema();
+    void UpdateAxisTitles();
     void Render3D();
     QString TrackName(const TrackState& track) const;
     int BestSignal(bool longitude, bool latitude, bool altitude) const;
@@ -123,6 +127,12 @@ private:
     QLabel* dimensionLabel_ = nullptr;
     QWidget* trackRows_ = nullptr;
     QCheckBox* autoRange_ = nullptr;
+    QCheckBox* equalAspect_ = nullptr;
+    bool aspectPending_ = false;
+    bool applyingAspect_ = false;
+    double baseXMin_ = -1, baseXMax_ = 1, baseYMin_ = -1, baseYMax_ = 1;
+    QLabel* extrema_ = nullptr;
+    QLabel* pointerReadout_ = nullptr;
     QLabel* status_ = nullptr;
     QChartView* chartView_ = nullptr;
     Trajectory3DCanvas* canvas3D_ = nullptr;

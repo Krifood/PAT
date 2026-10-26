@@ -14,6 +14,7 @@
 #include <QDialogButtonBox>
 
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QCheckBox>
 #include <QPainter>
 #include <QCompleter>
@@ -33,6 +34,7 @@
 #include <QGraphicsLineItem>
 #include <QLabel>
 #include <QLineEdit>
+#include <QInputDialog>
 #include <QMenuBar>
 #include <QMenu>
 #include <QMouseEvent>
@@ -86,6 +88,9 @@ class UiTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void sharedCursorClearsWithoutTrails();
+    void guidePositionInputAndPointerReadouts();
+    void visibleRangeExtrema();
     void initTestCase();
     void informationMenuShowsVersionAndBundledChangelog();
     void importVmcMenuOpensSourceDialog();
@@ -286,6 +291,31 @@ void UiTests::mergedCursorLabelsAvoidCollisionsAndKeepLegendCompact() {
     const qreal topPadding = rows.first().top() - legend->boundingRect().top();
     const qreal bottomPadding = legend->boundingRect().bottom() - rows.last().bottom();
     QVERIFY(qAbs(topPadding - bottomPadding) < 1.0);
+    view.HideCursor();
+    const auto legendPosition = legend->pos();
+    const QPoint start = view.mapFromScene(legend->sceneBoundingRect().center());
+    const QPoint end = start + QPoint(-100, 35);
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, start);
+    QMouseEvent moveLegend(QEvent::MouseMove, QPointF(end), QPointF(view.viewport()->mapToGlobal(end)),
+                           Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(view.viewport(), &moveLegend);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, end);
+    QVERIFY((legend->pos() - legendPosition).manhattanLength() > 30);
+    const auto movedLegend = legend->pos();
+    view.SetDisplaySources(sources, {});
+    QCOMPARE(legend->pos(), movedLegend);
+    bool resetLegend = false;
+    QTimer::singleShot(0, [&resetLegend] {
+        auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        if (!menu) return;
+        for (auto* action : menu->actions())
+            if (action->text() == QStringLiteral("还原信息块位置")) { action->trigger(); resetLegend = true; break; }
+        menu->close();
+    });
+    QContextMenuEvent resetContext(QContextMenuEvent::Mouse, QPoint(60, 60), view.viewport()->mapToGlobal(QPoint(60, 60)));
+    QApplication::sendEvent(view.viewport(), &resetContext);
+    QVERIFY(resetLegend);
+    QCOMPARE(legend->pos(), legendPosition);
 }
 
 void UiTests::importVmcMenuOpensSourceDialog() {
@@ -739,8 +769,9 @@ void UiTests::chartZoomAlignmentFocusAndSharedGuides() {
         }
         QVERIFY(foundBottomTick);
         const auto image = view->grab().toImage();
+        // Bottom-left now hosts the extrema overlay; sample unobscured background.
         const QPoint point = view->mapFromScene(view->chart()->mapToScene(
-            QPointF(plot.left() + 13, plot.bottom() - 19)));
+            QPointF(plot.right() - 13, plot.bottom() - 19)));
         const qreal dpr = image.devicePixelRatio();
         QCOMPARE(image.pixelColor(qRound(point.x() * dpr), qRound(point.y() * dpr)),
                  view->chart()->plotAreaBackgroundBrush().color());
@@ -764,6 +795,231 @@ void UiTests::chartZoomAlignmentFocusAndSharedGuides() {
     QVERIFY(charts[2]->GuideLines().isEmpty());
 }
 
+void UiTests::sharedCursorClearsWithoutTrails() {
+    QVector<pat::Series> data(3);
+    for (int i = 0; i < data.size(); ++i) data[i].samples = {{0, double(i)}, {10, double(i + 1)}};
+    ChartArea area;
+    area.resize(1000, 850);
+    area.SetSeries(&data);
+    area.SetDisplayGroups({{{0}, "A", {}, false}, {{1}, "B", {}, false}, {{2}, "C", {}, false}});
+    pat::SeriesStatistics stats; stats.maxX = 10; stats.minStep = 1; stats.hasRange = true;
+    area.SetStatistics(stats); area.RefreshCharts(); area.show(); QTest::qWait(100);
+    const auto charts = area.findChildren<SignalChartView*>();
+    QCOMPARE(charts.size(), 3);
+    QVector<QImage> clean;
+    for (auto* chart : charts) {
+        QCOMPARE(chart->viewportUpdateMode(), QGraphicsView::FullViewportUpdate);
+        chart->SetGuideLines({{GuideOrientation::Horizontal, .5}});
+        chart->HideCursor();
+        clean.append(chart->viewport()->grab().toImage());
+    }
+    for (int n = 0; n < 60; ++n) {
+        auto* source = charts[n % charts.size()];
+        const auto plot = source->chart()->plotArea();
+        const QPoint point = source->mapFromScene(source->chart()->mapToScene(
+            QPointF(plot.left() + plot.width() * (0.1 + .8 * (n % 20) / 20.0), plot.center().y())));
+        QMouseEvent move(QEvent::MouseMove, QPointF(point), QPointF(source->viewport()->mapToGlobal(point)),
+                         Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(source->viewport(), &move);
+        QApplication::processEvents();
+        for (auto* chart : charts) {
+            int cursorCount = 0;
+            for (auto* item : chart->chart()->childItems()) {
+                if (item->data(0).toString() != "cursorCrosshair") continue;
+                ++cursorCount; QVERIFY(item->isVisible());
+            }
+            QCOMPARE(cursorCount, 1);
+        }
+    }
+    // Leaving the plot for its axes is still inside the widget: clear all peers.
+    auto* source = charts.first();
+    QMouseEvent outside(QEvent::MouseMove, QPointF(1, 1), QPointF(source->viewport()->mapToGlobal(QPoint(1, 1))),
+                        Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(source->viewport(), &outside);
+    QApplication::processEvents();
+    for (int i = 0; i < charts.size(); ++i) {
+        for (auto* item : charts[i]->chart()->childItems())
+            if (item->data(0).toString() == "cursorCrosshair") QVERIFY(!item->isVisible());
+        QCOMPARE(charts[i]->GuideLines().size(), 1);
+        QCOMPARE(charts[i]->viewport()->grab().toImage(), clean[i]);
+    }
+}
+
+void UiTests::guidePositionInputAndPointerReadouts() {
+    QVector<pat::Series> data(1);
+    data[0].samples = {{0, 0}, {10, 10}};
+    SignalChartView view;
+    view.resize(800, 400);
+    view.Configure("test", "m", "s", false, {Qt::cyan}, {0}, {data[0].samples}, &data, 0, 10, 0, 10, 0);
+    view.show(); QTest::qWait(50);
+    const QPoint center = view.mapFromScene(view.chart()->mapToScene(view.chart()->plotArea().center()));
+    QMouseEvent move(QEvent::MouseMove, QPointF(center), QPointF(view.viewport()->mapToGlobal(center)), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(view.viewport(), &move);
+    auto* pointer = view.findChild<QLabel*>("chartMousePosition");
+    QVERIFY(pointer && pointer->isVisible());
+    QVERIFY(pointer->text().contains("X:") && pointer->text().contains("Y:"));
+    const auto input = [&view](const QString& actionText, const QString& number, QPoint position, bool accept) {
+        bool triggered = false, filled = false;
+        QTimer::singleShot(0, [&] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            if (!menu) return;
+            for (auto* action : menu->actions()) if (action->text() == actionText) {
+                triggered = true;
+                QTimer::singleShot(0, [&] {
+                    auto* dialog = view.findChild<QInputDialog*>();
+                    if (!dialog) return;
+                    filled = true; dialog->setTextValue(number);
+                    if (accept) dialog->accept(); else dialog->reject();
+                });
+                action->trigger(); break;
+            }
+            menu->close();
+        });
+        QContextMenuEvent context(QContextMenuEvent::Mouse, position, view.viewport()->mapToGlobal(position));
+        QApplication::sendEvent(view.viewport(), &context);
+        return triggered && filled;
+    };
+    QVERIFY(input("输入横向辅助线位置…", "2.25", center, true));
+    QVERIFY(input("输入垂向辅助线位置…", "2.5e0", center, true));
+    QCOMPARE(view.GuideLines().size(), 2);
+    QCOMPARE(view.GuideLines()[0].value, 2.25);
+    QCOMPARE(view.GuideLines()[1].value, 2.5);
+    const QPoint linePoint = view.mapFromScene(view.chart()->mapToScene(view.chart()->mapToPosition({7, 2.25}, view.chart()->series().first())));
+    QVERIFY(input("设置辅助线位置…", "3.125", linePoint, true));
+    QCOMPARE(view.GuideLines()[0].value, 3.125);
+    QVERIFY(input("输入横向辅助线位置…", "9", center, false));
+    QCOMPARE(view.GuideLines().size(), 2);
+}
+
+void UiTests::visibleRangeExtrema() {
+    QVector<pat::Series> source(1);
+    source[0].name = "A";
+    source[0].unit = "m";
+    source[0].samples = {{0, -999}, {1, 2}, {2, 7}, {3, qQNaN()}, {4, 999}};
+    ChartArea area;
+    area.resize(900, 450);
+    area.SetSeries(&source);
+    area.SetDisplayGroups({{{0}, "A", "m", false}});
+    area.SetDisplayTransforms({{0, {-2, 1}}});
+    pat::SeriesStatistics stats; stats.maxX = 4; stats.minStep = 1; stats.hasRange = true;
+    area.SetStatistics(stats); area.RefreshCharts(); area.show();
+    area.SetVisibleRange(1, 3);
+    const auto summary = [&area] {
+        QString result;
+        for (auto* view : area.findChildren<SignalChartView*>())
+            for (auto* item : view->chart()->childItems()) {
+                auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item);
+                if (label && label->isVisible() && label->toolTip().contains("max:"))
+                    result += label->toolTip();
+            }
+        return result;
+    };
+    QTRY_VERIFY(summary().contains("max: -3 m\nmin: -13 m"));
+    QVERIFY(!summary().contains("A"));
+    auto* extremaView = area.findChild<SignalChartView*>();
+    QGraphicsSimpleTextItem* extrema = nullptr;
+    for (auto* item : extremaView->chart()->childItems()) {
+        auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item);
+        if (label && label->toolTip().contains("max:")) extrema = label;
+    }
+    QVERIFY(extrema);
+    QVERIFY(extrema->pos().y() > extremaView->chart()->plotArea().top());
+    QVERIFY(extrema->pos().y() < extremaView->chart()->plotArea().center().y());
+    extremaView->SetGuideLines({{GuideOrientation::Vertical, 1.5}, {GuideOrientation::Horizontal, -5}});
+    int guideParts = 0;
+    for (auto* item : extremaView->chart()->childItems()) {
+        auto* line = dynamic_cast<QGraphicsLineItem*>(item);
+        if (!line || (line->zValue() != 959 && line->zValue() != 960)) continue;
+        ++guideParts;
+        QVERIFY(line->pen().widthF() <= 2.0);
+        QVERIFY(line->pen().isCosmetic());
+        QVERIFY(line->zValue() < extrema->zValue());
+    }
+    QCOMPARE(guideParts, 4);
+    extremaView->SetCursorX(1.5);
+    QGraphicsSimpleTextItem* reading = nullptr;
+    for (auto* item : extremaView->chart()->childItems()) {
+        auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item);
+        if (label && label->isVisible() && label->text().contains("k:")) {
+            QVERIFY(!label->sceneBoundingRect().intersects(extrema->sceneBoundingRect()));
+            reading = label;
+        }
+    }
+    QVERIFY(reading);
+    const auto dragBlock = [extremaView](QGraphicsSimpleTextItem* block, QPoint delta) {
+        const QPoint start = extremaView->mapFromScene(block->sceneBoundingRect().center());
+        QTest::mousePress(extremaView->viewport(), Qt::LeftButton, Qt::NoModifier, start);
+        const QPoint end = start + delta;
+        QMouseEvent move(QEvent::MouseMove, QPointF(end),
+                         QPointF(extremaView->viewport()->mapToGlobal(end)),
+                         Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(extremaView->viewport(), &move);
+        QTest::mouseRelease(extremaView->viewport(), Qt::LeftButton, Qt::NoModifier, end);
+    };
+    const auto before = extrema->pos();
+    dragBlock(extrema, {120, 70});
+    QVERIFY((extrema->pos() - before).manhattanLength() > 50);
+    const auto moved = extrema->pos();
+    area.SetVisibleRange(1, 3);
+    QCOMPARE(extrema->pos(), moved);
+    extremaView->SetCursorX(1.5);
+    const auto followingPosition = reading->pos();
+    extremaView->SetCursorX(1.7);
+    QVERIFY(reading->pos() != followingPosition);
+    bool detached = false;
+    QTimer::singleShot(0, [&detached] {
+        auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        if (!menu) return;
+        auto* action = menu->findChild<QAction*>("detachCursorBlocks");
+        if (action && !action->isChecked()) { action->trigger(); detached = action->isChecked(); }
+        menu->close();
+    });
+    QContextMenuEvent detachContext(QContextMenuEvent::Mouse, QPoint(80, 80),
+                                   extremaView->viewport()->mapToGlobal(QPoint(80, 80)));
+    QApplication::sendEvent(extremaView->viewport(), &detachContext);
+    QVERIFY(detached);
+    const auto beforeReading = reading->pos();
+    dragBlock(reading, {60, 60});
+    QVERIFY((reading->pos() - beforeReading).manhattanLength() > 20);
+    const auto movedReading = reading->pos();
+    extremaView->SetCursorX(1.6);
+    QCOMPARE(reading->pos(), movedReading);
+    dragBlock(extrema, {4000, 4000});
+    QVERIFY(extremaView->chart()->plotArea().contains(extrema->mapRectToParent(extrema->boundingRect())));
+    area.resize(750, 350);
+    QTest::qWait(30);
+    QVERIFY(extremaView->chart()->plotArea().contains(extrema->mapRectToParent(extrema->boundingRect())));
+    bool resetInfo = false;
+    QTimer::singleShot(0, [&resetInfo] {
+        auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        if (!menu) return;
+        for (auto* action : menu->actions()) {
+            if (action->text() == QStringLiteral("还原信息块位置")) {
+                action->trigger(); resetInfo = true; break;
+            }
+        }
+        menu->close();
+    });
+    QContextMenuEvent infoContext(QContextMenuEvent::Mouse, QPoint(80, 80),
+                                 extremaView->viewport()->mapToGlobal(QPoint(80, 80)));
+    QApplication::sendEvent(extremaView->viewport(), &infoContext);
+    QVERIFY(resetInfo);
+    extremaView->SetCursorX(1.5);
+    const auto resetPosition = reading->pos();
+    extremaView->SetCursorX(1.7);
+    QVERIFY(reading->pos() != resetPosition);
+    QVERIFY(extrema->pos().y() < extremaView->chart()->plotArea().center().y());
+    area.SetVisibleRange(2.5, 3.5);
+    QTRY_VERIFY(summary().contains("max: —\nmin: —"));
+    auto* view = area.findChild<SignalChartView*>();
+    bool empty = false;
+    for (auto* item : view->chart()->childItems()) {
+        auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item);
+        if (label && label->toolTip().contains("当前区间无有效数据")) empty = true;
+    }
+    QVERIFY(empty);
+}
+
 void UiTests::trajectoryVisibilityKeepsHistory() {
     MainWindow window;
     QString error;
@@ -784,7 +1040,46 @@ void UiTests::trajectoryVisibilityKeepsHistory() {
     QVERIFY(history > 0);
     auto* chart = plot->findChild<QChartView*>();
     QVERIFY(chart->renderHints().testFlag(QPainter::Antialiasing));
+    auto* aspect = plot->findChild<QCheckBox*>("trajectoryEqualAspect");
+    QVERIFY(aspect);
+    QVERIFY(!aspect->isChecked());
+    view.resize(1100, 650);
+    view.show();
+    aspect->setChecked(true);
+    const auto equalUnits = [chart] {
+        const auto* x = qobject_cast<QValueAxis*>(chart->chart()->axes(Qt::Horizontal).first());
+        const auto* y = qobject_cast<QValueAxis*>(chart->chart()->axes(Qt::Vertical).first());
+        const auto area = chart->chart()->plotArea();
+        return std::abs((x->max()-x->min()) / area.width()
+                      / ((y->max()-y->min()) / area.height()) - 1) < 0.001;
+    };
+    QTRY_VERIFY(equalUnits());
+    view.resize(700, 900);
+    QTRY_VERIFY(equalUnits());
+    QCOMPARE(plot->HistoryPointCount(), history);
+    auto* extrema = plot->findChild<QLabel*>("trajectoryExtrema");
+    const QPoint center2D = chart->mapFromScene(chart->chart()->mapToScene(chart->chart()->plotArea().center()));
+    QMouseEvent position2D(QEvent::MouseMove, QPointF(center2D), QPointF(chart->viewport()->mapToGlobal(center2D)), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(chart->viewport(), &position2D);
+    auto* pointer2D = plot->findChild<QLabel*>("trajectory2DMousePosition");
+    QVERIFY(pointer2D && pointer2D->isVisible() && pointer2D->text().contains("X:"));
+    QVERIFY(extrema && extrema->text().startsWith("max:") && extrema->text().contains("\nmin:"));
+    QCOMPARE(extrema->text().count('\n'), 1);
+    QVERIFY(extrema->font().pointSizeF() < plot->font().pointSizeF());
+    auto* xAxis = qobject_cast<QValueAxis*>(chart->chart()->axes(Qt::Horizontal).first());
+    xAxis->setRange(1000, 1001);
+    QContextMenuEvent context(QContextMenuEvent::Mouse, QPoint(80, 80),
+                             chart->viewport()->mapToGlobal(QPoint(80, 80)));
+    QApplication::sendEvent(chart->viewport(), &context);
+    auto* reset = plot->findChild<QAction*>("resetTrajectoryView");
+    QVERIFY(reset);
+    reset->trigger();
+    for (auto* menu : plot->findChildren<QMenu*>()) menu->close();
+    QTRY_VERIFY(xAxis->min() < 1000);
+    QTRY_VERIFY(equalUnits());
+    QCOMPARE(plot->HistoryPointCount(), history);
     toggle->setChecked(false);
+    QVERIFY(extrema->text().contains("无可见轨迹"));
     for (auto* series : chart->chart()->series()) QVERIFY(!series->isVisible());
     QCOMPARE(plot->HistoryPointCount(), history);
     QVERIFY(!plot->Snapshots().first().visible);
@@ -799,6 +1094,20 @@ void UiTests::trajectoryVisibilityKeepsHistory() {
     toggle->setChecked(true);
     for (auto* series : chart->chart()->series()) QVERIFY(series->isVisible());
     QCOMPARE(plot->HistoryPointCount(), history);
+    auto* plot3D = view.AddPlot(TrajectoryDimension::ThreeD);
+    view.RefreshNow(); QTest::qWait(50);
+    auto* canvas3D = plot3D->findChild<QWidget*>(QStringLiteral("trajectory3DCanvas_%1").arg(plot3D->PlotId()));
+    QVERIFY(canvas3D);
+    canvas3D->grab(); // Populate the projection cache used for picking.
+    const QPoint center3D = canvas3D->rect().adjusted(48, 28, -24, -42).center();
+    QMouseEvent position3D(QEvent::MouseMove, QPointF(center3D), QPointF(canvas3D->mapToGlobal(center3D)), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(canvas3D, &position3D);
+    auto* pointer3D = canvas3D->findChild<QLabel*>("trajectory3DMousePosition");
+    QVERIFY(pointer3D && pointer3D->isVisible());
+    QVERIFY2(pointer3D->text().contains("Z:"), qPrintable(pointer3D->text()));
+    QEvent leave3D(QEvent::Leave);
+    QApplication::sendEvent(canvas3D, &leave3D);
+    QVERIFY(!pointer3D->isVisible());
 }
 
 void UiTests::displayProcessingWorksWithLiveMergedCharts() {
@@ -1383,10 +1692,10 @@ void UiTests::guideShowsAllCrossingsAndKeepsCursor() {
     QGraphicsLineItem* guideItem = nullptr;
     for (auto* item : view.chart()->scene()->items()) {
         auto* line = dynamic_cast<QGraphicsLineItem*>(item);
-        if (line && line->pen().color() == QColor(255, 227, 90)) guideItem = line;
+        if (line && line->zValue() == 960 && line->pen().color() == ThemeFor(AppThemeId::IndoorDark).guideLine) guideItem = line;
     }
     QVERIFY(guideItem);
-    QVERIFY(guideItem->pen().widthF() >= 2.5);
+    QCOMPARE(guideItem->pen().widthF(), 1.0);
     const QPointF chartPoint(view.chart()->plotArea().center().x(), guideItem->line().y1());
     const QPoint viewPoint = view.mapFromScene(view.chart()->mapToScene(chartPoint));
     QSignalSpy moved(&view, &SignalChartView::CursorMoved);

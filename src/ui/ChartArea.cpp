@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 ChartArea::ChartArea(QWidget* parent) : QWidget(parent) {
     auto* layout = new QVBoxLayout(this);
@@ -40,7 +41,7 @@ ChartArea::ChartArea(QWidget* parent) : QWidget(parent) {
     containerLayout->setContentsMargins(0, 0, 0, 0);
     splitter_ = new QSplitter(Qt::Vertical, container_);
     splitter_->setChildrenCollapsible(false);
-    splitter_->setHandleWidth(6);
+    splitter_->setHandleWidth(3);
     containerLayout->addWidget(splitter_);
     container_->setLayout(containerLayout);
     scrollArea_->setWidget(container_);
@@ -542,14 +543,30 @@ void ChartArea::RefreshVisibleSeries(double minX, double maxX) {
         auto* chart = charts_[i];
         if (!chart) continue;
         QVector<QVector<QPointF>> samples;
+        QStringList extrema;
         const auto& indices = chart->SeriesIndices();
         samples.reserve(indices.size());
         for (int idx : indices) {
             const auto* source = ResolveSeries(idx);
             if (!source) {
                 samples.append(QVector<QPointF>{});
+                extrema.append(QString{});
                 continue;
             }
+            double low = std::numeric_limits<double>::infinity();
+            double high = -std::numeric_limits<double>::infinity();
+            const auto transform = ResolveTransform(idx);
+            const auto first = std::lower_bound(source->samples.cbegin(), source->samples.cend(), minX,
+                [](const QPointF& p, double x) { return p.x() < x; });
+            for (auto it = first; it != source->samples.cend() && it->x() <= maxX; ++it) {
+                const double value = transform.Apply(it->y());
+                if (!std::isfinite(value)) continue;
+                low = std::min(low, value); high = std::max(high, value);
+            }
+            extrema.append(std::isfinite(low)
+                ? tr("max: %1 %3\nmin: %2 %3").arg(QString::number(high, 'g', 10),
+                    QString::number(low, 'g', 10), source->unit)
+                : tr("max: —\nmin: —（当前区间无有效数据）"));
             const int widthLimit = std::max(200, static_cast<int>(chart->chart()->plotArea().width() * 1.5));
             samples.append(ApplyTransform(
                 DecimateSamples(source->samples, minX, maxX,
@@ -557,6 +574,7 @@ void ChartArea::RefreshVisibleSeries(double minX, double maxX) {
                 ResolveTransform(idx)));
         }
         chart->SetSeriesSamples(samples);
+        chart->SetExtremaText(extrema);
     }
 }
 

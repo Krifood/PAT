@@ -4,6 +4,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QContextMenuEvent>
+#include <QMenu>
 #include <QCompleter>
 #include <QDataStream>
 #include <QDrag>
@@ -126,6 +128,11 @@ public:
         setMinimumHeight(230);
         setMouseTracking(true);
         setFocusPolicy(Qt::StrongFocus);
+        readout_ = new QLabel(this);
+        readout_->setObjectName("trajectory3DMousePosition");
+        readout_->setAttribute(Qt::WA_TransparentForMouseEvents);
+        readout_->setStyleSheet("color: #ffff00; background: #171c22; padding: 2px; font-size: 10px;");
+        readout_->hide();
     }
 
     void SetTheme(const AppTheme& theme) {
@@ -140,6 +147,7 @@ public:
 
 protected:
     void paintEvent(QPaintEvent*) override {
+        picks_.clear();
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
         painter.fillRect(rect(), theme_.plotBackgroundEven);
@@ -164,6 +172,7 @@ protected:
             }
         }
         if (!hasPoints) {
+            UpdateReadout();
             painter.setPen(theme_.axisText);
             painter.drawText(area, Qt::AlignCenter, tr("等待三列有效数据"));
             return;
@@ -205,6 +214,7 @@ protected:
 
         for (const auto& track : tracks_) {
             if (track.points.isEmpty()) continue;
+            for (const auto& point : track.points) picks_.append({projectPoint(point), point, track.name});
             QPainterPath path;
             path.moveTo(projectPoint(track.points.first()));
             for (qsizetype i = 1; i < track.points.size(); ++i) path.lineTo(projectPoint(track.points[i]));
@@ -228,6 +238,7 @@ protected:
             legendX += 30 + painter.fontMetrics().horizontalAdvance(track.name);
             if (legendX > area.right() - 100) break;
         }
+        UpdateReadout();
     }
 
     void mousePressEvent(QMouseEvent* event) override {
@@ -241,6 +252,9 @@ protected:
     }
 
     void mouseMoveEvent(QMouseEvent* event) override {
+        pointer_ = event->position();
+        pointerInside_ = rect().contains(pointer_.toPoint());
+        UpdateReadout();
         if (rotating_ && (event->buttons() & Qt::LeftButton)) {
             const QPoint delta = event->position().toPoint() - lastMouse_;
             lastMouse_ = event->position().toPoint();
@@ -251,6 +265,12 @@ protected:
             return;
         }
         QWidget::mouseMoveEvent(event);
+    }
+
+    void leaveEvent(QEvent* event) override {
+        pointerInside_ = false;
+        readout_->hide();
+        QWidget::leaveEvent(event);
     }
 
     void mouseReleaseEvent(QMouseEvent* event) override {
@@ -273,6 +293,31 @@ protected:
     }
 
 private:
+    struct Pick { QPointF screen; pat::TrajectoryPoint3D point; QString name; };
+    QVector<Pick> picks_;
+    QLabel* readout_ = nullptr;
+    QPointF pointer_;
+    bool pointerInside_ = false;
+    void UpdateReadout() {
+        if (!pointerInside_) { readout_->hide(); return; }
+        const Pick* nearest = nullptr;
+        double distance = 12.0;
+        for (const auto& pick : picks_) {
+            const double d = QLineF(pointer_, pick.screen).length();
+            if (d <= distance) { nearest = &pick; distance = d; }
+        }
+        QString text = tr("屏幕(px): %1, %2").arg(pointer_.x(), 0, 'f', 0).arg(pointer_.y(), 0, 'f', 0);
+        if (nearest) text += tr("\n最近轨迹点 %1  X: %2  Y: %3  Z: %4").arg(nearest->name,
+            QString::number(nearest->point.x, 'g', 10), QString::number(nearest->point.y, 'g', 10), QString::number(nearest->point.z, 'g', 10));
+        else text += tr("  · 未命中轨迹点");
+        readout_->setText(text);
+        readout_->setToolTip(text);
+        readout_->setMaximumWidth(std::max(1, width() - 12));
+        readout_->setWordWrap(true);
+        readout_->adjustSize();
+        readout_->move(6, std::max(0, height() - readout_->height() - 4));
+        readout_->show(); readout_->raise();
+    }
     QVector<Track> tracks_;
     AppTheme theme_ = ThemeFor(AppThemeId::IndoorDark);
     bool rotating_ = false;
@@ -289,8 +334,8 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
     setMinimumHeight(300);
     setAcceptDrops(true);
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(6, 6, 6, 6);
-    layout->setSpacing(4);
+    layout->setContentsMargins(3, 3, 3, 3);
+    layout->setSpacing(2);
 
     auto* header = new QHBoxLayout;
     headerTitle_ = new QLabel(tr("☰  空间子图 %1").arg(plotId_ + 1), this);
@@ -316,6 +361,11 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
     header->addWidget(dimensionLabel_);
     header->addStretch();
     header->addWidget(autoRange_);
+    equalAspect_ = new QCheckBox(tr("等比例坐标"), this);
+    equalAspect_->setObjectName(QStringLiteral("trajectoryEqualAspect"));
+    equalAspect_->setVisible(dimension_ == TrajectoryDimension::TwoD);
+    equalAspect_->setToolTip(tr("X/Y 每单位对应相同像素长度（类似 axis equal）；不改变数据。请确保两轴单位可直接比较，经纬度不等于实际地面距离。"));
+    header->addWidget(equalAspect_);
     auto* showTracks = new QCheckBox(tr("显示全部轨迹"), this);
     showTracks->setObjectName(QStringLiteral("trajectoryShowAll"));
     showTracks->setChecked(true);
@@ -340,7 +390,7 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
     if (dimension_ == TrajectoryDimension::TwoD) {
         auto* chart = new QChart;
         chart->setPlotAreaBackgroundVisible(true);
-        chart->setMargins(QMargins(8, 8, 8, 8));
+        chart->setMargins(QMargins(4, 2, 4, 2));
         xAxis_ = new CompactValueAxis(chart);
         yAxis_ = new CompactValueAxis(chart);
         xAxis_->setRange(-1.0, 1.0);
@@ -357,7 +407,23 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
         chartView_->setAcceptDrops(true);
         chartView_->viewport()->setAcceptDrops(true);
         chartView_->viewport()->installEventFilter(this);
+        chartView_->setMouseTracking(true);
+        chartView_->viewport()->setMouseTracking(true);
+        pointerReadout_ = new QLabel(chartView_->viewport());
+        pointerReadout_->setObjectName("trajectory2DMousePosition");
+        pointerReadout_->setAttribute(Qt::WA_TransparentForMouseEvents);
+        pointerReadout_->setStyleSheet("color: #ffff00; background: #171c22; padding: 2px; font-size: 10px;");
+        pointerReadout_->hide();
         layout->addWidget(chartView_, 1);
+        connect(chart, &QChart::plotAreaChanged, this, [this] { ScheduleEqualAspect(); });
+        const auto rangeChanged = [this] {
+            if (applyingAspect_ || !equalAspect_->isChecked()) return;
+            baseXMin_ = xAxis_->min(); baseXMax_ = xAxis_->max();
+            baseYMin_ = yAxis_->min(); baseYMax_ = yAxis_->max();
+            ScheduleEqualAspect();
+        };
+        connect(xAxis_, &QValueAxis::rangeChanged, this, rangeChanged);
+        connect(yAxis_, &QValueAxis::rangeChanged, this, rangeChanged);
     } else {
         canvas3D_ = new Trajectory3DCanvas(this);
         canvas3D_->setObjectName(QStringLiteral("trajectory3DCanvas_%1").arg(plotId_));
@@ -366,11 +432,32 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
         layout->addWidget(canvas3D_, 1);
     }
 
+    extrema_ = new QLabel(this);
+    extrema_->setObjectName(QStringLiteral("trajectoryExtrema"));
+    extrema_->setTextFormat(Qt::PlainText);
+    extrema_->setWordWrap(true);
+    QFont extremaFont = extrema_->font();
+    extremaFont.setPointSizeF(std::max(8.0, extremaFont.pointSizeF() - 2.0));
+    extrema_->setFont(extremaFont);
+    layout->addWidget(extrema_);
     status_ = new QLabel(tr("请加载格式并选择坐标数据列"), this);
     status_->setObjectName(QStringLiteral("trajectoryStatus_%1").arg(plotId_));
     layout->addWidget(status_);
     connect(autoRange_, &QCheckBox::toggled, this, [this](bool enabled) {
         if (enabled) Render();
+    });
+    connect(equalAspect_, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (!xAxis_ || !yAxis_) return;
+        if (enabled) {
+            baseXMin_ = xAxis_->min(); baseXMax_ = xAxis_->max();
+            baseYMin_ = yAxis_->min(); baseYMax_ = yAxis_->max();
+            ScheduleEqualAspect();
+        } else {
+            applyingAspect_ = true;
+            xAxis_->setRange(baseXMin_, baseXMax_); yAxis_->setRange(baseYMin_, baseYMax_);
+            applyingAspect_ = false;
+            if (autoRange_->isChecked()) Render();
+        }
     });
     AddTrack();
     SetTheme(theme_);
@@ -790,6 +877,63 @@ bool TrajectoryPlotWidget::InTimeWindow(double sampleKey, int xSignal) const {
     return time >= windowStart_ && time <= windowEnd_;
 }
 
+void TrajectoryPlotWidget::ScheduleEqualAspect() {
+    if (!equalAspect_->isChecked() || aspectPending_ || applyingAspect_) return;
+    aspectPending_ = true;
+    QTimer::singleShot(0, this, [this] { aspectPending_ = false; ApplyEqualAspect(); });
+}
+
+void TrajectoryPlotWidget::ApplyEqualAspect() {
+    if (!chartView_ || !equalAspect_->isChecked() || applyingAspect_) return;
+    const auto area = chartView_->chart()->plotArea();
+    if (area.width() < 1 || area.height() < 1) return;
+    const double unitsPerPixel = std::max((baseXMax_ - baseXMin_) / area.width(),
+                                           (baseYMax_ - baseYMin_) / area.height());
+    if (!std::isfinite(unitsPerPixel) || unitsPerPixel <= 0) return;
+    const double cx = baseXMin_ * .5 + baseXMax_ * .5, cy = baseYMin_ * .5 + baseYMax_ * .5;
+    const double hx = unitsPerPixel * area.width() * .5, hy = unitsPerPixel * area.height() * .5;
+    if (!std::isfinite(cx-hx) || !std::isfinite(cx+hx) || !std::isfinite(cy-hy) || !std::isfinite(cy+hy)) return;
+    applyingAspect_ = true;
+    xAxis_->setRange(cx-hx, cx+hx); yAxis_->setRange(cy-hy, cy+hy);
+    UpdateAxisTitles();
+    applyingAspect_ = false;
+}
+
+void TrajectoryPlotWidget::UpdateExtrema() {
+    QStringList lines;
+    for (const auto& track : tracks_) {
+        if (!track.visible->isChecked()) continue;
+        const int x = SelectedSignal(track.xCombo), y = SelectedSignal(track.yCombo);
+        const int z = SelectedSignal(track.zCombo);
+        std::array<double, 3> low{INFINITY, INFINITY, INFINITY};
+        std::array<double, 3> high{-INFINITY, -INFINITY, -INFINITY};
+        const int dimensions = dimension_ == TrajectoryDimension::TwoD ? 2 : 3;
+        const auto collect = [&](double key, double a, double b, double c) {
+            if (!InTimeWindow(key, x)) return;
+            const std::array<double, 3> values{transforms_.value(x).Apply(a),
+                transforms_.value(y).Apply(b), transforms_.value(z).Apply(c)};
+            for (int i = 0; i < dimensions; ++i) if (!std::isfinite(values[i])) return;
+            for (int i = 0; i < dimensions; ++i) {
+                low[i] = std::min(low[i], values[i]); high[i] = std::max(high[i], values[i]);
+            }
+        };
+        if (dimensions == 2)
+            for (const auto& p : track.history2D) collect(p.sampleKey, p.value.x(), p.value.y(), 0);
+        else
+            for (const auto& p : track.history3D) collect(p.sampleKey, p.x, p.y, p.z);
+        QStringList maxima, minima;
+        for (int i = 0; i < dimensions; ++i) {
+            const QString axis = QString(QChar('X' + i)) + QStringLiteral("=");
+            maxima.append(axis + (std::isfinite(high[i]) ? QString::number(high[i], 'g', 10) : QStringLiteral("—")));
+            minima.append(axis + (std::isfinite(low[i]) ? QString::number(low[i], 'g', 10) : QStringLiteral("—")));
+        }
+        const QString prefix = tracks_.size() > 1 ? QStringLiteral("#%1 ").arg(&track - tracks_.constData() + 1) : QString{};
+        lines.append(prefix + "max: " + maxima.join("  ") + "\n" + prefix + "min: " + minima.join("  "));
+    }
+    extrema_->setText(lines.isEmpty() ? tr("当前区间无可见轨迹") : lines.join('\n'));
+    extrema_->setToolTip(tr("当前时间区间内的已载入数据极值（显示变换后、绘图抽稀前）；X/Y/Z 单位见坐标选择框。"));
+}
+
 void TrajectoryPlotWidget::Render2D() {
     if (!chartView_ || !xAxis_ || !yAxis_) return;
     Ensure2DSeries();
@@ -813,6 +957,7 @@ void TrajectoryPlotWidget::Render2D() {
             if (!InTimeWindow(sample.sampleKey, xSignal)) continue;
             const QPointF point(xTransform.Apply(sample.value.x()),
                                 yTransform.Apply(sample.value.y()));
+            if (!std::isfinite(point.x()) || !std::isfinite(point.y())) continue;
             displayed.append(point);
             if (!hasRange) {
                 minX = maxX = point.x(); minY = maxY = point.y(); hasRange = true;
@@ -830,26 +975,34 @@ void TrajectoryPlotWidget::Render2D() {
         historyCount += displayed.size();
         drawnCount += drawn.size();
     }
-    if (tracks_.size() == 1) {
-        xAxis_->setTitleText(tracks_.first().xCombo->currentText());
-        yAxis_->setTitleText(tracks_.first().yCombo->currentText());
-    } else {
-        xAxis_->setTitleText(tr("X（各轨迹见图例）"));
-        yAxis_->setTitleText(tr("Y（各轨迹见图例）"));
-    }
     if (hasRange && autoRange_->isChecked()) {
+        applyingAspect_ = true;
         SetPaddedRange(xAxis_, minX, maxX);
         SetPaddedRange(yAxis_, minY, maxY);
+        baseXMin_ = xAxis_->min(); baseXMax_ = xAxis_->max();
+        baseYMin_ = yAxis_->min(); baseYMax_ = yAxis_->max();
+        applyingAspect_ = false;
+        ScheduleEqualAspect();
     }
-    for (auto* axis : {xAxis_, yAxis_}) {
-        const auto* compact = dynamic_cast<CompactValueAxis*>(axis);
-        if (compact && !compact->Annotation().isEmpty())
-            axis->setTitleText(axis->titleText() + QStringLiteral(" — ") + compact->Annotation());
-    }
+    UpdateAxisTitles();
+    UpdateExtrema();
     status_->setText(hasRange
         ? tr("%1 条轨迹；区间点 %2；绘制点 %3")
               .arg(tracks_.size()).arg(historyCount).arg(drawnCount)
         : tr("当前区间没有有效的 X/Y 配对数据"));
+}
+
+void TrajectoryPlotWidget::UpdateAxisTitles() {
+    const QStringList titles = tracks_.size() == 1
+        ? QStringList{tracks_.first().xCombo->currentText(), tracks_.first().yCombo->currentText()}
+        : QStringList{tr("X（各轨迹见图例）"), tr("Y（各轨迹见图例）")};
+    int i = 0;
+    for (auto* axis : {xAxis_, yAxis_}) {
+        QString title = titles[i++];
+        const auto* compact = dynamic_cast<CompactValueAxis*>(axis);
+        if (compact && !compact->Annotation().isEmpty()) title += QStringLiteral(" — ") + compact->Annotation();
+        if (axis->titleText() != title) axis->setTitleText(title);
+    }
 }
 
 void TrajectoryPlotWidget::Render3D() {
@@ -881,6 +1034,7 @@ void TrajectoryPlotWidget::Render3D() {
         drawnCount += drawn.size();
     }
     canvas3D_->SetTracks(std::move(rendered));
+    UpdateExtrema();
     status_->setText(historyCount > 0
         ? tr("%1 条三维轨迹；区间点 %2；绘制点 %3；三轴分别归一化")
               .arg(tracks_.size()).arg(historyCount).arg(drawnCount)
@@ -968,6 +1122,40 @@ bool TrajectoryPlotWidget::HandleDrop(QDropEvent* event) {
 }
 
 bool TrajectoryPlotWidget::eventFilter(QObject* watched, QEvent* event) {
+    if (chartView_ && watched == chartView_->viewport() && pointerReadout_) {
+        if (event->type() == QEvent::Leave) pointerReadout_->hide();
+        if (event->type() == QEvent::MouseMove) {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            const QPointF position = chartView_->chart()->mapFromScene(chartView_->mapToScene(mouse->position().toPoint()));
+            const bool inside = chartView_->chart()->plotArea().contains(position);
+            pointerReadout_->setVisible(inside);
+            if (inside && !chartView_->chart()->series().isEmpty()) {
+                const auto value = chartView_->chart()->mapToValue(position, chartView_->chart()->series().first());
+                pointerReadout_->setText(tr("游标位置 X: %1  Y: %2").arg(QString::number(value.x(), 'g', 10), QString::number(value.y(), 'g', 10)));
+                pointerReadout_->adjustSize();
+                pointerReadout_->move(6, std::max(0, chartView_->viewport()->height() - pointerReadout_->height() - 4));
+                pointerReadout_->raise();
+            }
+        }
+    }
+    if (dimension_ == TrajectoryDimension::TwoD && event->type() == QEvent::ContextMenu) {
+        auto* context = static_cast<QContextMenuEvent*>(event);
+        auto* menu = new QMenu(this);
+        menu->setAttribute(Qt::WA_DeleteOnClose);
+        menu->addAction(tr("还原视图（适应当前区间数据）"), this, [this] {
+            autoRange_->setChecked(true);
+            Render2D();
+        })->setObjectName("resetTrajectoryView");
+        menu->addAction(tr("放大 / 返回多子图"), this, [this] { emit FocusRequested(plotId_); });
+        menu->addSeparator();
+        auto* equal = menu->addAction(equalAspect_->text());
+        equal->setCheckable(true);
+        equal->setChecked(equalAspect_->isChecked());
+        connect(equal, &QAction::toggled, equalAspect_, &QCheckBox::setChecked);
+        menu->popup(context->globalPos());
+        context->accept();
+        return true;
+    }
     if (watched == headerTitle_) {
         if (event->type() == QEvent::MouseButtonDblClick) {
             if (static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
@@ -1024,7 +1212,8 @@ void TrajectoryPlotWidget::dropEvent(QDropEvent* event) {
 TrajectoryView::TrajectoryView(QWidget* parent) : QWidget(parent) {
     setObjectName(QStringLiteral("trajectoryView"));
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setContentsMargins(3, 3, 3, 3);
+    layout->setSpacing(2);
     auto* actions = new QHBoxLayout;
     auto* add2D = new QPushButton(tr("新增二维子图"), this);
     add2D->setObjectName(QStringLiteral("addTrajectory2D"));
@@ -1052,6 +1241,7 @@ TrajectoryView::TrajectoryView(QWidget* parent) : QWidget(parent) {
     containerLayout->addWidget(emptyState_, 1);
     splitter_ = new QSplitter(Qt::Vertical, container);
     splitter_->setChildrenCollapsible(false);
+    splitter_->setHandleWidth(3);
     containerLayout->addWidget(splitter_);
     scroll->setWidget(container);
     layout->addWidget(scroll, 1);
