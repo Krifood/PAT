@@ -1,5 +1,6 @@
 <RCC>
   <qresource prefix="/pat">
     <file alias="changelog.md">../../CHANGELOG.md</file>
+    <file alias="app-icon.png">../../resource/swordfish2_icon.png</file>
   </qresource>
 </RCC>

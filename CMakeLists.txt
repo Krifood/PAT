@@ -5,6 +5,10 @@ project(ParamAnalysisTool
   LANGUAGES CXX
 )
 
+if(WIN32)
+  enable_language(RC)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -94,8 +98,17 @@ if(PAT_BUILD_GUI)
     src/ui/TimeRangeControl.cpp
     src/ui/app_resources.qrc
   )
+  if(WIN32)
+    list(APPEND PAT_UI_SOURCES resource/windows_app.rc)
+    set_source_files_properties(resource/windows_app.rc PROPERTIES
+      OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/resource/swordfish2.ico"
+    )
+  endif()
   add_executable(pat_app WIN32 src/ui/main.cpp ${PAT_UI_SOURCES})
-  target_include_directories(pat_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_include_directories(pat_app PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/resource
+  )
   target_link_libraries(pat_app PRIVATE pat_core Qt6::Widgets Qt6::Charts Qt6::Concurrent)
   target_compile_definitions(pat_app PRIVATE PAT_ENABLE_QT_CHARTS=1
     PAT_APP_VERSION="${PROJECT_VERSION}")

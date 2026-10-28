@@ -20,7 +20,7 @@ AboutDialog::AboutDialog(QWidget* parent) : QDialog(parent) {
 
     auto* versionPage = new QWidget(tabs_);
     auto* versionLayout = new QVBoxLayout(versionPage);
-    auto* title = new QLabel(tr("PAT 飞参解析工具"), versionPage);
+    auto* title = new QLabel(tr("ParamAnalysisTool"), versionPage);
     QFont titleFont = title->font();
     titleFont.setPointSize(titleFont.pointSize() + 5);
     titleFont.setBold(true);

@@ -178,7 +178,7 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::SetupUi() {
-    setWindowTitle(tr("PAT 飞参解析工具"));
+    setWindowTitle(tr("ParamAnalysisTool"));
     resize(1280, 800);
 
     auto* openFormatAction = new QAction(tr("打开格式..."), this);
@@ -188,7 +188,7 @@ void MainWindow::SetupUi() {
     auto* saveFormatAction = new QAction(tr("保存格式"), this);
     auto* saveAsFormatAction = new QAction(tr("格式另存为..."), this);
     auto* openDataAction = new QAction(tr("打开数据..."), this);
-    auto* importVmcAction = new QAction(tr("导入 VMC 混合日志..."), this);
+    auto* importVmcAction = new QAction(tr("导入混合日志..."), this);
     importVmcAction->setObjectName(QStringLiteral("importVmcLogAction"));
     auto* exportFramesAction = new QAction(tr("导出原始帧..."), this);
     auto* previewFrameAction = new QAction(tr("预览帧解码..."), this);
