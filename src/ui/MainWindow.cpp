@@ -272,6 +272,10 @@ void MainWindow::SetupUi() {
     auto* listLabel = new QLabel(tr("信号选择"), leftPane);
     signalTree_ = new SignalTreeWidget(leftPane);
     signalTree_->setObjectName(QStringLiteral("signalTree"));
+    signalTree_->setColumnCount(3);
+    signalTree_->setHeaderLabels({tr("信号"), tr("说明"), tr("采样轴")});
+    signalTree_->setColumnWidth(0, 220);
+    signalTree_->setColumnWidth(1, 180);
     signalTree_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     signalTree_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(signalTree_, &QTreeWidget::itemChanged, this, &MainWindow::HandleSignalTreeItemChanged);
@@ -283,9 +287,10 @@ void MainWindow::SetupUi() {
     differenceButton->setObjectName(QStringLiteral("createDifferenceButton"));
     connect(differenceButton, &QPushButton::clicked, differenceAction, &QAction::trigger);
     leftLayout->addWidget(differenceButton);
-    leftLayout->addWidget(signalTree_, /*stretch=*/2);
 
-    auto* searchLabel = new QLabel(tr("信号检索与快捷操作"), leftPane);
+    auto* searchLabel = new QLabel(tr("搜索信号"), leftPane);
+    searchLabel->setObjectName("signalSearchCaption");
+    searchLabel->setWordWrap(true);
     signalSearchEdit_ = new QLineEdit(leftPane);
     signalSearchEdit_->setObjectName(QStringLiteral("signalSearchEdit"));
     signalSearchEdit_->setClearButtonEnabled(true);
@@ -294,9 +299,11 @@ void MainWindow::SetupUi() {
     signalSearchResults_->setObjectName(QStringLiteral("signalSearchResults"));
     signalSearchResults_->setColumnCount(3);
     signalSearchResults_->setHeaderLabels({tr("搜索结果"), tr("分组"), tr("说明/单位")});
+    signalSearchResults_->setColumnWidth(0, 200);
     signalSearchResults_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     signalSearchResults_->setContextMenuPolicy(Qt::CustomContextMenu);
     signalSearchResults_->setMinimumHeight(150);
+    signalSearchResults_->hide();
     connect(signalSearchEdit_, &QLineEdit::textChanged,
             this, &MainWindow::UpdateSignalSearchResults);
     connect(signalSearchResults_, &QTreeWidget::itemChanged,
@@ -308,6 +315,7 @@ void MainWindow::SetupUi() {
     leftLayout->addWidget(searchLabel);
     leftLayout->addWidget(signalSearchEdit_);
     leftLayout->addWidget(signalSearchResults_, /*stretch=*/1);
+    leftLayout->addWidget(signalTree_, /*stretch=*/2);
     leftPane->setLayout(leftLayout);
 
     signalTreeController_ = std::make_unique<SignalTreeController>(signalTree_);
@@ -319,6 +327,7 @@ void MainWindow::SetupUi() {
     rightLayout->setSpacing(2);
     auto* fileHeader = new QLabel(rightPane);
     fileHeader->setObjectName(QStringLiteral("currentFileHeader"));
+    fileHeader->setText(tr("尚未打开格式或数据文件"));
     fileHeader->setTextFormat(Qt::PlainText);
     fileHeader->setMinimumWidth(0);
     fileHeader->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
@@ -329,6 +338,9 @@ void MainWindow::SetupUi() {
     dataViewTabs_ = new QTabWidget(rightPane);
     dataViewTabs_->setObjectName(QStringLiteral("dataViewTabs"));
     chartArea_ = new ChartArea(dataViewTabs_);
+    connect(chartArea_, &ChartArea::OpenFormatRequested, this, &MainWindow::OpenFormatFile);
+    connect(chartArea_, &ChartArea::OpenDataRequested, this, &MainWindow::OpenDataFile);
+    connect(chartArea_, &ChartArea::ImportMixedRequested, this, &MainWindow::ImportVmcLog);
     connect(timeRangeControl_, &TimeRangeControl::RangeSelected, this,
             [this](double minX, double maxX) {
         if (!liveMode_ && HasOfflineData()) chartArea_->SetVisibleRange(minX, maxX);
@@ -349,6 +361,10 @@ void MainWindow::SetupUi() {
     connect(chartArea_, &ChartArea::SplitRequested, this, &MainWindow::HandleSplitRequested);
     connect(chartArea_, &ChartArea::TransformRequested, this, &MainWindow::ShowSignalTransformDialog);
     trajectoryView_ = new TrajectoryView(dataViewTabs_);
+    connect(timeRangeControl_, &TimeRangeControl::CursorMoved, chartArea_, &ChartArea::HandleCursorMoved);
+    connect(timeRangeControl_, &TimeRangeControl::CursorLeft, chartArea_, &ChartArea::HandleCursorLeft);
+    connect(chartArea_, &ChartArea::TimeCursorMoved, trajectoryView_, &TrajectoryView::SetTimeCursor);
+    connect(chartArea_, &ChartArea::TimeCursorLeft, trajectoryView_, &TrajectoryView::ClearTimeCursor);
     connect(trajectoryView_, &TrajectoryView::SignalsChanged, this, [this]() {
         if (mixedMode_ && !liveMode_) RequestMixedSignalsForCurrentView();
     });
@@ -374,7 +390,7 @@ void MainWindow::SetupUi() {
     rightLayout->addWidget(placeholder, /*stretch=*/1);
 #endif
 
-    statusLabel_ = new QLabel(tr("请先加载格式文件"), this);
+    statusLabel_ = new QLabel(tr("请打开格式和数据，或直接导入混合日志"), this);
     rightLayout->addWidget(statusLabel_);
 #ifdef PAT_ENABLE_SERIAL
     captureStatsLabel_ = new QLabel(tr("串口：未采集"), this);
@@ -410,6 +426,7 @@ void MainWindow::ApplyTheme(AppThemeId id, bool persist) {
     setStyleSheet(BuildApplicationStyleSheet(theme));
     if (chartArea_) chartArea_->SetTheme(theme);
     if (trajectoryView_) trajectoryView_->SetTheme(theme);
+    if (timeRangeControl_) timeRangeControl_->SetTheme(theme);
     if (viewMenu_) {
         const auto actions = viewMenu_->findChildren<QAction*>();
         for (auto* action : actions) {
@@ -1311,7 +1328,10 @@ void MainWindow::UpdateSignalSearchResults(const QString& query) {
     signalSearchUpdating_ = true;
     QSignalBlocker blocker(signalSearchResults_);
     signalSearchResults_->clear();
+    signalSearchResults_->setVisible(formatDocument_.HasFormat() && !query.trimmed().isEmpty());
+    auto* caption = findChild<QLabel*>("signalSearchCaption");
     if (!formatDocument_.HasFormat() || query.trimmed().isEmpty()) {
+        if (caption) caption->setText(tr("搜索信号"));
         signalSearchUpdating_ = false;
         return;
     }
@@ -1334,12 +1354,17 @@ void MainWindow::UpdateSignalSearchResults(const QString& query) {
             : tr("%1  [%2]").arg(signal.description, signal.unit);
         auto* item = new QTreeWidgetItem(signalSearchResults_,
                                          {signal.DisplayName(), signal.groupPath, detail});
+        const QString tooltip = signal.DisplayName() + '\n' + signal.groupPath + '\n' + detail;
+        for (int column = 0; column < 3; ++column) item->setToolTip(column, tooltip);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable
                        | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
         item->setData(0, SignalTreeWidget::ITEM_TYPE_ROLE, SignalTreeWidget::ITEM_TYPE_SIGNAL);
         item->setData(0, SignalTreeWidget::SIGNAL_INDEX_ROLE, i);
         item->setCheckState(0, checked.contains(i) ? Qt::Checked : Qt::Unchecked);
     }
+    if (caption) caption->setText(signalSearchResults_->topLevelItemCount() > 0
+        ? tr("搜索结果：%1 个信号").arg(signalSearchResults_->topLevelItemCount())
+        : tr("没有匹配信号，请尝试名称、分组或单位"));
     signalSearchUpdating_ = false;
 }
 

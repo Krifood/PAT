@@ -48,6 +48,7 @@
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <tuple>
 
 namespace {
 
@@ -100,7 +101,7 @@ void ConfigureSearchableCombo(QComboBox* combo, const QString& placeholder) {
     }
 }
 
-void SetPaddedRange(QValueAxis* axis, double minimum, double maximum) {
+std::pair<double, double> PaddedRange(double minimum, double maximum) {
     const double span = maximum - minimum;
     const double center = minimum + span / 2.0;
     const double padding = span > 0.0 && std::isfinite(span)
@@ -108,10 +109,9 @@ void SetPaddedRange(QValueAxis* axis, double minimum, double maximum) {
     const double low = minimum - padding;
     const double high = maximum + padding;
     if (!std::isfinite(low) || !std::isfinite(high) || high <= low) {
-        axis->setRange(-1.0, 1.0);
-        return;
+        return {-1.0, 1.0};
     }
-    axis->setRange(low, high);
+    return {low, high};
 }
 
 }  // namespace
@@ -131,17 +131,23 @@ public:
         readout_ = new QLabel(this);
         readout_->setObjectName("trajectory3DMousePosition");
         readout_->setAttribute(Qt::WA_TransparentForMouseEvents);
-        readout_->setStyleSheet("color: #ffff00; background: #171c22; padding: 2px; font-size: 10px;");
+        readout_->setStyleSheet(BuildReadoutStyleSheet(theme_));
         readout_->hide();
     }
 
     void SetTheme(const AppTheme& theme) {
         theme_ = theme;
+        readout_->setStyleSheet(BuildReadoutStyleSheet(theme_));
         update();
     }
 
     void SetTracks(QVector<Track> tracks) {
         tracks_ = std::move(tracks);
+        update();
+    }
+    void SetCursorPoints(QVector<pat::TrajectoryPoint3D> points) {
+        cursorPoints_ = std::move(points);
+        setProperty("timeCursorPointCount", cursorPoints_.size());
         update();
     }
 
@@ -225,6 +231,15 @@ protected:
             painter.drawEllipse(projectPoint(track.points.last()), 4.5, 4.5);
         }
 
+        for (const auto& point : cursorPoints_) {
+            const QPointF position = projectPoint(point);
+            painter.setBrush(Qt::yellow);
+            painter.setPen(QPen(QColor("#171c22"), 3));
+            painter.drawEllipse(position, 7, 7);
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(Qt::yellow, 2));
+            painter.drawEllipse(position, 11, 11);
+        }
         painter.setPen(theme_.axisText);
         painter.drawText(QRectF(area.left(), area.bottom() + 8, area.width(), 22),
                          Qt::AlignCenter, tr("拖动旋转 · 滚轮缩放 · 双击复位"));
@@ -319,6 +334,7 @@ private:
         readout_->show(); readout_->raise();
     }
     QVector<Track> tracks_;
+    QVector<pat::TrajectoryPoint3D> cursorPoints_;
     AppTheme theme_ = ThemeFor(AppThemeId::IndoorDark);
     bool rotating_ = false;
     QPoint lastMouse_;
@@ -390,9 +406,11 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
     if (dimension_ == TrajectoryDimension::TwoD) {
         auto* chart = new QChart;
         chart->setPlotAreaBackgroundVisible(true);
-        chart->setMargins(QMargins(4, 2, 4, 2));
+        chart->setMargins(QMargins(4, 2, 28, 2));
         xAxis_ = new CompactValueAxis(chart);
         yAxis_ = new CompactValueAxis(chart);
+        static_cast<CompactValueAxis*>(xAxis_)->SetStableLabelWidth();
+        static_cast<CompactValueAxis*>(yAxis_)->SetStableLabelWidth();
         xAxis_->setRange(-1.0, 1.0);
         yAxis_->setRange(-1.0, 1.0);
         xAxis_->setTickCount(5);
@@ -403,6 +421,8 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
         chartView_->setObjectName(plotId_ == 0 ? QStringLiteral("trajectoryChart")
                                                : QStringLiteral("trajectoryChart_%1").arg(plotId_));
         chartView_->setRenderHint(QPainter::Antialiasing, true);
+        chartView_->setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
+        chart->setCacheMode(QGraphicsItem::NoCache);
         chartView_->setRubberBand(QChartView::RectangleRubberBand);
         chartView_->setAcceptDrops(true);
         chartView_->viewport()->setAcceptDrops(true);
@@ -412,9 +432,11 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
         pointerReadout_ = new QLabel(chartView_->viewport());
         pointerReadout_->setObjectName("trajectory2DMousePosition");
         pointerReadout_->setAttribute(Qt::WA_TransparentForMouseEvents);
-        pointerReadout_->setStyleSheet("color: #ffff00; background: #171c22; padding: 2px; font-size: 10px;");
+        pointerReadout_->setStyleSheet(BuildReadoutStyleSheet(theme_));
         pointerReadout_->hide();
         layout->addWidget(chartView_, 1);
+        // Stable-width labels break the label-width/aspect-range feedback loop,
+        // while Qt retains ownership of layout and series/axis transforms.
         connect(chart, &QChart::plotAreaChanged, this, [this] { ScheduleEqualAspect(); });
         const auto rangeChanged = [this] {
             if (applyingAspect_ || !equalAspect_->isChecked()) return;
@@ -432,6 +454,13 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
         layout->addWidget(canvas3D_, 1);
     }
 
+    timeReadout_ = new QLabel(chartView_ ? chartView_->viewport() : static_cast<QWidget*>(canvas3D_));
+    timeReadout_->setObjectName("trajectoryTimeCursor");
+    timeReadout_->setTextFormat(Qt::PlainText);
+    timeReadout_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    timeReadout_->setStyleSheet(BuildReadoutStyleSheet(theme_));
+    timeReadout_->move(8, 4);
+    timeReadout_->hide();
     extrema_ = new QLabel(this);
     extrema_->setObjectName(QStringLiteral("trajectoryExtrema"));
     extrema_->setTextFormat(Qt::PlainText);
@@ -518,9 +547,12 @@ void TrajectoryPlotWidget::SetDisplayTransforms(
 
 void TrajectoryPlotWidget::SetTheme(const AppTheme& theme) {
     theme_ = theme;
+    if (pointerReadout_) pointerReadout_->setStyleSheet(BuildReadoutStyleSheet(theme_));
+    if (timeReadout_) timeReadout_->setStyleSheet(BuildReadoutStyleSheet(theme_));
     setStyleSheet(QStringLiteral("QFrame#%1 { background: %2; border: 1px solid %3; }")
                       .arg(objectName(), theme_.contentBackground.name(), theme_.border.name()));
     if (chartView_ && chartView_->chart()) {
+        chartView_->setBackgroundBrush(theme_.canvasBackground);
         auto* chart = chartView_->chart();
         chart->setBackgroundBrush(theme_.chartBackgroundEven);
         chart->setBackgroundPen(QPen(theme_.chartBorderEven, 1.5));
@@ -639,9 +671,11 @@ void TrajectoryPlotWidget::RemoveTrack(int trackId) {
         if (chartView_ && chartView_->chart()) {
             if (tracks_[i].line) chartView_->chart()->removeSeries(tracks_[i].line);
             if (tracks_[i].current) chartView_->chart()->removeSeries(tracks_[i].current);
+            if (tracks_[i].cursor) chartView_->chart()->removeSeries(tracks_[i].cursor);
         }
         delete tracks_[i].line;
         delete tracks_[i].current;
+        delete tracks_[i].cursor;
         delete tracks_[i].row;
         tracks_.removeAt(i);
         break;
@@ -800,6 +834,19 @@ void TrajectoryPlotWidget::Ensure2DSeries() {
         }
         track.current->setColor(color);
         track.current->setBorderColor(theme_.guideOutline);
+        if (!track.cursor) {
+            track.cursor = new QScatterSeries(chart);
+            track.cursor->setObjectName("trajectoryTimeCursorPoint");
+            track.cursor->setMarkerSize(16);
+            track.cursor->setColor(Qt::yellow);
+            track.cursor->setBorderColor(QColor("#171c22"));
+            track.cursor->setPen(QPen(QColor("#171c22"), 3));
+            chart->addSeries(track.cursor);
+            track.cursor->attachAxis(xAxis_);
+            track.cursor->attachAxis(yAxis_);
+            track.cursor->hide();
+        }
+        for (auto* marker : chart->legend()->markers(track.cursor)) marker->setVisible(false);
     }
     chart->legend()->setVisible(tracks_.size() > 1);
 }
@@ -857,24 +904,81 @@ void TrajectoryPlotWidget::Render() {
     }
     if (dimension_ == TrajectoryDimension::TwoD) Render2D();
     else Render3D();
+    for (auto& track : tracks_) {
+        std::stable_sort(track.cursorSamples.begin(), track.cursorSamples.end(),
+            [](const auto& a, const auto& b) { return a.sampleKey < b.sampleKey; });
+    }
+    UpdateTimeCursor();
 }
 
 void TrajectoryPlotWidget::SetTimeWindow(double start, double end) {
+    if (windowStart_ == start && windowEnd_ == end) return;
+    ClearTimeCursor();
     windowStart_ = start;
     windowEnd_ = end;
     Render();
 }
 
-bool TrajectoryPlotWidget::InTimeWindow(double sampleKey, int xSignal) const {
+double TrajectoryPlotWidget::SampleTime(double sampleKey, int xSignal) const {
     double time = sampleKey;
     if (pairing_ == pat::TrajectoryPairing::RecordOrder && source_
         && xSignal >= 0 && xSignal < source_->size()) {
         const auto& samples = source_->at(xSignal).samples;
         const qsizetype index = static_cast<qsizetype>(sampleKey);
-        if (index < 0 || index >= samples.size()) return false;
+        if (index < 0 || index >= samples.size()) return std::numeric_limits<double>::quiet_NaN();
         time = samples[index].x();
     }
+    return time;
+}
+
+bool TrajectoryPlotWidget::InTimeWindow(double sampleKey, int xSignal) const {
+    const double time = SampleTime(sampleKey, xSignal);
     return time >= windowStart_ && time <= windowEnd_;
+}
+
+void TrajectoryPlotWidget::SetTimeCursor(double time) {
+    cursorTime_ = time;
+    UpdateTimeCursor();
+}
+
+void TrajectoryPlotWidget::ClearTimeCursor() {
+    cursorTime_ = std::numeric_limits<double>::quiet_NaN();
+    UpdateTimeCursor();
+}
+
+void TrajectoryPlotWidget::UpdateTimeCursor() {
+    QVector<pat::TrajectoryPoint3D> points3D;
+    QStringList values;
+    const bool active = std::isfinite(cursorTime_) && cursorTime_ >= windowStart_ && cursorTime_ <= windowEnd_;
+    for (auto& track : tracks_) {
+        if (track.cursor) { track.cursor->clear(); track.cursor->hide(); }
+        const auto& points = track.cursorSamples;
+        if (!active || !track.visible->isChecked() || points.isEmpty()
+            || cursorTime_ < points.first().sampleKey || cursorTime_ > points.last().sampleKey) continue;
+        auto it = std::lower_bound(points.begin(), points.end(), cursorTime_,
+            [](const auto& point, double time) { return point.sampleKey < time; });
+        if (it == points.end()) --it;
+        if (it != points.begin() && cursorTime_ - (it-1)->sampleKey <= it->sampleKey - cursorTime_) --it;
+        if (track.cursor) {
+            track.cursor->replace(QVector<QPointF>{{it->x, it->y}});
+            track.cursor->show();
+            for (auto* marker : chartView_->chart()->legend()->markers(track.cursor)) marker->setVisible(false);
+        } else points3D.append(*it);
+        QString text = tr("#%1  t: %2  X: %3  Y: %4").arg(&track - tracks_.data() + 1)
+            .arg(it->sampleKey, 0, 'g', 10).arg(it->x, 0, 'g', 10).arg(it->y, 0, 'g', 10);
+        if (canvas3D_) text += tr("  Z: %1").arg(it->z, 0, 'g', 10);
+        values.append(text);
+    }
+    if (canvas3D_) canvas3D_->SetCursorPoints(std::move(points3D));
+    if (chartView_) chartView_->viewport()->update();
+    if (!timeReadout_) return;
+    timeReadout_->setVisible(active);
+    if (!active) return;
+    timeReadout_->setText(tr("时间游标: %1 · 最近有效配对点\n").arg(cursorTime_, 0, 'g', 10)
+        + (values.isEmpty() ? tr("此时间无可用轨迹点") : values.join('\n')));
+    timeReadout_->setMaximumWidth(std::max(1, timeReadout_->parentWidget()->width()-16));
+    timeReadout_->adjustSize();
+    timeReadout_->raise();
 }
 
 void TrajectoryPlotWidget::ScheduleEqualAspect() {
@@ -944,6 +1048,7 @@ void TrajectoryPlotWidget::Render2D() {
     for (int i = 0; i < tracks_.size(); ++i) {
         auto& track = tracks_[i];
         const bool visible = track.visible->isChecked();
+        track.cursorSamples.clear();
         track.line->setVisible(visible);
         track.current->setVisible(visible);
         if (!visible) continue;
@@ -959,6 +1064,7 @@ void TrajectoryPlotWidget::Render2D() {
                                 yTransform.Apply(sample.value.y()));
             if (!std::isfinite(point.x()) || !std::isfinite(point.y())) continue;
             displayed.append(point);
+            track.cursorSamples.append({SampleTime(sample.sampleKey, xSignal), point.x(), point.y(), 0});
             if (!hasRange) {
                 minX = maxX = point.x(); minY = maxY = point.y(); hasRange = true;
             } else {
@@ -977,12 +1083,14 @@ void TrajectoryPlotWidget::Render2D() {
     }
     if (hasRange && autoRange_->isChecked()) {
         applyingAspect_ = true;
-        SetPaddedRange(xAxis_, minX, maxX);
-        SetPaddedRange(yAxis_, minY, maxY);
-        baseXMin_ = xAxis_->min(); baseXMax_ = xAxis_->max();
-        baseYMin_ = yAxis_->min(); baseYMax_ = yAxis_->max();
+        std::tie(baseXMin_, baseXMax_) = PaddedRange(minX, maxX);
+        std::tie(baseYMin_, baseYMax_) = PaddedRange(minY, maxY);
+        if (!equalAspect_->isChecked()) {
+            xAxis_->setRange(baseXMin_, baseXMax_);
+            yAxis_->setRange(baseYMin_, baseYMax_);
+        }
         applyingAspect_ = false;
-        ScheduleEqualAspect();
+        ApplyEqualAspect();
     }
     UpdateAxisTitles();
     UpdateExtrema();
@@ -1011,7 +1119,8 @@ void TrajectoryPlotWidget::Render3D() {
     qsizetype historyCount = 0;
     qsizetype drawnCount = 0;
     for (int i = 0; i < tracks_.size(); ++i) {
-        const auto& track = tracks_[i];
+        auto& track = tracks_[i];
+        track.cursorSamples.clear();
         if (!track.visible->isChecked()) continue;
         const int xSignal = SelectedSignal(track.xCombo);
         const int ySignal = SelectedSignal(track.yCombo);
@@ -1023,8 +1132,10 @@ void TrajectoryPlotWidget::Render3D() {
         displayed.reserve(track.history3D.size());
         for (const auto& point : track.history3D) {
             if (!InTimeWindow(point.sampleKey, xSignal)) continue;
-            displayed.append({point.sampleKey, xTransform.Apply(point.x),
-                              yTransform.Apply(point.y), zTransform.Apply(point.z)});
+            const double x = xTransform.Apply(point.x), y = yTransform.Apply(point.y), z = zTransform.Apply(point.z);
+            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) continue;
+            displayed.append({point.sampleKey, x, y, z});
+            track.cursorSamples.append({SampleTime(point.sampleKey, xSignal), x, y, z});
         }
         const auto drawn = pat::DecimateTrajectory3D(displayed, kMaxDrawPointsPerTrack);
         const qsizetype colorCount = std::max<qsizetype>(1, theme_.seriesColors.size());
@@ -1131,7 +1242,7 @@ bool TrajectoryPlotWidget::eventFilter(QObject* watched, QEvent* event) {
             pointerReadout_->setVisible(inside);
             if (inside && !chartView_->chart()->series().isEmpty()) {
                 const auto value = chartView_->chart()->mapToValue(position, chartView_->chart()->series().first());
-                pointerReadout_->setText(tr("游标位置 X: %1  Y: %2").arg(QString::number(value.x(), 'g', 10), QString::number(value.y(), 'g', 10)));
+                pointerReadout_->setText(tr("鼠标坐标（非采样）X: %1  Y: %2").arg(QString::number(value.x(), 'g', 10), QString::number(value.y(), 'g', 10)));
                 pointerReadout_->adjustSize();
                 pointerReadout_->move(6, std::max(0, chartView_->viewport()->height() - pointerReadout_->height() - 4));
                 pointerReadout_->raise();
@@ -1385,6 +1496,14 @@ void TrajectoryView::SetTimeWindow(double start, double end) {
     windowStart_ = start;
     windowEnd_ = end;
     for (auto* plot : plots_) plot->SetTimeWindow(start, end);
+}
+
+void TrajectoryView::SetTimeCursor(double time) {
+    for (auto* plot : plots_) plot->SetTimeCursor(time);
+}
+
+void TrajectoryView::ClearTimeCursor() {
+    for (auto* plot : plots_) plot->ClearTimeCursor();
 }
 
 void TrajectoryView::SetDisplayTransforms(

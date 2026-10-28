@@ -87,6 +87,22 @@ const AppTheme& ThemeFor(AppThemeId id) {
     return indoorDark;
 }
 
+QColor ReadoutTextColor(const AppTheme& theme) {
+    return theme.id == AppThemeId::IndoorDark ? QColor("#ffff00") : theme.text;
+}
+
+QColor ReadoutBackgroundColor(const AppTheme& theme) {
+    return theme.panelBackground;
+}
+
+QString BuildReadoutStyleSheet(const AppTheme& theme) {
+    const QColor border = theme.border;
+    return QStringLiteral("QLabel { color: %1; background: %2; border: 1px solid rgba(%3,%4,%5,65);"
+                          " border-radius: 3px; padding: 2px; font-size: 10px; font-weight: normal; }")
+        .arg(ReadoutTextColor(theme).name(), ReadoutBackgroundColor(theme).name())
+        .arg(border.red()).arg(border.green()).arg(border.blue());
+}
+
 QVector<AppThemeId> AvailableThemeIds() {
     return {AppThemeId::IndoorDark, AppThemeId::IndoorLight,
             AppThemeId::OutdoorHighContrast};

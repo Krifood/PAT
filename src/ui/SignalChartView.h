@@ -186,7 +186,7 @@ private:
     bool reorderArmed_ = false;
     QPoint reorderStartPos_;
     int viewIndex_ = -1;
-    qreal plotLeftMargin_ = 80.0;
+    qreal plotLeftMargin_ = 56.0;
     double yZoom_ = 1.0;
     double autoMinY_ = -1.0, autoMaxY_ = 1.0;
 };

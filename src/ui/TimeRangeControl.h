@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QWidget>
+#include "ui/AppTheme.h"
 
 class QDoubleSpinBox;
 class QLabel;
@@ -13,8 +14,11 @@ public:
     explicit TimeRangeControl(QWidget* parent = nullptr);
     void SetExtent(double maximum, const QString& unit, bool available);
     void SetSelection(double start, double end);
+    void SetTheme(const AppTheme& theme);
 
 signals:
+    void CursorMoved(double time);
+    void CursorLeft();
     void RangeSelected(double start, double end);
 
 private:

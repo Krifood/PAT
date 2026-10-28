@@ -50,13 +50,45 @@
 
 namespace {
 
+// Query measurements, never synthesize a value between samples. Gaps and
+// uncovered time ranges have no reading; duplicate timestamps use the last update.
+const QPointF* NearestSample(const QVector<QPointF>& samples, double x) {
+    if (samples.isEmpty() || !std::isfinite(x)
+        || x < samples.first().x() || x > samples.last().x()) return nullptr;
+    auto after = std::upper_bound(samples.cbegin(), samples.cend(), x,
+        [](double key, const QPointF& point) { return key < point.x(); });
+    auto selected = after == samples.cbegin() ? after : after - 1;
+    if (selected->x() != x && after != samples.cend()) {
+        if (!std::isfinite(selected->y()) || !std::isfinite(after->y())) return nullptr;
+        // Explicit previous-value-hold derived curves carry a pre-update point
+        // at the next timestamp. Do not read the new value before that update.
+        if (after + 1 != samples.cend() && after->x() == (after + 1)->x()
+            && after->y() == selected->y()) return &*selected;
+        if (after->x() - x < x - selected->x()) {
+            selected = std::upper_bound(after, samples.cend(), after->x(),
+                [](double key, const QPointF& point) { return key < point.x(); }) - 1;
+        }
+    }
+    return std::isfinite(selected->y()) ? &*selected : nullptr;
+}
+
 // Paint a backing plate, not a glyph outline: outlines obscure small text.
 class CursorValueLabel final : public QGraphicsSimpleTextItem {
 public:
-    CursorValueLabel(const QColor& signalColor, QGraphicsItem* parent)
+    CursorValueLabel(const QColor& signalColor, const AppTheme& theme, QGraphicsItem* parent)
         : QGraphicsSimpleTextItem(parent), signalColor_(signalColor) {
-        setBrush(QColor("#ffff00"));
+        SetTheme(theme);
         setPen(QPen(Qt::NoPen));
+        QFont compact = font();
+        compact.setPointSizeF(9);
+        compact.setWeight(QFont::Normal);
+        setFont(compact);
+    }
+
+    void SetTheme(const AppTheme& theme) {
+        setBrush(ReadoutTextColor(theme));
+        background_ = ReadoutBackgroundColor(theme);
+        update();
     }
 
     QRectF boundingRect() const override {
@@ -67,18 +99,20 @@ public:
                QWidget* widget) override {
         painter->save();
         painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor("#171c22"));
+        painter->setBrush(background_);
         painter->drawRoundedRect(boundingRect(), 3, 3);
         // Keep the association with the curve without coloring the numbers.
         const QRectF rect = boundingRect();
-        painter->fillRect(QRectF(rect.left(), rect.top() + 2, 2, rect.height() - 4),
-                          signalColor_);
+        QColor accent = signalColor_;
+        accent.setAlpha(110);
+        painter->fillRect(QRectF(rect.left(), rect.top() + 2, 1, rect.height() - 4), accent);
         painter->restore();
         QGraphicsSimpleTextItem::paint(painter, option, widget);
     }
 
 private:
     QColor signalColor_;
+    QColor background_;
 };
 
 }  // namespace
@@ -87,7 +121,7 @@ SignalChartView::SignalChartView(QWidget* parent) : QChartView(parent) {
     mousePositionLabel_ = new QLabel(viewport());
     mousePositionLabel_->setObjectName("chartMousePosition");
     mousePositionLabel_->setAttribute(Qt::WA_TransparentForMouseEvents);
-    mousePositionLabel_->setStyleSheet("color: #ffff00; background: #171c22; padding: 2px; font-size: 10px;");
+    mousePositionLabel_->setStyleSheet(BuildReadoutStyleSheet(theme_));
     mousePositionLabel_->hide();
     // A plain tooltip window has no QToolTip timeout: it lives until hover ends.
     guidePopup_ = new QLabel(this, Qt::ToolTip | Qt::FramelessWindowHint
@@ -96,9 +130,7 @@ SignalChartView::SignalChartView(QWidget* parent) : QChartView(parent) {
     guidePopup_->setTextFormat(Qt::PlainText);
     guidePopup_->setAttribute(Qt::WA_TransparentForMouseEvents);
     guidePopup_->setAttribute(Qt::WA_ShowWithoutActivating);
-    guidePopup_->setStyleSheet(QStringLiteral(
-        "QLabel { color: #ffff00; background: #171c22; border: 1px solid #85909c;"
-        " border-radius: 4px; padding: 6px; }"));
+    guidePopup_->setStyleSheet(BuildReadoutStyleSheet(theme_));
     connect(qApp, &QGuiApplication::applicationStateChanged, this,
             [this](Qt::ApplicationState state) {
         if (state != Qt::ApplicationActive) HideGuideTooltip();
@@ -119,6 +151,12 @@ SignalChartView::SignalChartView(QWidget* parent) : QChartView(parent) {
 
 void SignalChartView::SetTheme(const AppTheme& theme) {
     theme_ = theme;
+    setBackgroundBrush(theme_.canvasBackground);
+    mousePositionLabel_->setStyleSheet(BuildReadoutStyleSheet(theme_));
+    guidePopup_->setStyleSheet(BuildReadoutStyleSheet(theme_));
+    for (auto* label : valueLabels_)
+        if (auto* readout = dynamic_cast<CursorValueLabel*>(label)) readout->SetTheme(theme_);
+    if (auto* readout = dynamic_cast<CursorValueLabel*>(extremaLabel_)) readout->SetTheme(theme_);
 }
 
 void SignalChartView::Configure(const QString& title,
@@ -208,6 +246,7 @@ void SignalChartView::Configure(const QString& title,
     }
 
     auto* axisY = new CompactValueAxis(chart);
+    axisY->SetStableLabelWidth();
     axisY->setRange(minY, maxY);
     axisY->setTickCount(3);
     axisY->setTitleBrush(QBrush(theme_.axisText));
@@ -299,7 +338,7 @@ void SignalChartView::Configure(const QString& title,
     for (int i = 0; i < series_.size(); ++i) {
         const QColor labelColor = series_.value(i)
             ? series_[i]->pen().color() : theme_.cursorValue;
-        auto* label = new CursorValueLabel(labelColor, chart);
+        auto* label = new CursorValueLabel(labelColor, theme_, chart);
         label->setZValue(1001 + i);
         label->setVisible(false);
         valueLabels_.append(label);
@@ -535,7 +574,7 @@ void SignalChartView::mouseMoveEvent(QMouseEvent* event) {
         mousePositionLabel_->setVisible(inside);
         if (inside) {
             const QPointF value = MapToValue(event->position().toPoint());
-            mousePositionLabel_->setText(tr("游标位置 X: %1  Y: %2").arg(QString::number(value.x(), 'g', 10), QString::number(value.y(), 'g', 10)));
+            mousePositionLabel_->setText(tr("鼠标坐标（非采样）X: %1  Y: %2").arg(QString::number(value.x(), 'g', 10), QString::number(value.y(), 'g', 10)));
             mousePositionLabel_->adjustSize();
             const QPoint anchor = mapFromScene(chart()->mapToScene(chart()->plotArea().bottomRight()));
             mousePositionLabel_->move(std::max(0, anchor.x() - mousePositionLabel_->width() - 4), std::max(0, anchor.y() - mousePositionLabel_->height() - 4));
@@ -931,8 +970,8 @@ QString SignalChartView::GuideTooltip(int index, int maxEntries) const {
     const GuideLine guide = guides_[index].guide;
     QStringList rows;
     rows.append(guide.orientation == GuideOrientation::Horizontal
-                    ? tr("横向辅助线 val=%1").arg(guide.value, 0, 'g', 12)
-                    : tr("纵向辅助线 key=%1").arg(guide.value, 0, 'g', 12));
+                    ? tr("横向辅助线 val=%1（连线几何交点，非原始采样）").arg(guide.value, 0, 'g', 12)
+                    : tr("纵向辅助线 key=%1（最近真实采样，不插值）").arg(guide.value, 0, 'g', 12));
     const double visibleMinX = rangeContext_.hasCurrentRange ? rangeContext_.currentMinX : rangeContext_.globalMinX;
     const double visibleMaxX = rangeContext_.hasCurrentRange ? rangeContext_.currentMaxX : rangeContext_.globalMaxX;
     int intersectionCount = 0;
@@ -956,17 +995,9 @@ QString SignalChartView::GuideTooltip(int index, int maxEntries) const {
             const double x = guide.value;
             if (x >= visibleMinX && x <= visibleMaxX
                 && x >= samples.first().x() && x <= samples.last().x()) {
-                auto it = std::lower_bound(samples.begin(), samples.end(), x,
-                                           [](const QPointF& point, double key) { return point.x() < key; });
-                if (it != samples.end()) {
-                    double y = it->y();
-                    if (it != samples.begin()) {
-                        const QPointF p0 = *(it - 1);
-                        const QPointF p1 = *it;
-                        const double dx = p1.x() - p0.x();
-                        y = dx == 0.0 ? p1.y() : p0.y() + (p1.y() - p0.y()) * (x - p0.x()) / dx;
-                    }
-                    appendCrossing(label, x, transform.Apply(y));
+                if (const auto* sample = NearestSample(samples, x)) {
+                    const double value = transform.Apply(sample->y());
+                    if (std::isfinite(value)) appendCrossing(label, sample->x(), value);
                 }
             }
         } else {
@@ -991,6 +1022,7 @@ QString SignalChartView::GuideTooltip(int index, int maxEntries) const {
                 QPointF p1 = samples[i];
                 p0.setY(transform.Apply(p0.y()));
                 p1.setY(transform.Apply(p1.y()));
+                if (!std::isfinite(p0.y()) || !std::isfinite(p1.y())) continue;
                 if (p1.x() < visibleMinX || p0.x() > visibleMaxX) continue;
                 if (y < std::min(p0.y(), p1.y()) || y > std::max(p0.y(), p1.y())) continue;
                 const double dy = p1.y() - p0.y();
@@ -1271,7 +1303,7 @@ void SignalChartView::PlaceInfoBlocks() {
 void SignalChartView::SetExtremaText(const QStringList& lines) {
     extremaLines_ = lines;
     if (!extremaLabel_) {
-        extremaLabel_ = new CursorValueLabel(QColor(Qt::yellow), chart());
+        extremaLabel_ = new CursorValueLabel(QColor(Qt::yellow), theme_, chart());
         QFont font = extremaLabel_->font();
         font.setPointSizeF(std::max(8.0, font.pointSizeF() - 2.0));
         extremaLabel_->setFont(font);
@@ -1466,41 +1498,19 @@ void SignalChartView::UpdateCursor(double cursorX) {
         const auto& seriesData = *displaySources_[i];
         if (seriesData.samples.isEmpty()) continue;
 
-        const double seriesMinX = seriesData.samples.first().x();
-        const double seriesMaxX = seriesData.samples.last().x();
-        double clampedX = cursorX;
-        if (clampedX < seriesMinX) clampedX = seriesMinX;
-        if (clampedX > seriesMaxX) clampedX = seriesMaxX;
-
-        auto begin = seriesData.samples.begin();
-        auto end = seriesData.samples.end();
-        auto it = std::lower_bound(begin, end, clampedX, [](const QPointF& p, double x) { return p.x() < x; });
-        double value = 0.0;
-        if (it != end && it->x() == clampedX) {
-            // A valid point immediately after a gap must not interpolate with NaN.
-            // At a step, prefer the value AFTER the update at that timestamp.
-            while (it + 1 != end && (it + 1)->x() == clampedX) ++it;
-            value = it->y();
-        } else if (it == begin) {
-            value = it->y();
-        } else if (it == end) {
-            value = (end - 1)->y();
-        } else {
-            const QPointF p0 = *(it - 1);
-            const QPointF p1 = *it;
-            const double dx = p1.x() - p0.x();
-            value = dx == 0.0 ? p1.y() : (p0.y() + (p1.y() - p0.y()) * (clampedX - p0.x()) / dx);
-        }
-
-        value = displayTransforms_.value(i).Apply(value);
+        const auto* sample = NearestSample(seriesData.samples, cursorX);
+        if (!sample) continue;
+        const double value = displayTransforms_.value(i).Apply(sample->y());
         if (!std::isfinite(value)) continue;
         auto* label = valueLabels_[i];
         if (!label) continue;
-        const QString keyText = QString::number(cursorX, 'f', 2);
+        const QString keyText = QString::number(sample->x(), 'g', 12);
         const QString valueText = QString::number(value, 'f', 4);
         label->setText(series_.size() > 1
                            ? QStringLiteral("k:%1  v:%2").arg(keyText, valueText)
                            : QStringLiteral("k:%1\nv:%2").arg(keyText, valueText));
+        label->setToolTip(tr("最近数据点（不插值；派生图为所选运算结果）\n游标时间: %1\n数据时间: %2\n值: %3")
+            .arg(cursorX, 0, 'g', 17).arg(sample->x(), 0, 'g', 17).arg(value, 0, 'g', 17));
         auto* seriesRef = series_.value(i);
         if (!seriesRef) seriesRef = series_.first();
         const QPointF valuePoint = chart()->mapToPosition(QPointF(cursorX, value), seriesRef);

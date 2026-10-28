@@ -54,6 +54,8 @@ public:
     void SetDisplayTransforms(const QHash<int, pat::DisplayTransform>& transforms);
     void SetTheme(const AppTheme& theme);
     void SetTimeWindow(double start, double end);
+    void SetTimeCursor(double time);
+    void ClearTimeCursor();
     void CaptureData();
     void Render();
     void ResetHistory();
@@ -87,6 +89,8 @@ private:
         QComboBox* zCombo = nullptr;
         QLineSeries* line = nullptr;
         QScatterSeries* current = nullptr;
+        QScatterSeries* cursor = nullptr;
+        QVector<pat::TrajectoryPoint3D> cursorSamples;
         QVector<pat::TrajectoryPoint2D> history2D;
         QVector<pat::TrajectoryPoint3D> history3D;
         double lastSampleKey = -1.0;
@@ -106,6 +110,8 @@ private:
     void UpdateExtrema();
     void UpdateAxisTitles();
     void Render3D();
+    void UpdateTimeCursor();
+    double SampleTime(double sampleKey, int xSignal) const;
     QString TrackName(const TrackState& track) const;
     int BestSignal(bool longitude, bool latitude, bool altitude) const;
     bool InTimeWindow(double sampleKey, int xSignal) const;
@@ -133,6 +139,8 @@ private:
     double baseXMin_ = -1, baseXMax_ = 1, baseYMin_ = -1, baseYMax_ = 1;
     QLabel* extrema_ = nullptr;
     QLabel* pointerReadout_ = nullptr;
+    QLabel* timeReadout_ = nullptr;
+    double cursorTime_ = std::numeric_limits<double>::quiet_NaN();
     QLabel* status_ = nullptr;
     QChartView* chartView_ = nullptr;
     Trajectory3DCanvas* canvas3D_ = nullptr;
@@ -152,6 +160,8 @@ public:
 
     void SetTheme(const AppTheme& theme);
     void SetTimeWindow(double start, double end);
+    void SetTimeCursor(double time);
+    void ClearTimeCursor();
     void ConfigureSignals(const pat::FormatDefinition& format);
     void SetDataSource(const QVector<pat::Series>* series, pat::TrajectoryPairing pairing);
     void SetDisplayTransforms(const QHash<int, pat::DisplayTransform>& transforms);

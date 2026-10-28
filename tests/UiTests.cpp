@@ -21,6 +21,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QDockWidget>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -53,6 +54,7 @@
 #include <QtCharts/QChart>
 #include <QtCharts/QLegend>
 #include <QtCharts/QLineSeries>
+#include <QtCharts/QScatterSeries>
 #include <QtCharts/QValueAxis>
 #include <algorithm>
 #include <cmath>
@@ -88,6 +90,11 @@ class UiTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void cursorReadsSamplesWithoutInterpolation();
+    void readoutsFollowAllThemes();
+    void timeHoverLinksSpatialCursors();
+    void trajectoryAxesSettleAfterRangeChanges();
+    void firstReleaseUiWorkflow();
     void sharedCursorClearsWithoutTrails();
     void guidePositionInputAndPointerReadouts();
     void visibleRangeExtrema();
@@ -130,6 +137,131 @@ void UiTests::initTestCase() {
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory_.path());
     QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, settingsDirectory_.path());
+}
+
+void UiTests::cursorReadsSamplesWithoutInterpolation() {
+    QVector<pat::Series> source(1);
+    source[0].name = "discrete";
+    source[0].samples = {{0, 0}, {10, 100}};
+    const auto original = source[0].samples;
+    SignalChartView view;
+    view.resize(800, 350);
+    view.Configure("discrete", {}, "s", false, {Qt::cyan}, {0}, {original}, &source, -10, 110, 0, 10, 0);
+    view.SetRangeContext({0, 10, 0, 10, .01, true});
+    view.show(); QTest::qWait(30);
+    const auto visibleReading = [&]() -> QString {
+        for (auto* item : view.chart()->childItems()) {
+            auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item);
+            if (label && label->isVisible() && label->text().startsWith("k:")) return label->text();
+        }
+        return {};
+    };
+    view.SetCursorX(4);
+    QCOMPARE(visibleReading(), QString("k:0\nv:0.0000"));
+    view.SetCursorX(6);
+    QCOMPARE(visibleReading(), QString("k:10\nv:100.0000"));
+    view.SetCursorX(-1); QVERIFY(visibleReading().isEmpty());
+    view.SetCursorX(11); QVERIFY(visibleReading().isEmpty());
+    view.SetGuideLines({{GuideOrientation::Vertical, 4}});
+    const QPoint hover = view.mapFromScene(view.chart()->mapToScene(
+        view.chart()->mapToPosition(QPointF(4, 50))));
+    QMouseEvent move(QEvent::MouseMove, QPointF(hover), view.viewport()->mapToGlobal(hover), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(view.viewport(), &move);
+    const auto* popup = view.findChild<QLabel*>("guideHoverPopup");
+    QVERIFY(popup->isVisible());
+    QVERIFY(popup->text().contains("key=0  val=0"));
+    QVERIFY(popup->text().contains("不插值"));
+    QCOMPARE(source[0].samples, original);
+    QCOMPARE(qobject_cast<QLineSeries*>(view.chart()->series().first())->points(), original);
+    // Respect gaps and explicit step/hold operations, without changing them.
+    source[0].samples = {{0, 1}, {5, qQNaN()}, {10, 100}};
+    view.SetCursorX(4); QVERIFY(visibleReading().isEmpty());
+    view.SetCursorX(6); QVERIFY(visibleReading().isEmpty());
+    view.SetCursorX(10); QCOMPARE(visibleReading(), QString("k:10\nv:100.0000"));
+    source[0].samples = {{0, 1}, {10, 1}, {10, 100}};
+    view.SetCursorX(9); QCOMPARE(visibleReading(), QString("k:0\nv:1.0000"));
+    view.SetCursorX(10); QCOMPARE(visibleReading(), QString("k:10\nv:100.0000"));
+}
+
+void UiTests::readoutsFollowAllThemes() {
+    QVector<pat::Series> source(1);
+    source[0].samples = {{0, 10}, {1, 20}};
+    SignalChartView view;
+    view.resize(800, 350);
+    view.Configure("theme", {}, "s", false, {Qt::cyan}, {0}, {source[0].samples}, &source, 0, 30, 0, 1, 0);
+    view.SetExtremaText({"max:20\nmin:10"});
+    view.show(); QTest::qWait(30);
+    TrajectoryPlotWidget spatial2D(90, TrajectoryDimension::TwoD);
+    TrajectoryPlotWidget spatial3D(91, TrajectoryDimension::ThreeD);
+    for (auto id : AvailableThemeIds()) {
+        const auto& theme = ThemeFor(id);
+        view.SetTheme(theme);
+        spatial2D.SetTheme(theme); spatial3D.SetTheme(theme);
+        view.SetCursorX(.4);
+        QGraphicsSimpleTextItem* reading = nullptr;
+        for (auto* item : view.chart()->childItems()) {
+            auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item);
+            if (!label || !label->isVisible() || !label->text().startsWith("k:")) continue;
+            reading = label;
+            QCOMPARE(label->brush().color(), ReadoutTextColor(theme));
+            QCOMPARE(label->font().pointSizeF(), 9.0);
+            QCOMPARE(label->pen().style(), Qt::NoPen);
+        }
+        QVERIFY(reading);
+        QVERIFY(ContrastRatio(ReadoutTextColor(theme), ReadoutBackgroundColor(theme)) >= 4.5);
+        const auto image = view.grab().toImage();
+        const auto bounds = reading->boundingRect();
+        const QPoint at = view.mapFromScene(reading->mapToScene(QPointF(bounds.right()-2, bounds.center().y())));
+        QCOMPARE(image.pixelColor(qRound(at.x()*image.devicePixelRatio()), qRound(at.y()*image.devicePixelRatio())), ReadoutBackgroundColor(theme));
+        QCOMPARE(view.findChild<QLabel*>("chartMousePosition")->styleSheet(), BuildReadoutStyleSheet(theme));
+        QCOMPARE(view.findChild<QLabel*>("guideHoverPopup")->styleSheet(), BuildReadoutStyleSheet(theme));
+        QCOMPARE(spatial2D.findChild<QLabel*>("trajectory2DMousePosition")->styleSheet(), BuildReadoutStyleSheet(theme));
+        QCOMPARE(spatial2D.findChild<QLabel*>("trajectoryTimeCursor")->styleSheet(), BuildReadoutStyleSheet(theme));
+        QCOMPARE(spatial3D.findChild<QLabel*>("trajectory3DMousePosition")->styleSheet(), BuildReadoutStyleSheet(theme));
+        QCOMPARE(spatial3D.findChild<QLabel*>("trajectoryTimeCursor")->styleSheet(), BuildReadoutStyleSheet(theme));
+        const QString screenshots = qEnvironmentVariable("PAT_UI_SCREENSHOT_DIR");
+        if (!screenshots.isEmpty()) QVERIFY(view.grab().save(screenshots + "/readout-" + theme.key + ".png"));
+    }
+}
+
+void UiTests::firstReleaseUiWorkflow() {
+    MainWindow window;
+    window.ApplyTheme(AppThemeId::IndoorDark, false);
+    window.resize(1100, 720);
+    window.show(); QTest::qWait(100);
+    QVERIFY(window.width() <= 1100);
+    QVERIFY(window.height() <= 720);
+    QVERIFY(window.chartArea_->findChild<QWidget*>("chartEmptyState")->isVisible());
+    QVERIFY(window.chartArea_->findChild<QLabel*>("chartEmptyHint")->text().contains("混合日志"));
+    QVERIFY(window.chartArea_->findChild<QPushButton*>("emptyOpenFormat"));
+    QVERIFY(window.signalSearchResults_->isHidden());
+    QVERIFY(window.signalTree_->columnWidth(0) >= 200);
+    const QString screenshots = qEnvironmentVariable("PAT_UI_SCREENSHOT_DIR");
+    const auto snapshot = [&](const QString& name) {
+        if (screenshots.isEmpty()) return;
+        QVERIFY(window.grab().save(QDir(screenshots).filePath(name + ".png")));
+        qInfo() << name << window.size() << window.minimumSizeHint();
+    };
+    snapshot("01-empty");
+    QString error;
+    const QString root = QString::fromUtf8(PAT_SOURCE_DIR);
+    QVERIFY2(window.formatDocument_.LoadFromFile(root + "/samples/cp01_b3_navigation.json", error), qPrintable(error));
+    QVERIFY2(window.dataSession_.Load(root + "/samples/cp01_b3_synthetic.hex", window.formatDocument_.Format(), error), qPrintable(error));
+    window.BuildSignalTree();
+    window.signalTreeController_->SetSignalsChecked({0, 7, 8}, true);
+    window.UpdateCharts(); QTest::qWait(100);
+    window.UpdateStatus(tr("示例数据已加载；勾选信号开始分析"));
+    QCOMPARE(window.chartArea_->findChildren<SignalChartView*>().size(), 3);
+    QVERIFY(window.chartArea_->findChild<QWidget*>("chartEmptyState")->isHidden());
+    for (auto* chart : window.chartArea_->findChildren<SignalChartView*>())
+        QCOMPARE(chart->backgroundBrush().color(), ThemeFor(AppThemeId::IndoorDark).canvasBackground);
+    snapshot("02-time-series");
+    window.dataViewTabs_->setCurrentIndex(1);
+    window.trajectoryView_->RefreshNow(); QTest::qWait(100);
+    snapshot("03-trajectories");
+    window.dataViewTabs_->setCurrentIndex(0);
+    window.resize(1366, 768); QTest::qWait(50);
+    snapshot("04-wide");
 }
 
 void UiTests::mixedSignalLabelsUseGroupContext() {
@@ -755,15 +887,22 @@ void UiTests::chartZoomAlignmentFocusAndSharedGuides() {
         const QRectF plot = view->chart()->plotArea();
         auto* axis = dynamic_cast<CompactValueAxis*>(view->chart()->axes(Qt::Vertical).first());
         QVERIFY(axis);
+        QCOMPARE(axis->labelsFont().pointSizeF(), 9.0);
+        QCOMPARE(axis->labelsFont().weight(), QFont::Normal);
+        QVERIFY2(plot.left() <= std::max(44.0, view->YLabelWidth() + 15.0),
+                 qPrintable(QString::number(plot.left())));
         const QString bottomText = axis->categoriesLabels().first();
         bool foundBottomTick = false;
         for (auto* item : view->scene()->items()) {
             QString text;
             if (auto* label = dynamic_cast<QGraphicsTextItem*>(item)) text = label->toPlainText();
             else if (auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(item)) text = label->text();
-            if (text != bottomText || !item->isVisible()) continue;
+            // Qt's rich-text axis item may normalize the fixed-width padding.
+            if (text.trimmed() != bottomText.trimmed() || !item->isVisible()) continue;
             const auto center = view->chart()->mapFromScene(item->sceneBoundingRect().center());
             if (center.x() >= plot.left()) continue;
+            const QRectF labelBounds = view->chart()->mapFromScene(item->sceneBoundingRect()).boundingRect();
+            QVERIFY2(labelBounds.left() >= 0, qPrintable(QString::number(labelBounds.left())));
             QVERIFY(qAbs(center.y() - plot.bottom()) < 5.0);
             foundBottomTick = true;
         }
@@ -778,6 +917,9 @@ void UiTests::chartZoomAlignmentFocusAndSharedGuides() {
     };
     QVERIFY(charts[1]->chart()->axes(Qt::Horizontal).first()->isVisible());
     verifyPaintedLayout(charts[1]);
+    const QString gutterScreenshotDirectory = qEnvironmentVariable("PAT_UI_SCREENSHOT_DIR");
+    if (!gutterScreenshotDirectory.isEmpty())
+        QVERIFY(area.grab().save(gutterScreenshotDirectory + "/06-compact-y-axis.png"));
     area.resize(1100, 900); QTest::qWait(50);
     verifyPaintedLayout(charts[1]);
     QTest::mouseDClick(charts[1]->viewport(), Qt::LeftButton);
@@ -1092,7 +1234,9 @@ void UiTests::trajectoryVisibilityKeepsHistory() {
     QTest::mouseDClick(title, Qt::LeftButton);
     QVERIFY(!other->isHidden());
     toggle->setChecked(true);
-    for (auto* series : chart->chart()->series()) QVERIFY(series->isVisible());
+    for (auto* series : chart->chart()->series()) {
+        if (series->objectName() != "trajectoryTimeCursorPoint") QVERIFY(series->isVisible());
+    }
     QCOMPARE(plot->HistoryPointCount(), history);
     auto* plot3D = view.AddPlot(TrajectoryDimension::ThreeD);
     view.RefreshNow(); QTest::qWait(50);
@@ -1322,11 +1466,14 @@ void UiTests::signalSearchOperatesOnMainSelection() {
     window.seriesProcessing_.SetTransform(signalIndex, {1.0, 25.0});
     window.signalSearchEdit_->clear();
     QCOMPARE(window.signalSearchResults_->topLevelItemCount(), 0);
+    QVERIFY(window.signalSearchResults_->isHidden());
     QVERIFY(window.signalTreeController_->CollectCheckedSignalIndices().contains(signalIndex));
     QCOMPARE(window.seriesProcessing_.Transform(signalIndex).offset, 25.0);
 
     window.signalSearchEdit_->setText(QStringLiteral("COMBINED-NAME-NOT-PRESENT"));
     QCOMPARE(window.signalSearchResults_->topLevelItemCount(), 0);
+    QVERIFY(!window.signalSearchResults_->isHidden());
+    QVERIFY(window.findChild<QLabel*>("signalSearchCaption")->text().contains("没有匹配"));
     window.signalSearchEdit_->setText(QStringLiteral("角"));
     QVERIFY(window.signalSearchResults_->topLevelItemCount() > 1);
 }
@@ -1599,7 +1746,7 @@ void UiTests::chartGroupsGuidesAndAxes() {
         auto* compact = dynamic_cast<CompactValueAxis*>(yAxis);
         QVERIFY(compact);
         QCOMPARE(compact->categoriesLabels().size(), 3);
-        for (const auto& label : compact->categoriesLabels()) QVERIFY(label.size() <= 14);
+        for (const auto& label : compact->categoriesLabels()) QCOMPARE(label.size(), 6);
         QCOMPARE(xAxis->isVisible(), view->ViewIndex() == 1);
         QVERIFY(!xAxis->isTitleVisible());
     }
@@ -1741,6 +1888,15 @@ void UiTests::timeRangeControlSupportsHandlesAndPanning() {
     auto* end = control.findChild<QDoubleSpinBox*>("timeRangeEnd");
     auto* reset = control.findChild<QPushButton*>("timeRangeReset");
     QVERIFY(bar && start && end && reset);
+    QCOMPARE(bar->height(), 50);
+    QVERIFY(bar->accessibleDescription().contains("100%"));
+    for (AppThemeId themeId : AvailableThemeIds()) {
+        const auto& theme = ThemeFor(themeId);
+        control.SetTheme(theme);
+        QCOMPARE(bar->palette().color(QPalette::Text), theme.text);
+        QVERIFY(ContrastRatio(bar->palette().color(QPalette::Text), theme.contentBackground) >= 4.5);
+        bar->grab();
+    }
     QSignalSpy selected(&control, &TimeRangeControl::RangeSelected);
     const auto at = [bar](double fraction) {
         return QPoint(qRound(10 + fraction * (bar->width() - 20)), bar->height() / 2);
@@ -1781,8 +1937,136 @@ void UiTests::timeRangeControlSupportsHandlesAndPanning() {
     QVERIFY(QMetaObject::invokeMethod(start, "editingFinished", Qt::DirectConnection));
     QVERIFY(start->value() >= 79.99);
     QVERIFY(end->value() > start->value());
+    // The ruler is a percentage of the total extent, not seconds.
+    control.SetExtent(200, QStringLiteral("s"), true);
+    control.SetSelection(50, 150);
+    drag(.25, .5);
+    QVERIFY(std::abs(start->value() - 100) < .5);
+    QCOMPARE(end->value(), 150.0);
     control.SetExtent(100, QStringLiteral("s"), false);
     QVERIFY(!control.isEnabled());
+}
+
+void UiTests::timeHoverLinksSpatialCursors() {
+    MainWindow window;
+    QString error;
+    QVERIFY(window.formatDocument_.LoadFromFile(QString::fromUtf8(PAT_SOURCE_DIR)
+        + "/samples/cp01_b3_navigation.json", error));
+    window.BuildSignalTree(); window.UpdateCharts();
+    auto* view = window.trajectoryView_;
+    QVector<pat::Series> source(window.formatDocument_.Format().signalFormats.size());
+    // Record indices are deliberately different from their timestamps.
+    for (int signal = 0; signal < source.size(); ++signal)
+        for (int i = 0; i < 10; ++i) source[signal].samples.append({i * .25, signal * 100.0 + i});
+    auto* plot = view->findChild<TrajectoryPlotWidget*>();
+    auto* plot3D = view->AddPlot(TrajectoryDimension::ThreeD);
+    view->SetDataSource(&source, pat::TrajectoryPairing::RecordOrder);
+    view->SetTimeWindow(.5, 1.5);
+    auto* range = window.timeRangeControl_;
+    window.dataViewTabs_->setCurrentIndex(1);
+    range->SetExtent(2.25, "s", true);
+    range->SetSelection(.5, 1.5);
+    window.resize(1200, 900); window.show();
+    view->RefreshNow();
+    QTest::qWait(50);
+    auto* bar = range->findChild<QWidget*>("timeRangeBar");
+    QScatterSeries* cursor = nullptr;
+    for (auto* series : plot->findChild<QChartView*>()->chart()->series())
+        if (series->objectName() == "trajectoryTimeCursorPoint") cursor = qobject_cast<QScatterSeries*>(series);
+    auto* canvas3D = plot3D->findChild<QWidget*>(QStringLiteral("trajectory3DCanvas_%1").arg(plot3D->PlotId()));
+    QVERIFY(bar && cursor && canvas3D);
+    QSignalSpy selection(range, &TimeRangeControl::RangeSelected);
+    const auto hover = [&](double time) {
+        const QPointF pos(10 + time / 2.25 * (bar->width()-20), bar->height()/2.0);
+        QMouseEvent event(QEvent::MouseMove, pos, bar->mapToGlobal(pos.toPoint()), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(bar, &event);
+    };
+    hover(.76);
+    QCOMPARE(selection.count(), 0); // Hover never starts a reload/changes the interval.
+    QCOMPARE(cursor->count(), 1);
+    const int x = plot->findChild<QComboBox*>("trajectoryXCombo")->currentData().toInt();
+    QCOMPARE(cursor->points().first().x(), x * 100.0 + 3);
+    QCOMPARE(cursor->color(), QColor(Qt::yellow));
+    auto* spatialChart = plot->findChild<QChartView*>()->chart();
+    auto* xAxis = qobject_cast<QValueAxis*>(spatialChart->axes(Qt::Horizontal).first());
+    const auto plotArea = spatialChart->plotArea();
+    const QPointF cursorPosition = spatialChart->mapToPosition(cursor->points().first(), cursor);
+    const double expectedX = plotArea.left() + (cursor->points().first().x()-xAxis->min())
+        / (xAxis->max()-xAxis->min()) * plotArea.width();
+    QVERIFY2(std::abs(cursorPosition.x()-expectedX) < 1, qPrintable(QString("cursor %1 axis %2").arg(cursorPosition.x()).arg(expectedX)));
+    QCOMPARE(canvas3D->property("timeCursorPointCount").toInt(), 1);
+    QVERIFY(plot3D->findChild<QLabel*>("trajectoryTimeCursor")->text().contains("t: 0.75"));
+    canvas3D->grab();
+    const QString screenshotDirectory = qEnvironmentVariable("PAT_UI_SCREENSHOT_DIR");
+    if (!screenshotDirectory.isEmpty()) QVERIFY(window.grab().save(screenshotDirectory + "/05-time-cursor.png"));
+    const auto history = plot->HistoryPointCount();
+    hover(1.24);
+    QCOMPARE(cursor->points().first().x(), x * 100.0 + 5);
+    QCOMPARE(plot->HistoryPointCount(), history);
+    hover(.1); // Outside the selected time band.
+    QCOMPARE(cursor->count(), 0);
+    QCOMPARE(canvas3D->property("timeCursorPointCount").toInt(), 0);
+    hover(.76);
+    QEvent leave(QEvent::Leave); QApplication::sendEvent(bar, &leave);
+    QVERIFY(cursor->isVisible() == false);
+    QVERIFY(plot->findChild<QLabel*>("trajectoryTimeCursor")->isHidden());
+    // The time-series chart is a second source of the same shared time cursor.
+    window.chartArea_->HandleCursorMoved(1.0);
+    QCOMPARE(cursor->points().first().x(), x * 100.0 + 4);
+    view->SetTimeWindow(1.25, 1.5);
+    QCOMPARE(cursor->count(), 0);
+    view->SetDataSource(&source, pat::TrajectoryPairing::OfflineTimestamp);
+    view->RefreshNow();
+    window.chartArea_->HandleCursorMoved(1.49);
+    QCOMPARE(cursor->points().first().x(), x * 100.0 + 6);
+    view->SetDisplayTransforms({{x, {2.0, -10.0}}});
+    view->RefreshNow();
+    QCOMPARE(cursor->points().first().x(), (x * 100.0 + 6) * 2.0 - 10.0);
+    auto* visible = plot->findChild<QCheckBox*>(QStringLiteral("trajectoryTrackVisible_%1_0").arg(plot->PlotId()));
+    visible->setChecked(false);
+    QCOMPARE(cursor->count(), 0);
+    visible->setChecked(true);
+    QCOMPARE(cursor->count(), 1);
+    window.chartArea_->HandleCursorLeft();
+    QCOMPARE(cursor->count(), 0);
+}
+
+void UiTests::trajectoryAxesSettleAfterRangeChanges() {
+    pat::FormatDefinition format;
+    QString error;
+    QVERIFY(pat::LoadFormatFromJson(QString::fromUtf8(PAT_SOURCE_DIR)
+        + "/samples/cp01_b3_navigation.json", format, error));
+    TrajectoryView view;
+    view.ConfigureSignals(format);
+    QVector<pat::Series> source(format.signalFormats.size());
+    for (int signal = 0; signal < source.size(); ++signal)
+        for (int i = 0; i < 100; ++i)
+            source[signal].samples.append({double(i), 1e9 + signal * .01 + std::sin(i*.1)*.001});
+    view.SetDataSource(&source, pat::TrajectoryPairing::RecordOrder);
+    view.resize(900, 650); view.show(); view.RefreshNow();
+    auto* plot = view.findChild<TrajectoryPlotWidget*>();
+    auto* chart = plot->findChild<QChartView*>()->chart();
+    auto* x = qobject_cast<QValueAxis*>(chart->axes(Qt::Horizontal).first());
+    auto* y = qobject_cast<QValueAxis*>(chart->axes(Qt::Vertical).first());
+    for (bool equal : {false, true}) {
+        plot->findChild<QCheckBox*>("trajectoryEqualAspect")->setChecked(equal);
+        for (int start : {10, 40, 10}) {
+            view.SetTimeWindow(start, start+30);
+            QTest::qWait(100);
+            const QRectF area = chart->plotArea();
+            const auto bounds = QList<double>{x->min(), x->max(), y->min(), y->max()};
+            QSignalSpy xs(x, &QValueAxis::rangeChanged), ys(y, &QValueAxis::rangeChanged);
+            for (int i = 0; i < 10; ++i) {
+                plot->Render(); // Repeated refreshes of unchanged data must not reset/re-expand axes.
+                view.SetTimeCursor(start+i);
+                QTest::qWait(10);
+            }
+            QCOMPARE(chart->plotArea(), area);
+            QCOMPARE((QList<double>{x->min(), x->max(), y->min(), y->max()}), bounds);
+            QCOMPARE(xs.count(), 0);
+            QCOMPARE(ys.count(), 0);
+        }
+    }
 }
 
 void UiTests::spatialRangeUsesTimeAndRestoresHistory() {
@@ -1887,10 +2171,10 @@ void UiTests::axisLabelsDistinguishSmallDeltas() {
         const auto labels = axis->categoriesLabels();
         QCOMPARE(labels.size(), 3);
         QCOMPARE(QSet<QString>(labels.begin(), labels.end()).size(), 3);
-        for (const auto& label : labels) QVERIFY2(label.size() <= 14, qPrintable(label));
+        for (const auto& label : labels) QVERIFY2(label.size() == 6, qPrintable(label));
         QCOMPARE(axis->min(), range.first);
         QCOMPARE(axis->max(), range.second);
-        QVERIFY(view.YLabelWidth() < 150);
+        QVERIFY(view.YLabelWidth() <= QFontMetricsF(axis->labelsFont()).horizontalAdvance("000000") + 2);
     }
     // Tick text must not change raw data or cursor values.
     QCOMPARE(qobject_cast<QLineSeries*>(view.chart()->series().first())->points(), source[0].samples);

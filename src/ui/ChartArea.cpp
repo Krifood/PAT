@@ -9,6 +9,9 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QHash>
+#include <QLabel>
+#include <QPushButton>
+#include <QHBoxLayout>
 #include <QPalette>
 #include <QTimer>
 #include <QStringList>
@@ -39,6 +42,33 @@ ChartArea::ChartArea(QWidget* parent) : QWidget(parent) {
     container_->setAutoFillBackground(true);
     auto* containerLayout = new QVBoxLayout(container_);
     containerLayout->setContentsMargins(0, 0, 0, 0);
+    emptyState_ = new QWidget(container_);
+    emptyState_->setObjectName("chartEmptyState");
+    auto* emptyLayout = new QVBoxLayout(emptyState_);
+    emptyLayout->addStretch();
+    auto* title = new QLabel(tr("开始分析数据"), emptyState_);
+    title->setAlignment(Qt::AlignCenter);
+    emptyLayout->addWidget(title);
+    emptyHint_ = new QLabel(emptyState_);
+    emptyHint_->setObjectName("chartEmptyHint");
+    emptyHint_->setWordWrap(true);
+    emptyHint_->setAlignment(Qt::AlignCenter);
+    emptyLayout->addWidget(emptyHint_);
+    auto* actions = new QHBoxLayout;
+    actions->addStretch();
+    const auto addAction = [&](const QString& text, const QString& name, auto signal) {
+        auto* button = new QPushButton(text, emptyState_);
+        button->setObjectName(name);
+        connect(button, &QPushButton::clicked, this, signal);
+        actions->addWidget(button);
+    };
+    addAction(tr("打开格式…"), "emptyOpenFormat", &ChartArea::OpenFormatRequested);
+    addAction(tr("打开数据…"), "emptyOpenData", &ChartArea::OpenDataRequested);
+    addAction(tr("导入混合日志…"), "emptyImportMixed", &ChartArea::ImportMixedRequested);
+    actions->addStretch();
+    emptyLayout->addLayout(actions);
+    emptyLayout->addStretch();
+    containerLayout->addWidget(emptyState_, 1);
     splitter_ = new QSplitter(Qt::Vertical, container_);
     splitter_->setChildrenCollapsible(false);
     splitter_->setHandleWidth(3);
@@ -302,6 +332,7 @@ void ChartArea::resizeEvent(QResizeEvent* event) {
 }
 
 void ChartArea::HandleCursorMoved(double cursorX) {
+    emit TimeCursorMoved(cursorX);
     sharedCursorX_ = cursorX;
     cursorActive_ = true;
     for (auto* chart : charts_) {
@@ -310,6 +341,7 @@ void ChartArea::HandleCursorMoved(double cursorX) {
 }
 
 void ChartArea::HandleCursorLeft() {
+    emit TimeCursorLeft();
     cursorActive_ = false;
     for (auto* chart : charts_) {
         if (chart) chart->HideCursor();
@@ -415,7 +447,7 @@ void ChartArea::BuildCharts() {
         }
         view->SetDisplaySources(displaySources, displayTransforms);
         view->SetXAxisVisible(groupIndex == groups_.size() - 1);
-        view->SetPlotLeftMargin(84.0);
+        view->SetPlotLeftMargin(std::max(44.0, view->YLabelWidth() + 14.0));
         view->SetGuideLines(savedGuides.value(guideKey(group.signalIndices)));
 
         connect(view, &SignalChartView::CursorMoved, this, &ChartArea::HandleCursorMoved);
@@ -464,11 +496,16 @@ void ChartArea::BuildCharts() {
         charts_.append(view);
     }
 
+    emptyState_->setVisible(charts_.isEmpty());
     UpdateChartHeights();
     ApplyXRange(viewMinX, viewMaxX);
 }
 
 void ChartArea::ClearCharts() {
+    if (emptyState_) emptyState_->show();
+    if (emptyHint_) emptyHint_->setText(series_ && !series_->isEmpty()
+        ? tr("暂无显示曲线。请在左侧勾选信号，或搜索后勾选结果。\n拖动子图标题可合并，双击子图可放大，右键查看分析工具。")
+        : tr("普通数据：先打开格式，再打开数据，最后勾选信号。\nVMC 混合日志：直接选择“导入混合日志”，无需先加载格式。"));
     focusedChart_ = -1;
     charts_.clear();
     cursorActive_ = false;
@@ -735,9 +772,9 @@ void ChartArea::UpdateRangeContext() {
 }
 
 void ChartArea::AlignYAxisMargins() {
-    qreal commonMargin = 84.0;
+    qreal commonMargin = 44.0;
     for (const auto* chart : charts_) {
-        if (chart) commonMargin = std::max(commonMargin, chart->YLabelWidth() + 48.0);
+        if (chart) commonMargin = std::max(commonMargin, chart->YLabelWidth() + 14.0);
     }
     for (auto* chart : charts_) {
         if (chart) chart->SetPlotLeftMargin(commonMargin);

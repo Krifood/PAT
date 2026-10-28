@@ -56,3 +56,6 @@ QString ThemeKey(AppThemeId id);
 AppThemeId ThemeIdFromKey(const QString& key);
 QString ThemeDisplayName(AppThemeId id);
 QString BuildApplicationStyleSheet(const AppTheme& theme);
+QColor ReadoutTextColor(const AppTheme& theme);
+QColor ReadoutBackgroundColor(const AppTheme& theme);
+QString BuildReadoutStyleSheet(const AppTheme& theme);

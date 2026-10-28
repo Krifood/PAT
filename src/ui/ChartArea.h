@@ -11,6 +11,7 @@
 class QScrollArea;
 class QSplitter;
 class QResizeEvent;
+class QLabel;
 
 class ChartArea : public QWidget {
     Q_OBJECT
@@ -33,8 +34,15 @@ public:
     void SetVisibleRange(double minX, double maxX);
     void RefreshCharts();
     void RefreshData();
+    void HandleCursorMoved(double cursorX);
+    void HandleCursorLeft();
 
 signals:
+    void TimeCursorMoved(double time);
+    void TimeCursorLeft();
+    void OpenFormatRequested();
+    void OpenDataRequested();
+    void ImportMixedRequested();
     void SignalsDropped(const QVector<int>& indices);
     void MergeRequested(const QVector<int>& indices);
     void ReorderRequested(int fromIndex, int toIndex);
@@ -48,8 +56,6 @@ protected:
     void resizeEvent(QResizeEvent* event) override;
 
 private slots:
-    void HandleCursorMoved(double cursorX);
-    void HandleCursorLeft();
     void HandleXRangeRequested(double minX, double maxX);
     void HandleResetXRange();
     void HandleMergeDropped(const QVector<int>& indices, int targetIndex);
@@ -82,6 +88,8 @@ private:
 
     QScrollArea* scrollArea_ = nullptr;
     QWidget* container_ = nullptr;
+    QWidget* emptyState_ = nullptr;
+    QLabel* emptyHint_ = nullptr;
     QSplitter* splitter_ = nullptr;
     QVector<SignalChartView*> charts_;
     AppTheme theme_ = ThemeFor(AppThemeId::IndoorDark);

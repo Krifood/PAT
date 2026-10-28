@@ -9,8 +9,10 @@ public:
     explicit CompactValueAxis(QObject* parent = nullptr);
     QString Annotation() const { return annotation_; }
     qreal LabelWidth();
+    void SetStableLabelWidth();
 
 private:
     void RefreshLabels();
     QString annotation_;
+    bool stableLabelWidth_ = false;
 };

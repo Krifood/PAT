@@ -45,6 +45,7 @@ void SignalTreeController::Build(const pat::FormatDefinition& format) {
             if (!groupItems.contains(currentPath)) {
                 const QString groupDescription = format.groupDescriptions.value(currentPath);
                 auto* groupItem = new QTreeWidgetItem(parent, {groupName, groupDescription, QString()});
+                groupItem->setToolTip(0, currentPath + '\n' + groupDescription);
                 groupItem->setFlags(groupItem->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsAutoTristate | Qt::ItemIsDragEnabled);
                 groupItem->setCheckState(0, Qt::Unchecked);
                 groupItem->setData(0, SignalTreeWidget::ITEM_TYPE_ROLE, SignalTreeWidget::ITEM_TYPE_GROUP);
@@ -62,6 +63,9 @@ void SignalTreeController::Build(const pat::FormatDefinition& format) {
         }
         auto* signalItem = new QTreeWidgetItem(
             parent, {signal.DisplayName(), signal.description, timeScaleText});
+        const QString tooltip = signal.DisplayName() + '\n' + signal.groupPath + '\n'
+            + signal.description + '\n' + timeScaleText;
+        for (int column = 0; column < 3; ++column) signalItem->setToolTip(column, tooltip);
         signalItem->setFlags(signalItem->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable |
                              Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
         signalItem->setCheckState(0, Qt::Unchecked);
