@@ -316,9 +316,26 @@ bool UnifiedLogWriter::ConvertVmcFiles(const QStringList& sourcePaths,
         result.trailingFillBytes += summary.trailingFillBytes;
         result.discardedTailRecords += summary.discardedTailRecords;
         result.discardedTailBytes += summary.discardedTailBytes;
+        result.skippedRegions += summary.skippedRegions;
+        result.skippedBytes += summary.skippedBytes;
+        QJsonArray faults;
+        for (const auto& fault : summary.faults) {
+            const QString description = QStringLiteral("%1：偏移 0x%2，消息 0x%3，记录声明长度 %4，描述表长度 %5；跳过 %6 字节；%7")
+                .arg(QFileInfo(sourcePath).fileName()).arg(fault.offset, 0, 16)
+                .arg(fault.messageId, 4, 16, QLatin1Char('0')).arg(fault.declaredLength)
+                .arg(fault.expectedLength).arg(fault.skippedBytes)
+                .arg(fault.resumed ? QStringLiteral("已在下一可靠帧边界恢复") : QStringLiteral("未找到可靠边界，剩余数据未转换"));
+            faults.append(QJsonObject{{"offset", fault.offset}, {"skipped_bytes", fault.skippedBytes},
+                {"message_id", int(fault.messageId)}, {"declared_length", fault.declaredLength},
+                {"expected_length", fault.expectedLength}, {"resumed", fault.resumed}, {"description", description}});
+            if (result.faultReport.size() < 200) result.faultReport.append(description);
+        }
         QJsonObject segment;
         segment.insert(QStringLiteral("segment_id"), segmentIndex);
         segment.insert(QStringLiteral("source_file"), QFileInfo(sourcePath).fileName());
+        segment.insert("parse_fault_report", QJsonObject{{"skipped_regions", qint64(summary.skippedRegions)},
+            {"skipped_bytes", qint64(summary.skippedBytes)}, {"details", faults},
+            {"omitted_details", qint64(summary.skippedRegions - summary.faults.size())}});
         segment.insert(QStringLiteral("global_header_base64"),
                        QString::fromLatin1(sourceHeader.globalHeader.toBase64()));
         segment.insert(QStringLiteral("record_count"), static_cast<qint64>(summary.recordCount));

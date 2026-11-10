@@ -195,6 +195,59 @@ bool VmcLogReader::VisitRecords(const QString& path, const VmcSourceHeader& head
         return false;
     }
     VmcReadSummary summary;
+    // A recovered boundary must be a complete known frame, followed by another
+    // complete known frame or a verified EOF/FF tail. Never guess from 5A alone.
+    const auto completeFrameEnd = [&](qint64 offset) -> qint64 {
+        if (!file.seek(offset)) return -1;
+        const QByteArray bytes = file.read(kRecordFixedSize);
+        if (bytes.size() != kRecordFixedSize || quint8(bytes[0]) != 0x5A) return -1;
+        const auto id = qFromLittleEndian<quint16>(reinterpret_cast<const uchar*>(bytes.constData()+2));
+        const auto it = header.descriptorByMessageId.constFind(id);
+        if (it == header.descriptorByMessageId.constEnd()
+            || header.descriptors[*it].payloadLength != quint8(bytes[12])) return -1;
+        const qint64 end = offset + kRecordFixedSize + quint8(bytes[12]);
+        return end <= file.size() ? end : -1;
+    };
+    const auto recover = [&](qint64 from) -> qint64 {
+        for (qint64 base = from; base < file.size(); base += 65536) {
+            if (isCancelled && isCancelled()) return -2;
+            if (!file.seek(base)) return -2;
+            const QByteArray block = file.read(65536);
+            if (block.isEmpty()) return file.error() == QFileDevice::NoError ? -1 : -2;
+            for (qsizetype i = block.indexOf(char(0x5A)); i >= 0; i = block.indexOf(char(0x5A), i+1)) {
+                const qint64 candidate = base+i;
+                const qint64 end = completeFrameEnd(candidate);
+                if (end < 0) continue;
+                if (end == file.size() || completeFrameEnd(end) >= 0) return candidate;
+                // A final valid data frame may be followed by an untyped metadata
+                // frame. Accept it only when its complete body ends at EOF/FF tail.
+                file.seek(end);
+                const QByteArray next = file.read(kRecordFixedSize);
+                if (next.size() == kRecordFixedSize && quint8(next[0]) == 0x5A) {
+                    const auto nextId = qFromLittleEndian<quint16>(reinterpret_cast<const uchar*>(next.constData()+2));
+                    const bool metadata = !header.descriptorByMessageId.contains(nextId);
+                    const auto nextDescriptor = header.descriptorByMessageId.constFind(nextId);
+                    const bool terminal = nextDescriptor != header.descriptorByMessageId.constEnd()
+                        && header.descriptors[*nextDescriptor].payloadLength != 255
+                        && IsAllByte(QByteArrayView(next).sliced(4, 9), 0xFF);
+                    const qint64 suffix = end + kRecordFixedSize + (terminal ? 0 : quint8(next[12]));
+                    if ((metadata || terminal) && suffix <= file.size()) {
+                        file.seek(suffix);
+                        quint64 ignored = 0;
+                        QString tailError;
+                        if (ConsumeFfTail(file, ignored, tailError, isCancelled)) return candidate;
+                    }
+                }
+                file.seek(end);
+                if (file.peek(1) == QByteArray(1, char(0xFF))) {
+                    quint64 ignored = 0;
+                    QString tailError;
+                    if (ConsumeFfTail(file, ignored, tailError, isCancelled)) return candidate;
+                }
+            }
+        }
+        return -1;
+    };
     while (!file.atEnd()) {
         if (isCancelled && isCancelled()) {
             errorMessage = QStringLiteral("日志读取已取消");
@@ -248,18 +301,27 @@ bool VmcLogReader::VisitRecords(const QString& path, const VmcSourceHeader& head
             reinterpret_cast<const uchar*>(fixed.constData() + 4));
         record.sourceSequence = summary.recordCount;
         const int payloadLength = quint8(fixed[12]);
+        if (descriptorIt != header.descriptorByMessageId.constEnd()
+            && header.descriptors[*descriptorIt].payloadLength != payloadLength) {
+            const qint64 next = recover(recordOffset + kRecordFixedSize);
+            if (next == -2 || (isCancelled && isCancelled()) || file.error() != QFileDevice::NoError) {
+                errorMessage = isCancelled && isCancelled() ? QStringLiteral("日志读取已取消") : file.errorString();
+                return false;
+            }
+            const qint64 skipped = (next >= 0 ? next : file.size()) - recordOffset;
+            ++summary.skippedRegions;
+            summary.skippedBytes += skipped;
+            if (summary.faults.size() < 10000) summary.faults.append({recordOffset, skipped,
+                candidateMessageId, payloadLength, header.descriptors[*descriptorIt].payloadLength, next >= 0});
+            if (next < 0) break;
+            file.seek(next);
+            continue;
+        }
         if (!ReadExact(file, payloadLength, record.payload, errorMessage)) return false;
 
         const VmcStreamDescriptor* descriptor = nullptr;
         if (descriptorIt != header.descriptorByMessageId.constEnd()) {
             descriptor = &header.descriptors[*descriptorIt];
-            if (descriptor->payloadLength != payloadLength) {
-                errorMessage = QStringLiteral("消息 0x%1 在源序号 %2 的负载长度为 %3，描述表要求 %4")
-                                   .arg(record.messageId, 4, 16, QLatin1Char('0'))
-                                   .arg(record.sourceSequence).arg(payloadLength)
-                                   .arg(descriptor->payloadLength);
-                return false;
-            }
             ++summary.routedRecordCount;
         } else {
             ++summary.metadataRecordCount;

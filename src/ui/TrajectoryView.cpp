@@ -5,6 +5,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QContextMenuEvent>
+#include <QGraphicsLineItem>
+#include <QGraphicsEllipseItem>
 #include <QMenu>
 #include <QCompleter>
 #include <QDataStream>
@@ -371,7 +373,7 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
     removeButton->setIcon(style()->standardIcon(QStyle::SP_TitleBarCloseButton));
     removeButton->setAccessibleName(tr("删除子图"));
     removeButton->setAutoRaise(true);
-    removeButton->setToolTip(tr("删除本子图及其会话轨迹历史"));
+    removeButton->setToolTip(tr("关闭子图"));
     connect(removeButton, &QToolButton::clicked, this, [this]() { emit RemoveRequested(plotId_); });
     header->addWidget(headerTitle_);
     header->addWidget(dimensionLabel_);
@@ -382,6 +384,27 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
     equalAspect_->setVisible(dimension_ == TrajectoryDimension::TwoD);
     equalAspect_->setToolTip(tr("X/Y 每单位对应相同像素长度（类似 axis equal）；不改变数据。请确保两轴单位可直接比较，经纬度不等于实际地面距离。"));
     header->addWidget(equalAspect_);
+    if (dimension_ == TrajectoryDimension::TwoD) {
+        coordinateMode_ = new QComboBox(this);
+        coordinateMode_->setObjectName("trajectoryCoordinateMode");
+        coordinateMode_->addItems({tr("平面坐标"), tr("经纬度 · 度"), tr("经纬度 · 弧度")});
+        coordinateMode_->setToolTip(tr("地理模式：X 为经度，Y 为纬度；平面模式：两轴须为相同单位"));
+        header->addWidget(coordinateMode_);
+        measureEnabled_ = new QCheckBox(tr("测距"), this);
+        measureEnabled_->setObjectName("trajectoryMeasure");
+        measureEnabled_->setToolTip(tr("单击采样点设置起终点，右键清除锚点"));
+        header->addWidget(measureEnabled_);
+        connect(coordinateMode_, &QComboBox::currentIndexChanged, this, [this](int mode) {
+            ClearMeasurement();
+            dimensionLabel_->setText(mode ? tr("地理") : tr("二维"));
+        });
+        connect(measureEnabled_, &QCheckBox::toggled, this, [this](bool enabled) {
+            ClearMeasurement();
+            if (pointerReadout_) pointerReadout_->hide();
+            chartView_->setRubberBand(enabled ? QChartView::NoRubberBand : QChartView::RectangleRubberBand);
+            chartView_->viewport()->setCursor(enabled ? Qt::CrossCursor : Qt::ArrowCursor);
+        });
+    }
     auto* showTracks = new QCheckBox(tr("显示全部轨迹"), this);
     showTracks->setObjectName(QStringLiteral("trajectoryShowAll"));
     showTracks->setChecked(true);
@@ -434,6 +457,23 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
         pointerReadout_->setAttribute(Qt::WA_TransparentForMouseEvents);
         pointerReadout_->setStyleSheet(BuildReadoutStyleSheet(theme_));
         pointerReadout_->hide();
+        measureReadout_ = new QLabel(chartView_->viewport());
+        measureReadout_->setObjectName("trajectoryMeasureReadout");
+        measureReadout_->setAttribute(Qt::WA_TransparentForMouseEvents);
+        measureReadout_->hide();
+        measureLine_ = new QGraphicsLineItem(chart);
+        measureAnchorMark_ = new QGraphicsEllipseItem(chart);
+        measureTargetMark_ = new QGraphicsEllipseItem(chart);
+        for (auto* item : {static_cast<QGraphicsItem*>(measureLine_),
+                           static_cast<QGraphicsItem*>(measureAnchorMark_),
+                           static_cast<QGraphicsItem*>(measureTargetMark_)}) {
+            item->setZValue(1100);
+            item->setAcceptedMouseButtons(Qt::NoButton);
+            item->hide();
+        }
+        connect(chart, &QChart::plotAreaChanged, this, [this] { UpdateMeasurementOverlay(); });
+        connect(xAxis_, &QValueAxis::rangeChanged, this, [this] { UpdateMeasurementOverlay(); });
+        connect(yAxis_, &QValueAxis::rangeChanged, this, [this] { UpdateMeasurementOverlay(); });
         layout->addWidget(chartView_, 1);
         // Stable-width labels break the label-width/aspect-range feedback loop,
         // while Qt retains ownership of layout and series/axis transforms.
@@ -1040,6 +1080,7 @@ void TrajectoryPlotWidget::UpdateExtrema() {
 
 void TrajectoryPlotWidget::Render2D() {
     if (!chartView_ || !xAxis_ || !yAxis_) return;
+    ClearMeasurement();
     Ensure2DSeries();
     bool hasRange = false;
     double minX = 0.0, maxX = 0.0, minY = 0.0, maxY = 0.0;
@@ -1232,7 +1273,108 @@ bool TrajectoryPlotWidget::HandleDrop(QDropEvent* event) {
     return true;
 }
 
+void TrajectoryPlotWidget::SetGeographicMode() {
+    if (coordinateMode_) coordinateMode_->setCurrentIndex(1);
+}
+
+void TrajectoryPlotWidget::ClearMeasurement() {
+    hasMeasureAnchor_ = measureLocked_ = measureTargetSnapped_ = false;
+    if (measureLine_) measureLine_->hide();
+    if (measureAnchorMark_) measureAnchorMark_->hide();
+    if (measureTargetMark_) measureTargetMark_->hide();
+    if (measureReadout_) measureReadout_->hide();
+}
+
+bool TrajectoryPlotWidget::NearestMeasurementPoint(const QPointF& position, QPointF& value) const {
+    double best = 18.0 * 18.0;
+    bool found = false;
+    auto* chart = chartView_->chart();
+    const QRectF area = chart->plotArea();
+    const double sx = area.width() / (xAxis_->max() - xAxis_->min());
+    const double sy = area.height() / (yAxis_->max() - yAxis_->min());
+    for (const auto& track : tracks_) {
+        if (!track.visible->isChecked() || !track.line) continue;
+        // Search the full, pre-decimation sample set, never interpolated line segments.
+        for (const auto& sample : track.cursorSamples) {
+            const QPointF point(sample.x, sample.y);
+            const QPointF screen(area.left() + (point.x() - xAxis_->min()) * sx,
+                                 area.bottom() - (point.y() - yAxis_->min()) * sy);
+            if (!area.contains(screen)) continue;
+            const QPointF delta = screen - position;
+            const double distance = QPointF::dotProduct(delta, delta);
+            if (distance <= best) { best = distance; value = point; found = true; }
+        }
+    }
+    return found;
+}
+
+void TrajectoryPlotWidget::UpdateMeasurementOverlay() {
+    if (!measureLine_ || !hasMeasureAnchor_) return;
+    auto* chart = chartView_->chart();
+    const QPointF a = chart->mapToPosition(measureAnchor_);
+    const QPointF b = chart->mapToPosition(measureTarget_);
+    const bool visible = chart->plotArea().contains(a) && chart->plotArea().contains(b);
+    const QPen pen(theme_.guideLine, 1.0, Qt::DashLine);
+    measureLine_->setPen(pen);
+    measureLine_->setLine(QLineF(a, b));
+    measureLine_->setVisible(visible);
+    measureAnchorMark_->setRect(QRectF(a - QPointF(4, 4), QSizeF(8, 8)));
+    measureTargetMark_->setRect(QRectF(b - QPointF(4, 4), QSizeF(8, 8)));
+    for (auto* marker : {measureAnchorMark_, measureTargetMark_}) {
+        marker->setPen(QPen(theme_.guideLine, 1));
+        marker->setBrush(theme_.panelBackground);
+        marker->setVisible(visible);
+    }
+    const int mode = coordinateMode_->currentIndex();
+    const double distance = pat::CoordinateDistance(measureAnchor_, measureTarget_, mode != 0, mode == 2);
+    const QString result = std::isfinite(distance)
+        ? tr("%1 %2").arg(QString::number(distance, 'g', 8), mode ? tr("m（球面）") : tr("坐标单位"))
+        : tr("经纬度无效，请检查轴与单位");
+    measureReadout_->setText(tr("%1 → %2\n距离: %3%4")
+        .arg(QStringLiteral("(%1, %2)").arg(measureAnchor_.x(), 0, 'g', 10).arg(measureAnchor_.y(), 0, 'g', 10),
+             QStringLiteral("(%1, %2)").arg(measureTarget_.x(), 0, 'g', 10).arg(measureTarget_.y(), 0, 'g', 10),
+             result, measureTargetSnapped_ ? tr(" · 采样点") : tr(" · 指针")));
+    measureReadout_->setStyleSheet(BuildReadoutStyleSheet(theme_));
+    measureReadout_->adjustSize();
+    measureReadout_->move(6, 6);
+    measureReadout_->show();
+    measureReadout_->raise();
+}
+
 bool TrajectoryPlotWidget::eventFilter(QObject* watched, QEvent* event) {
+    if (chartView_ && watched == chartView_->viewport() && measureEnabled_->isChecked()) {
+        if (event->type() == QEvent::ContextMenu) {
+            ClearMeasurement();
+            return true;
+        }
+        if (event->type() == QEvent::MouseMove || event->type() == QEvent::MouseButtonPress) {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            if (event->type() == QEvent::MouseButtonPress && mouse->button() == Qt::RightButton) {
+                ClearMeasurement();
+                return true;
+            }
+            const QPointF position = chartView_->chart()->mapFromScene(chartView_->mapToScene(mouse->position().toPoint()));
+            if (chartView_->chart()->plotArea().contains(position)) {
+                QPointF point = chartView_->chart()->mapToValue(position);
+                const bool snapped = NearestMeasurementPoint(position, point);
+                if (event->type() == QEvent::MouseButtonPress && mouse->button() == Qt::LeftButton && snapped) {
+                    if (!hasMeasureAnchor_ || measureLocked_) {
+                        measureAnchor_ = point;
+                        hasMeasureAnchor_ = true;
+                        measureLocked_ = false;
+                    } else measureLocked_ = true;
+                    measureTarget_ = point;
+                    measureTargetSnapped_ = true;
+                } else if (event->type() == QEvent::MouseMove && hasMeasureAnchor_ && !measureLocked_) {
+                    measureTarget_ = point;
+                    measureTargetSnapped_ = snapped;
+                }
+                UpdateMeasurementOverlay();
+            }
+            return true;
+        }
+        if (event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::MouseButtonDblClick) return true;
+    }
     if (chartView_ && watched == chartView_->viewport() && pointerReadout_) {
         if (event->type() == QEvent::Leave) pointerReadout_->hide();
         if (event->type() == QEvent::MouseMove) {
@@ -1249,20 +1391,28 @@ bool TrajectoryPlotWidget::eventFilter(QObject* watched, QEvent* event) {
             }
         }
     }
-    if (dimension_ == TrajectoryDimension::TwoD && event->type() == QEvent::ContextMenu) {
+    if (event->type() == QEvent::ContextMenu) {
         auto* context = static_cast<QContextMenuEvent*>(event);
         auto* menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
-        menu->addAction(tr("还原视图（适应当前区间数据）"), this, [this] {
-            autoRange_->setChecked(true);
-            Render2D();
-        })->setObjectName("resetTrajectoryView");
-        menu->addAction(tr("放大 / 返回多子图"), this, [this] { emit FocusRequested(plotId_); });
-        menu->addSeparator();
-        auto* equal = menu->addAction(equalAspect_->text());
-        equal->setCheckable(true);
-        equal->setChecked(equalAspect_->isChecked());
-        connect(equal, &QAction::toggled, equalAspect_, &QCheckBox::setChecked);
+        menu->addAction(tr("清空所有画布"), this, &TrajectoryPlotWidget::ClearAllDisplaysRequested)
+            ->setObjectName("clearAllDisplays");
+        if (dimension_ == TrajectoryDimension::TwoD) {
+            menu->addAction(tr("还原视图"), this, [this] {
+                autoRange_->setChecked(true);
+                Render2D();
+            })->setObjectName("resetTrajectoryView");
+            menu->addAction(tr("放大 / 返回多子图"), this, [this] { emit FocusRequested(plotId_); });
+            menu->addSeparator();
+            auto* equal = menu->addAction(equalAspect_->text());
+            equal->setCheckable(true);
+            equal->setChecked(equalAspect_->isChecked());
+            connect(equal, &QAction::toggled, equalAspect_, &QCheckBox::setChecked);
+            auto* measure = menu->addAction(tr("测距"));
+            measure->setCheckable(true);
+            measure->setChecked(measureEnabled_->isChecked());
+            connect(measure, &QAction::toggled, measureEnabled_, &QCheckBox::setChecked);
+        }
         menu->popup(context->globalPos());
         context->accept();
         return true;
@@ -1330,11 +1480,11 @@ TrajectoryView::TrajectoryView(QWidget* parent) : QWidget(parent) {
     add2D->setObjectName(QStringLiteral("addTrajectory2D"));
     auto* add3D = new QPushButton(tr("新增三维子图"), this);
     add3D->setObjectName(QStringLiteral("addTrajectory3D"));
-    auto* hint = new QLabel(
-        tr("每个子图右上角可删除；拖动标题到同维度子图可合并"), this);
+    auto* addGeo = new QPushButton(tr("新增地理子图"), this);
+    addGeo->setObjectName("addTrajectoryGeo");
     actions->addWidget(add2D);
     actions->addWidget(add3D);
-    actions->addWidget(hint);
+    actions->addWidget(addGeo);
     actions->addStretch();
     layout->addLayout(actions);
 
@@ -1362,6 +1512,9 @@ TrajectoryView::TrajectoryView(QWidget* parent) : QWidget(parent) {
     refreshTimer_->setInterval(100);
     connect(refreshTimer_, &QTimer::timeout, this, &TrajectoryView::RefreshNow);
     connect(add2D, &QPushButton::clicked, this, [this]() { AddPlot(TrajectoryDimension::TwoD); });
+    connect(addGeo, &QPushButton::clicked, this, [this]() {
+        AddPlot(TrajectoryDimension::TwoD)->SetGeographicMode();
+    });
     connect(add3D, &QPushButton::clicked, this, [this]() { AddPlot(TrajectoryDimension::ThreeD); });
     AddPlot(TrajectoryDimension::TwoD);
 }
@@ -1376,6 +1529,7 @@ TrajectoryPlotWidget* TrajectoryView::AddPlot(TrajectoryDimension dimension) {
     plot->SetTheme(theme_);
     plot->SetTimeWindow(windowStart_, windowEnd_);
     connect(plot, &TrajectoryPlotWidget::RemoveRequested, this, &TrajectoryView::RemovePlot);
+    connect(plot, &TrajectoryPlotWidget::ClearAllDisplaysRequested, this, &TrajectoryView::ClearAllDisplaysRequested);
     connect(plot, &TrajectoryPlotWidget::FocusRequested, this, [this](int id) {
         focusedPlotId_ = focusedPlotId_ == id ? -1 : id;
         for (auto* existing : plots_) existing->setVisible(focusedPlotId_ < 0 || existing->PlotId() == focusedPlotId_);
@@ -1460,6 +1614,14 @@ void TrajectoryView::ClearPlots() {
         plot->setParent(nullptr);
         delete plot;
     }
+}
+
+void TrajectoryView::ClearDisplayedPlots() {
+    refreshTimer_->stop();
+    ClearPlots();
+    focusedPlotId_ = -1;
+    dirty_ = false;
+    UpdateRemoveButtons();
 }
 
 void TrajectoryView::UpdateRemoveButtons() {

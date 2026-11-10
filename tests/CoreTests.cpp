@@ -113,10 +113,57 @@ private slots:
     void vmcProvidedSampleRegression();
     void vmcHaSampleRegression();
     void vmcPartialTailRecovery();
+    void vmcLengthFaultRecovery();
     void vmcKangdingSampleRegression_data();
     void vmcKangdingSampleRegression();
     void vmcTwentyFoldStress();
 };
+
+void CoreTests::vmcLengthFaultRecovery() {
+    QTemporaryDir dir;
+    const QString path = dir.filePath("length.bin");
+    const QByteArray clean = SyntheticVmcLog(7, false);
+    const int start = clean.size() - 17 - 7 * 24;
+    for (int length : {3, 30, 240}) {
+        QByteArray broken = clean;
+        broken[start + 24 + 12] = char(length);
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(broken), qint64(broken.size())); file.close();
+        pat::VmcLogReader reader;
+        pat::VmcLogInspection inspection;
+        QString error;
+        QVERIFY2(reader.Inspect(path, inspection, error), qPrintable(error));
+        QCOMPARE(inspection.summary.routedRecordCount, quint64(6));
+        QCOMPARE(inspection.summary.skippedRegions, quint64(1));
+        QCOMPARE(inspection.summary.skippedBytes, quint64(24));
+        QCOMPARE(inspection.summary.faults.first().offset, qint64(start+24));
+        QVERIFY(inspection.summary.faults.first().resumed);
+        pat::UnifiedLogWriter writer;
+        pat::UnifiedLogWriteResult result;
+        QVERIFY2(writer.ConvertVmcFiles({path}, dir.filePath("out.patbin"), dir.filePath("out.json"), {}, result, error), qPrintable(error));
+        QCOMPARE(result.routedRecordCount, quint64(6));
+        QVERIFY(!result.faultReport.isEmpty());
+        QFile report(result.jsonPath); QVERIFY(report.open(QIODevice::ReadOnly));
+        const auto faultReport = QJsonDocument::fromJson(report.readAll()).object()["source_segments"].toArray().first()
+            .toObject()["parse_fault_report"].toObject();
+        QCOMPARE(faultReport["skipped_regions"].toInteger(), qint64(1));
+        QCOMPARE(faultReport["details"].toArray().first().toObject()["declared_length"].toInt(), length);
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), broken);
+    }
+    QByteArray withMetadata = SyntheticVmcLog(2, true);
+    withMetadata[start + 12] = char(3);
+    QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(withMetadata); file.close();
+    pat::VmcLogReader reader;
+    pat::VmcLogInspection inspection;
+    QString error;
+    QVERIFY2(reader.Inspect(path, inspection, error), qPrintable(error));
+    QCOMPARE(inspection.summary.routedRecordCount, quint64(1));
+    QCOMPARE(inspection.summary.metadataRecordCount, quint64(1));
+    int checks = 0;
+    QVERIFY(!reader.Inspect(path, inspection, error, [&] { return ++checks > 1; }));
+    QVERIFY(error.contains("取消"));
+}
 
 void CoreTests::vmcPartialTailRecovery() {
     QTemporaryDir dir;
@@ -187,7 +234,9 @@ void CoreTests::vmcPartialTailRecovery() {
     QVERIFY(!reader.Inspect(path, inspected, error));
     QByteArray noTimestampTail = tail; noTimestampTail[11] = char(0x01);
     QVERIFY(writeSource(prefix + noTimestampTail));
-    QVERIFY(!reader.Inspect(path, inspected, error));
+    QVERIFY(reader.Inspect(path, inspected, error));
+    QCOMPARE(inspected.summary.skippedRegions, quint64(1));
+    QVERIFY(!inspected.summary.faults.first().resumed);
     QVERIFY(writeSource(prefix.left(prefix.size() - 1)));
     QVERIFY(!reader.Inspect(path, inspected, error));
     // Cancellation is also observed while validating a long FF suffix.

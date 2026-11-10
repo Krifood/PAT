@@ -7,6 +7,7 @@
 enum class AppThemeId {
     IndoorDark,
     IndoorLight,
+    ForestDark,
     OutdoorHighContrast
 };
 

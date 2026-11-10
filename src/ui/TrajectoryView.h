@@ -25,6 +25,8 @@ class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
 class Trajectory3DCanvas;
+class QGraphicsLineItem;
+class QGraphicsEllipseItem;
 
 enum class TrajectoryDimension { TwoD, ThreeD };
 
@@ -64,8 +66,10 @@ public:
     QVector<QVector<int>> SelectedSignalGroups() const;
     void AppendSnapshots(const QVector<TrackSnapshot>& snapshots);
     void SetRemoveEnabled(bool enabled);
+    void SetGeographicMode();
 
 signals:
+    void ClearAllDisplaysRequested();
     void FocusRequested(int plotId);
     void MergeRequested(int sourcePlotId, int targetPlotId);
     void RemoveRequested(int plotId);
@@ -105,6 +109,9 @@ private:
     void RebuildTrackRows();
     void Ensure2DSeries();
     void Render2D();
+    void ClearMeasurement();
+    void UpdateMeasurementOverlay();
+    bool NearestMeasurementPoint(const QPointF& position, QPointF& value) const;
     void ScheduleEqualAspect();
     void ApplyEqualAspect();
     void UpdateExtrema();
@@ -134,6 +141,16 @@ private:
     QWidget* trackRows_ = nullptr;
     QCheckBox* autoRange_ = nullptr;
     QCheckBox* equalAspect_ = nullptr;
+    QComboBox* coordinateMode_ = nullptr;
+    QCheckBox* measureEnabled_ = nullptr;
+    QLabel* measureReadout_ = nullptr;
+    QGraphicsLineItem* measureLine_ = nullptr;
+    QGraphicsEllipseItem* measureAnchorMark_ = nullptr;
+    QGraphicsEllipseItem* measureTargetMark_ = nullptr;
+    QPointF measureAnchor_, measureTarget_;
+    bool hasMeasureAnchor_ = false;
+    bool measureLocked_ = false;
+    bool measureTargetSnapped_ = false;
     bool aspectPending_ = false;
     bool applyingAspect_ = false;
     double baseXMin_ = -1, baseXMax_ = 1, baseYMin_ = -1, baseYMax_ = 1;
@@ -169,6 +186,7 @@ public:
     void RequestRefresh();
     void RefreshNow();
     void ResetSession();
+    void ClearDisplayedPlots();
     QVector<int> SelectedSignalIndices() const;
     QVector<QVector<int>> SelectedSignalGroups() const;
 
@@ -177,6 +195,7 @@ public:
     int PlotCount() const { return plots_.size(); }
 
 signals:
+    void ClearAllDisplaysRequested();
     void SignalsChanged();
 
 protected:

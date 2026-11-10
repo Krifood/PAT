@@ -19,6 +19,9 @@ struct UnifiedLogWriteOptions {
 struct UnifiedLogWriteResult {
     QString binaryPath;
     QString jsonPath;
+    quint64 skippedRegions = 0;
+    quint64 skippedBytes = 0;
+    QStringList faultReport;
     quint64 sourceRecordCount = 0;
     quint64 routedRecordCount = 0;
     quint64 metadataRecordCount = 0;

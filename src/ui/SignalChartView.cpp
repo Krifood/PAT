@@ -45,6 +45,7 @@
 #include <QSignalBlocker>
 #include <QGraphicsLayout>
 #include <QTimer>
+#include <QToolButton>
 #include <cmath>
 #include <limits>
 
@@ -118,6 +119,16 @@ private:
 }  // namespace
 
 SignalChartView::SignalChartView(QWidget* parent) : QChartView(parent) {
+    closeButton_ = new QToolButton(viewport());
+    closeButton_->setObjectName("closeSignalPlot");
+    closeButton_->setText(QStringLiteral("×"));
+    closeButton_->setFixedSize(22, 22);
+    closeButton_->setAutoRaise(true);
+    closeButton_->setToolTip(tr("关闭子图"));
+    closeButton_->setAccessibleName(tr("关闭子图"));
+    connect(closeButton_, &QToolButton::clicked, this, [this] {
+        emit HideSignalsRequested(seriesIndices_);
+    }, Qt::QueuedConnection);
     mousePositionLabel_ = new QLabel(viewport());
     mousePositionLabel_->setObjectName("chartMousePosition");
     mousePositionLabel_->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -836,6 +847,8 @@ bool SignalChartView::viewportEvent(QEvent* event) {
 
 void SignalChartView::resizeEvent(QResizeEvent* event) {
     QChartView::resizeEvent(event);
+    closeButton_->move(std::max(0, viewport()->width() - 25), 3);
+    closeButton_->raise();
     UpdateAlignedPlotArea();
     UpdateHeaderLayout();
     UpdateZeroLine();
@@ -1073,6 +1086,9 @@ void SignalChartView::HideGuideTooltip() {
 void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
     HideGuideTooltip();
     QMenu menu(this);
+    menu.addAction(tr("清空所有画布"), this, &SignalChartView::ClearAllDisplaysRequested)
+        ->setObjectName("clearAllDisplays");
+    menu.addSeparator();
     const int guideIndex = GuideAt(mapFromGlobal(event->globalPos()));
     if (guideIndex >= 0) {
         menu.addAction(tr("设置辅助线位置…"), this, [this, guideIndex] {
@@ -1102,15 +1118,15 @@ void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
     menu.addAction(tr("输入横向辅助线位置…"), this, [this, value] { InputGuidePosition(GuideOrientation::Horizontal, value.y()); });
     menu.addAction(tr("输入垂向辅助线位置…"), this, [this, value] { InputGuidePosition(GuideOrientation::Vertical, value.x()); });
     if (!guides_.isEmpty()) {
-        menu.addAction(tr("清除辅助线（垂线同步所有图）"), this, [this]() { SetGuideLines({}); emit GuidesEdited(); });
+        menu.addAction(tr("清除辅助线"), this, [this]() { SetGuideLines({}); emit GuidesEdited(); });
     }
     menu.addSeparator();
     auto* resetAction = menu.addAction(tr("还原横轴"));
-    menu.addAction(tr("放大本图 / 返回多图（双击）"), this, [this] { emit FocusRequested(); });
-    menu.addAction(tr("纵向放大（Ctrl + 滚轮上）"), this, [this] { ZoomY(.8); });
-    menu.addAction(tr("纵向缩小（Ctrl + 滚轮下）"), this, [this] { ZoomY(1.25); });
+    menu.addAction(tr("放大 / 还原子图"), this, [this] { emit FocusRequested(); });
+    menu.addAction(tr("纵向放大"), this, [this] { ZoomY(.8); });
+    menu.addAction(tr("纵向缩小"), this, [this] { ZoomY(1.25); });
     menu.addAction(tr("还原纵轴自动范围"), this, &SignalChartView::ResetYZoom);
-    auto* detach = menu.addAction(tr("打散数据块（游标数据自由拖动）"));
+    auto* detach = menu.addAction(tr("打散数据块"));
     detach->setObjectName("detachCursorBlocks");
     detach->setCheckable(true);
     detach->setChecked(cursorBlocksDetached_);
@@ -1141,7 +1157,7 @@ void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
         if (signalIndex >= 0) transformable.append(signalIndex);
     }
     if (!transformable.isEmpty()) {
-        auto* transformMenu = menu.addMenu(tr("信号属性（比例/整体平移）"));
+        auto* transformMenu = menu.addMenu(tr("信号属性"));
         for (int signalIndex : transformable) {
             QString label = tr("信号 %1").arg(signalIndex);
             const int position = seriesIndices_.indexOf(signalIndex);
@@ -1154,7 +1170,7 @@ void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
         }
     }
     if (!seriesIndices_.isEmpty()) {
-        menu.addAction(tr("取消显示本图信号"), this, [this]() {
+        menu.addAction(tr("关闭子图"), this, [this]() {
             emit HideSignalsRequested(seriesIndices_);
         });
     }

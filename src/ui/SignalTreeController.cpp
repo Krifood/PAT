@@ -73,7 +73,7 @@ void SignalTreeController::Build(const pat::FormatDefinition& format) {
         signalItem->setData(0, SignalTreeWidget::SIGNAL_INDEX_ROLE, i);
     }
 
-    tree_->expandAll();
+    tree_->collapseAll();
     UpdateAllGroupStates();
 }
 

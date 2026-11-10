@@ -4,6 +4,10 @@
 
 namespace pat {
 
+// X=longitude, Y=latitude. Spherical surface distance, not altitude or path length.
+// Invalid coordinates return NaN. Geographic input is explicitly degrees or radians.
+double CoordinateDistance(QPointF a, QPointF b, bool geographic, bool radians = false);
+
 // Offline records pair by position; live series may omit invalid fields, so pair by sample index.
 enum class TrajectoryPairing { RecordOrder, SampleIndex, OfflineTimestamp };
 

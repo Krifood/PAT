@@ -47,6 +47,7 @@ signals:
     void MergeRequested(const QVector<int>& indices);
     void ReorderRequested(int fromIndex, int toIndex);
     void HideSignalsRequested(const QVector<int>& indices);
+    void ClearAllDisplaysRequested();
     void SplitRequested(const QVector<int>& indices);
     void TransformRequested(int signalIndex);
     void VisibleRangeChanged(double minX, double maxX);

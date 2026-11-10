@@ -79,6 +79,7 @@ private:
     void HandleMergeRequested(const QVector<int>& indices);
     void HandleReorderRequested(int fromIndex, int toIndex);
     void HandleHideSignalsRequested(const QVector<int>& indices);
+    void ClearDisplayedSignals();
     void HandleSplitRequested(const QVector<int>& indices);
     void ShowSignalTransformDialog(int signalIndex);
     void ShowDifferenceDialog(const QVector<int>& suggestedSignals);

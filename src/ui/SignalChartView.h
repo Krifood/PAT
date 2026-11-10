@@ -19,6 +19,7 @@ class QDropEvent;
 class QEvent;
 class QHideEvent;
 class QLabel;
+class QToolButton;
 class QMouseEvent;
 class QWheelEvent;
 class QResizeEvent;
@@ -98,6 +99,7 @@ signals:
     void ChartMergeRequested(int fromIndex, int toIndex);
     void ReorderRequested(int fromIndex, int toIndex);
     void HideSignalsRequested(const QVector<int>& indices);
+    void ClearAllDisplaysRequested();
     void SplitRequested(const QVector<int>& indices);
     void TransformRequested(int signalIndex);
 
@@ -140,6 +142,7 @@ private:
     void AddGuide(GuideOrientation orientation, double value);
     void InputGuidePosition(GuideOrientation orientation, double initial, int index = -1);
     QLabel* mousePositionLabel_ = nullptr;
+    QToolButton* closeButton_ = nullptr;
     QString GuideTooltip(int index, int maxEntries = 40) const;
     void ShowGuideTooltip(int index, const QPoint& globalPos);
     void HideGuideTooltip();

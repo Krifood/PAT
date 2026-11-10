@@ -224,7 +224,7 @@ void MainWindow::SetupUi() {
     fileMenu->addAction(exitAction);
 
     auto* analysisMenu = menuBar()->addMenu(tr("分析"));
-    auto* differenceAction = analysisMenu->addAction(tr("信号做差 / 差值趋势..."));
+    auto* differenceAction = analysisMenu->addAction(tr("信号运算…"));
     differenceAction->setObjectName(QStringLiteral("createDifferenceAction"));
     connect(differenceAction, &QAction::triggered, this, [this]() { ShowDifferenceDialog({}); });
 
@@ -283,7 +283,17 @@ void MainWindow::SetupUi() {
     connect(signalTree_, &SignalTreeWidget::MergeRequested,
             this, &MainWindow::HandleMergeRequested);
     leftLayout->addWidget(listLabel);
-    auto* differenceButton = new QPushButton(tr("信号做差 / 差值趋势..."), leftPane);
+    auto* treeActions = new QHBoxLayout;
+    auto* collapse = new QPushButton(tr("全部折叠"), leftPane);
+    auto* expand = new QPushButton(tr("全部展开"), leftPane);
+    collapse->setObjectName("collapseSignalGroups");
+    expand->setObjectName("expandSignalGroups");
+    treeActions->addWidget(collapse);
+    treeActions->addWidget(expand);
+    leftLayout->addLayout(treeActions);
+    connect(collapse, &QPushButton::clicked, signalTree_, &QTreeWidget::collapseAll);
+    connect(expand, &QPushButton::clicked, signalTree_, &QTreeWidget::expandAll);
+    auto* differenceButton = new QPushButton(tr("信号运算…"), leftPane);
     differenceButton->setObjectName(QStringLiteral("createDifferenceButton"));
     connect(differenceButton, &QPushButton::clicked, differenceAction, &QAction::trigger);
     leftLayout->addWidget(differenceButton);
@@ -325,6 +335,17 @@ void MainWindow::SetupUi() {
     auto* rightLayout = new QVBoxLayout(rightPane);
     rightLayout->setContentsMargins(2, 2, 2, 2);
     rightLayout->setSpacing(2);
+    auto* sidebarToggle = new QPushButton(tr("◀"), central);
+    sidebarToggle->setObjectName("toggleSignalPane");
+    sidebarToggle->setFixedWidth(24);
+    sidebarToggle->setToolTip(tr("收起信号区"));
+    layout->addWidget(sidebarToggle);
+    connect(sidebarToggle, &QPushButton::clicked, this, [leftPane, sidebarToggle] {
+        const bool show = leftPane->isHidden();
+        leftPane->setVisible(show);
+        sidebarToggle->setText(show ? QStringLiteral("◀") : QStringLiteral("▶"));
+        sidebarToggle->setToolTip(show ? tr("收起信号区") : tr("展开信号区"));
+    });
     auto* fileHeader = new QLabel(rightPane);
     fileHeader->setObjectName(QStringLiteral("currentFileHeader"));
     fileHeader->setText(tr("尚未打开格式或数据文件"));
@@ -358,9 +379,11 @@ void MainWindow::SetupUi() {
     connect(chartArea_, &ChartArea::MergeRequested, this, &MainWindow::HandleMergeRequested);
     connect(chartArea_, &ChartArea::ReorderRequested, this, &MainWindow::HandleReorderRequested);
     connect(chartArea_, &ChartArea::HideSignalsRequested, this, &MainWindow::HandleHideSignalsRequested);
+    connect(chartArea_, &ChartArea::ClearAllDisplaysRequested, this, &MainWindow::ClearDisplayedSignals, Qt::QueuedConnection);
     connect(chartArea_, &ChartArea::SplitRequested, this, &MainWindow::HandleSplitRequested);
     connect(chartArea_, &ChartArea::TransformRequested, this, &MainWindow::ShowSignalTransformDialog);
     trajectoryView_ = new TrajectoryView(dataViewTabs_);
+    connect(trajectoryView_, &TrajectoryView::ClearAllDisplaysRequested, this, &MainWindow::ClearDisplayedSignals, Qt::QueuedConnection);
     connect(timeRangeControl_, &TimeRangeControl::CursorMoved, chartArea_, &ChartArea::HandleCursorMoved);
     connect(timeRangeControl_, &TimeRangeControl::CursorLeft, chartArea_, &ChartArea::HandleCursorLeft);
     connect(chartArea_, &ChartArea::TimeCursorMoved, trajectoryView_, &TrajectoryView::SetTimeCursor);
@@ -597,6 +620,7 @@ void MainWindow::OpenDataFile() {
         : (dataSession_.Series().isEmpty() ? 0
                                            : quint64(dataSession_.Series().first().samples.size()));
     UpdateStatus(tr("解析完成：%1，记录数 %2").arg(FileLeaf(path)).arg(recordCount));
+    signalTree_->collapseAll();
 }
 
 void MainWindow::ImportVmcLog() {
@@ -703,6 +727,12 @@ void MainWindow::ImportVmcLog() {
         trailingBytes += inspection.summary.trailingFillBytes;
         discardedRecords += inspection.summary.discardedTailRecords;
         discardedBytes += inspection.summary.discardedTailBytes;
+        if (inspection.summary.skippedRegions > 0) {
+            tailWarnings.append(tr("%1：负载长度故障 %2 处，跳过 %3 字节；%4")
+                .arg(FileLeaf(sources[i])).arg(inspection.summary.skippedRegions).arg(inspection.summary.skippedBytes)
+                .arg(!inspection.summary.faults.isEmpty() && !inspection.summary.faults.last().resumed
+                    ? tr("尾部未能可靠恢复") : tr("已重新定位有效帧")));
+        }
         if (inspection.summary.discardedTailRecords > 0) {
             tailWarnings.append(tr("%1：末尾残帧偏移 0x%2，忽略 %3 字节（含 FF 填充）")
                 .arg(FileLeaf(sources[i]))
@@ -735,9 +765,9 @@ void MainWindow::ImportVmcLog() {
     summaryLabel->setWordWrap(true);
     summaryLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     inspectionLayout->addWidget(summaryLabel);
-    if (discardedRecords > 0) {
-        auto* warning = new QLabel(tr("注意：将忽略末尾不完整记录 %1 条，共 %2 字节。\n%3\n"
-                                     "仅转换此前完整记录，不补造残帧、不修改原文件；详情写入输出 JSON。")
+    if (!tailWarnings.isEmpty()) {
+        auto* warning = new QLabel(tr("注意：末尾不完整记录 %1 条，共 %2 字节；其他故障见下方。\n%3\n"
+                                     "跳过故障区段后继续转换可确认的完整记录，不补造数据、不修改原文件；故障报告写入输出 JSON。")
             .arg(discardedRecords).arg(discardedBytes).arg(tailWarnings.join('\n')), &inspectionDialog);
         warning->setObjectName(QStringLiteral("vmcTailWarning"));
         warning->setWordWrap(true);
@@ -856,6 +886,13 @@ void MainWindow::ImportVmcLog() {
                               ? tr("；已忽略末尾残帧 %1 条，%2 字节（含填充）")
                                     .arg(outcome.result.discardedTailRecords)
                                     .arg(outcome.result.discardedTailBytes) : QString()));
+    if (outcome.result.skippedRegions > 0) {
+        QMessageBox report(QMessageBox::Warning, tr("转换完成，部分故障数据已跳过"),
+            tr("跳过 %1 处故障，共 %2 字节。原日志未修改。\n故障报告已保存在输出 JSON 的 source_segments / parse_fault_report 中。\n%3")
+                .arg(outcome.result.skippedRegions).arg(outcome.result.skippedBytes).arg(jsonPath), QMessageBox::Ok, this);
+        report.setDetailedText(outcome.result.faultReport.join('\n'));
+        report.exec();
+    }
 }
 
 void MainWindow::ExportRawFrames() {
@@ -1411,6 +1448,10 @@ void MainWindow::ShowSignalActionsMenu(const QVector<int>& targetIndices,
     if (!signalTreeController_ || !formatDocument_.HasFormat()) return;
     QMenu menu(this);
 
+    menu.addAction(tr("全部折叠信号组"), signalTree_, &QTreeWidget::collapseAll);
+    menu.addAction(tr("全部展开信号组"), signalTree_, &QTreeWidget::expandAll);
+    menu.addSeparator();
+
     QString unit;
     const bool canMerge = DisplayGroupManager::CanMerge(targetIndices, formatDocument_.Format(), unit);
     bool hasActions = false;
@@ -1484,7 +1525,7 @@ void MainWindow::ShowSignalActionsMenu(const QVector<int>& targetIndices,
                     .arg(stats.count).arg(stats.min, 0, 'g', 17).arg(stats.max, 0, 'g', 17));
             });
         }
-        menu.addAction(tr("信号属性（比例/整体平移）..."), this, [this, signalIndex]() {
+        menu.addAction(tr("信号属性…"), this, [this, signalIndex]() {
             ShowSignalTransformDialog(signalIndex);
         });
         if (!seriesProcessing_.Transform(signalIndex).IsIdentity()) {
@@ -1504,14 +1545,8 @@ void MainWindow::ShowSignalActionsMenu(const QVector<int>& targetIndices,
     }
 
     if (hasActions) menu.addSeparator();
-    menu.addAction(tr("取消所有展示信号"), this, [this]() {
-        if (!signalTreeController_) return;
-        signalTreeController_->SetAllSignalsChecked(false);
-        displayGroupManager_.Clear();
-        seriesProcessing_.ClearDerivedSignals();
-        SyncSignalSearchChecks();
-        UpdateCharts();
-    });
+    menu.addAction(tr("清空所有画布"), this, &MainWindow::ClearDisplayedSignals)
+        ->setObjectName("clearAllDisplays");
 
     menu.exec(globalPos);
 }
@@ -1522,6 +1557,18 @@ void MainWindow::HandleSignalsDropped(const QVector<int>& indices) {
     displayGroupManager_.RemoveSignals(indices);
     SyncSignalSearchChecks();
     UpdateCharts();
+}
+
+void MainWindow::ClearDisplayedSignals() {
+    if (!signalTreeController_) return;
+    if (mixedLoader_) mixedLoader_->Reset();
+    signalTreeController_->SetAllSignalsChecked(false);
+    displayGroupManager_.Clear();
+    seriesProcessing_.ClearDerivedSignals();
+    if (trajectoryView_) trajectoryView_->ClearDisplayedPlots();
+    SyncSignalSearchChecks();
+    UpdateCharts();
+    UpdateStatus(tr("已清空所有画布，已加载的数据仍保留，可重新选择信号"));
 }
 
 void MainWindow::HandleMergeRequested(const QVector<int>& indices) {

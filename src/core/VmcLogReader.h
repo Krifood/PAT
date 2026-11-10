@@ -45,6 +45,17 @@ struct VmcRecord {
 };
 
 struct VmcReadSummary {
+    struct Fault {
+        qint64 offset = 0;
+        qint64 skippedBytes = 0;
+        quint16 messageId = 0;
+        int declaredLength = 0;
+        int expectedLength = 0;
+        bool resumed = false;
+    };
+    QVector<Fault> faults; // First 10000 regions; aggregate counters cover all regions.
+    quint64 skippedRegions = 0;
+    quint64 skippedBytes = 0;
     quint64 recordCount = 0;
     quint64 routedRecordCount = 0;
     quint64 metadataRecordCount = 0;

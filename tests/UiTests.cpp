@@ -90,6 +90,8 @@ class UiTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void sidebarCloseAndMeasurement();
+    void collapseGroupsAndClearAllDisplays();
     void cursorReadsSamplesWithoutInterpolation();
     void readoutsFollowAllThemes();
     void timeHoverLinksSpatialCursors();
@@ -131,12 +133,119 @@ private:
     QTemporaryDir settingsDirectory_;
 };
 
+void UiTests::sidebarCloseAndMeasurement() {
+    QCOMPARE(pat::CoordinateDistance({0, 0}, {3, 4}, false), 5.0);
+    QCOMPARE(pat::CoordinateDistance({120, 30}, {120, 30}, true), 0.0);
+    QVERIFY(std::abs(pat::CoordinateDistance({0, 0}, {1, 0}, true) - 111195.0802) < 0.01);
+    QVERIFY(std::abs(pat::CoordinateDistance({179, 0}, {-179, 0}, true) - 222390.1605) < 0.01);
+    QVERIFY(std::abs(pat::CoordinateDistance({0, 0}, {0.017453292519943295, 0}, true, true) - 111195.0802) < 0.01);
+    QVERIFY(std::isnan(pat::CoordinateDistance({0, 91}, {1, 0}, true)));
+    QVERIFY(std::isnan(pat::CoordinateDistance({181, 0}, {1, 0}, true)));
+    MainWindow window;
+    window.show();
+    auto* pane = window.findChild<QWidget*>("signalPane");
+    auto* toggle = window.findChild<QPushButton*>("toggleSignalPane");
+    QVERIFY(pane && toggle);
+    toggle->click(); QVERIFY(pane->isHidden());
+    toggle->click(); QVERIFY(!pane->isHidden());
+
+    QVector<pat::Series> source(1);
+    source[0].samples = {{0, 1}, {1, 2}};
+    SignalChartView signal;
+    signal.Configure("test", {}, "s", false, {Qt::cyan}, {0}, {source[0].samples}, &source, 0, 3, 0, 1, 0);
+    QSignalSpy closed(&signal, &SignalChartView::HideSignalsRequested);
+    auto* close = signal.findChild<QToolButton*>("closeSignalPlot");
+    QVERIFY(close);
+    close->click(); QTRY_COMPARE(closed.count(), 1);
+    QCOMPARE(closed.first().first().value<QVector<int>>(), QVector<int>{0});
+
+    QString error;
+    QVERIFY(window.formatDocument_.LoadFromFile(QString::fromUtf8(PAT_SOURCE_DIR) + "/samples/cp01_b3_navigation.json", error));
+    TrajectoryView view;
+    view.ConfigureSignals(window.formatDocument_.Format());
+    QVector<pat::Series> data(window.formatDocument_.Format().signalFormats.size());
+    for (auto& series : data) series.samples = {{0, 1}, {1, 2}, {2, 3}};
+    view.SetDataSource(&data, pat::TrajectoryPairing::SampleIndex);
+    view.RefreshNow();
+    view.resize(1200, 700); view.show();
+    view.SetTheme(ThemeFor(AppThemeId::ForestDark));
+    auto* plot = view.findChild<TrajectoryPlotWidget*>();
+    auto* chart = plot->findChild<QChartView*>();
+    auto* mode = plot->findChild<QComboBox*>("trajectoryCoordinateMode");
+    auto* measure = plot->findChild<QCheckBox*>("trajectoryMeasure");
+    auto* readout = plot->findChild<QLabel*>("trajectoryMeasureReadout");
+    QVERIFY(mode && measure && readout);
+    plot->SetGeographicMode(); QCOMPARE(mode->currentIndex(), 1);
+    measure->setChecked(true);
+    QTest::qWait(100);
+    auto* line = qobject_cast<QLineSeries*>(chart->chart()->series().first());
+    QVERIFY(line && line->count() >= 2);
+    const auto pixel = [chart, line](int index) {
+        return chart->mapFromScene(chart->chart()->mapToScene(chart->chart()->mapToPosition(line->at(index), line)));
+    };
+    QTest::mouseClick(chart->viewport(), Qt::LeftButton, Qt::NoModifier, pixel(0));
+    QVERIFY(!readout->isHidden());
+    QTest::mouseMove(chart->viewport(), pixel(1));
+    QVERIFY(readout->text().contains("采样点"));
+    QVERIFY(readout->text().contains("球面"));
+    QTest::mouseClick(chart->viewport(), Qt::LeftButton, Qt::NoModifier, pixel(1));
+    const auto locked = readout->text();
+    const auto screenshotDirectory = qEnvironmentVariable("PAT_UI_SCREENSHOT_DIR");
+    if (!screenshotDirectory.isEmpty()) QVERIFY(view.grab().save(screenshotDirectory + "/geo-measure.png"));
+    QTest::mouseMove(chart->viewport(), pixel(2)); QCOMPARE(readout->text(), locked);
+    QTest::mouseClick(chart->viewport(), Qt::RightButton, Qt::NoModifier, pixel(1));
+    QVERIFY(readout->isHidden()); QVERIFY(measure->isChecked());
+    QTest::mouseClick(chart->viewport(), Qt::LeftButton, Qt::NoModifier, pixel(0));
+    QVERIFY(!readout->isHidden());
+    mode->setCurrentIndex(0); QVERIFY(readout->isHidden());
+    measure->setChecked(false);
+    QCOMPARE(chart->rubberBand(), QChartView::RectangleRubberBand);
+    const auto count = view.PlotCount();
+    view.findChild<QPushButton*>("addTrajectoryGeo")->click();
+    QCOMPARE(view.PlotCount(), count + 1);
+    for (auto* added : view.findChildren<TrajectoryPlotWidget*>()) {
+        if (added != plot) QCOMPARE(added->findChild<QComboBox*>("trajectoryCoordinateMode")->currentIndex(), 1);
+    }
+}
+
 void UiTests::initTestCase() {
     QVERIFY(settingsDirectory_.isValid());
     // Never inherit stale file-picker directories or change the user's settings.
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory_.path());
     QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, settingsDirectory_.path());
+}
+
+void UiTests::collapseGroupsAndClearAllDisplays() {
+    MainWindow window;
+    QString error;
+    const QString root = QString::fromUtf8(PAT_SOURCE_DIR);
+    QVERIFY(window.formatDocument_.LoadFromFile(root + "/samples/cp01_b3_navigation.json", error));
+    QVERIFY(window.dataSession_.Load(root + "/samples/cp01_b3_synthetic.hex", window.formatDocument_.Format(), error));
+    window.BuildSignalTree();
+    for (int i = 0; i < window.signalTree_->topLevelItemCount(); ++i)
+        QVERIFY(!window.signalTree_->topLevelItem(i)->isExpanded());
+    window.findChild<QPushButton*>("expandSignalGroups")->click();
+    QVERIFY(window.signalTree_->topLevelItem(0)->isExpanded());
+    window.findChild<QPushButton*>("collapseSignalGroups")->click();
+    QVERIFY(!window.signalTree_->topLevelItem(0)->isExpanded());
+    window.signalTreeController_->SetSignalsChecked({0, 7}, true);
+    window.UpdateCharts();
+    const auto sampleCount = window.dataSession_.Series().first().samples.size();
+    auto* plot = window.chartArea_->findChild<SignalChartView*>();
+    QVERIFY(plot);
+    emit plot->ClearAllDisplaysRequested();
+    QTRY_VERIFY(window.signalTreeController_->CollectCheckedSignalIndices().isEmpty());
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCOMPARE(window.chartArea_->findChildren<SignalChartView*>().size(), 0);
+    QCOMPARE(window.trajectoryView_->PlotCount(), 0);
+    QCOMPARE(window.dataSession_.Series().first().samples.size(), sampleCount);
+    window.signalTreeController_->SetSignalsChecked({0}, true); window.UpdateCharts();
+    QVERIFY(window.chartArea_->findChild<SignalChartView*>());
+    auto* spatial = window.trajectoryView_->AddPlot(TrajectoryDimension::ThreeD);
+    emit spatial->ClearAllDisplaysRequested();
+    QTRY_COMPARE(window.trajectoryView_->PlotCount(), 0);
+    QVERIFY(window.signalTreeController_->CollectCheckedSignalIndices().isEmpty());
 }
 
 void UiTests::cursorReadsSamplesWithoutInterpolation() {
@@ -651,7 +760,7 @@ void UiTests::indexedLoadingCoalescesAndZooms() {
 }
 
 void UiTests::themesUpdateControlsAndCharts() {
-    QCOMPARE(AvailableThemeIds().size(), 3);
+    QCOMPARE(AvailableThemeIds().size(), 4);
     QCOMPARE(ThemeIdFromKey(QStringLiteral("unknown")), AppThemeId::IndoorDark);
     for (AppThemeId id : AvailableThemeIds()) {
         const auto& theme = ThemeFor(id);

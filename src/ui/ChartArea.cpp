@@ -424,6 +424,7 @@ void ChartArea::BuildCharts() {
         auto* view = new SignalChartView(splitter_);
         view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         view->SetTheme(theme_);
+        connect(view, &SignalChartView::ClearAllDisplaysRequested, this, &ChartArea::ClearAllDisplaysRequested);
         view->Configure(group.title,
                         group.unit,
                         axisTitle_,

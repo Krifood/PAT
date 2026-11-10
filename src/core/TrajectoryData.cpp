@@ -3,8 +3,27 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 
 namespace pat {
+
+double CoordinateDistance(QPointF a, QPointF b, bool geographic, bool radians) {
+    if (!std::isfinite(a.x()) || !std::isfinite(a.y()) ||
+        !std::isfinite(b.x()) || !std::isfinite(b.y()))
+        return std::numeric_limits<double>::quiet_NaN();
+    if (!geographic) return std::hypot(b.x() - a.x(), b.y() - a.y());
+    constexpr double pi = 3.14159265358979323846;
+    const double factor = radians ? 1.0 : pi / 180.0;
+    a *= factor;
+    b *= factor;
+    if (std::abs(a.x()) > pi || std::abs(b.x()) > pi ||
+        std::abs(a.y()) > pi / 2 || std::abs(b.y()) > pi / 2)
+        return std::numeric_limits<double>::quiet_NaN();
+    const double s = std::sin((b.y() - a.y()) / 2);
+    const double t = std::sin((b.x() - a.x()) / 2);
+    const double h = std::clamp(s*s + std::cos(a.y()) * std::cos(b.y()) * t*t, 0.0, 1.0);
+    return 2 * 6371008.8 * std::atan2(std::sqrt(h), std::sqrt(1 - h));
+}
 
 QVector<QPointF> PairTrajectorySamples(const Series& xSeries, const Series& ySeries,
                                       TrajectoryPairing pairing) {

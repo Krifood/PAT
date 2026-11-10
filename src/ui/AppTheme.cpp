@@ -79,7 +79,34 @@ const AppTheme& ThemeFor(AppThemeId id) {
     static const AppTheme indoorDark = IndoorDarkTheme();
     static const AppTheme indoorLight = IndoorLightTheme();
     static const AppTheme outdoor = OutdoorHighContrastTheme();
+    static const AppTheme forest = [] {
+        auto t = IndoorDarkTheme();
+        t.id = AppThemeId::ForestDark;
+        t.key = QStringLiteral("forest_dark");
+        t.windowBackground = QColor("#19241f");
+        t.panelBackground = QColor("#24352d");
+        t.contentBackground = QColor("#1c2b24");
+        t.inputBackground = QColor("#1b2c23");
+        t.alternateBackground = QColor("#293b31");
+        t.headerBackground = QColor("#31483b");
+        t.border = QColor("#496453");
+        t.selectionBackground = QColor("#456b54");
+        t.text = t.axisText = QColor("#e0e9dd");
+        t.subduedText = QColor("#adbfaf");
+        t.buttonBackground = QColor("#304b3b");
+        t.buttonHover = QColor("#405f4b");
+        t.canvasBackground = t.chartBackgroundEven = QColor("#203027");
+        t.chartBackgroundOdd = QColor("#23352b");
+        t.plotBackgroundEven = t.plotBackgroundOdd = QColor("#19271f");
+        t.chartBorderEven = t.chartBorderOdd = t.splitter = t.border;
+        t.axisLine = QColor("#7d9482");
+        t.gridLine = QColor("#354a3c");
+        t.legendBackground = t.panelBackground;
+        t.legendBorder = t.border;
+        return t;
+    }();
     switch (id) {
+    case AppThemeId::ForestDark: return forest;
     case AppThemeId::IndoorLight: return indoorLight;
     case AppThemeId::OutdoorHighContrast: return outdoor;
     case AppThemeId::IndoorDark: return indoorDark;
@@ -88,7 +115,8 @@ const AppTheme& ThemeFor(AppThemeId id) {
 }
 
 QColor ReadoutTextColor(const AppTheme& theme) {
-    return theme.id == AppThemeId::IndoorDark ? QColor("#ffff00") : theme.text;
+    return (theme.id == AppThemeId::IndoorDark || theme.id == AppThemeId::ForestDark)
+        ? QColor("#ffff00") : theme.text;
 }
 
 QColor ReadoutBackgroundColor(const AppTheme& theme) {
@@ -104,7 +132,7 @@ QString BuildReadoutStyleSheet(const AppTheme& theme) {
 }
 
 QVector<AppThemeId> AvailableThemeIds() {
-    return {AppThemeId::IndoorDark, AppThemeId::IndoorLight,
+    return {AppThemeId::IndoorDark, AppThemeId::IndoorLight, AppThemeId::ForestDark,
             AppThemeId::OutdoorHighContrast};
 }
 
@@ -122,6 +150,8 @@ AppThemeId ThemeIdFromKey(const QString& key) {
 
 QString ThemeDisplayName(AppThemeId id) {
     switch (id) {
+    case AppThemeId::ForestDark:
+        return QCoreApplication::translate("AppTheme", "柔和深绿");
     case AppThemeId::IndoorLight:
         return QCoreApplication::translate("AppTheme", "室内亮色");
     case AppThemeId::OutdoorHighContrast:
