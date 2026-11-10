@@ -1,5 +1,7 @@
 <RCC>
   <qresource prefix="/pat">
+    <file alias="check-light.svg">../../resource/check-light.svg</file>
+    <file alias="check-dark.svg">../../resource/check-dark.svg</file>
     <file alias="changelog.md">../../CHANGELOG.md</file>
     <file alias="app-icon.png">../../resource/swordfish2_icon.png</file>
   </qresource>

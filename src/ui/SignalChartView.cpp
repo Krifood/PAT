@@ -847,8 +847,6 @@ bool SignalChartView::viewportEvent(QEvent* event) {
 
 void SignalChartView::resizeEvent(QResizeEvent* event) {
     QChartView::resizeEvent(event);
-    closeButton_->move(std::max(0, viewport()->width() - 25), 3);
-    closeButton_->raise();
     UpdateAlignedPlotArea();
     UpdateHeaderLayout();
     UpdateZeroLine();
@@ -1338,6 +1336,10 @@ void SignalChartView::UpdateHeaderLayout() {
     }
     const QRectF plotArea = chart()->plotArea();
     if (plotArea.isEmpty()) return;
+    const QRect canvas = mapFromScene(chart()->mapToScene(plotArea)).boundingRect()
+        .intersected(viewport()->rect()).adjusted(4, 4, -4, -4);
+    closeButton_->move(canvas.right() - closeButton_->width() + 1, canvas.top());
+    closeButton_->raise();
     if (extremaLabel_) {
         QStringList lines;
         for (int i = 0; i < extremaLines_.size(); ++i) {
@@ -1376,7 +1378,7 @@ void SignalChartView::UpdateHeaderLayout() {
     headerDesc_->setToolTip(descText);
     headerTitle_->setToolTip(tr("拖动到另一图合并全部信号；按住 Shift 拖动排序\n%1").arg(titleText));
     const qreal contentLeft = plotArea.left() + padding;
-    const qreal contentRight = plotArea.right() - padding;
+    const qreal contentRight = plotArea.right() - padding - closeButton_->width() - 6;
     qreal titleRight = contentRight;
 
     if (descText.isEmpty()) {

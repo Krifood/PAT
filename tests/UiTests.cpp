@@ -46,6 +46,7 @@
 #include <QSet>
 #include <QSettings>
 #include <QSplitter>
+#include <QSplitterHandle>
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTextBrowser>
@@ -144,10 +145,17 @@ void UiTests::sidebarCloseAndMeasurement() {
     MainWindow window;
     window.show();
     auto* pane = window.findChild<QWidget*>("signalPane");
-    auto* toggle = window.findChild<QPushButton*>("toggleSignalPane");
+    auto* splitter = window.findChild<QSplitter*>("signalPaneSplitter");
+    QVERIFY(splitter);
+    auto* toggle = splitter->handle(1)->findChild<QPushButton*>("toggleSignalPane");
     QVERIFY(pane && toggle);
-    toggle->click(); QVERIFY(pane->isHidden());
-    toggle->click(); QVERIFY(!pane->isHidden());
+    QTest::qWait(30);
+    const int expandedWidth = splitter->sizes().first();
+    QVERIFY(expandedWidth > 0);
+    QVERIFY(toggle->height() >= 100);
+    toggle->click(); QCOMPARE(splitter->sizes().first(), 0);
+    QVERIFY(toggle->isVisible());
+    toggle->click(); QCOMPARE(splitter->sizes().first(), expandedWidth);
 
     QVector<pat::Series> source(1);
     source[0].samples = {{0, 1}, {1, 2}};
@@ -156,6 +164,14 @@ void UiTests::sidebarCloseAndMeasurement() {
     QSignalSpy closed(&signal, &SignalChartView::HideSignalsRequested);
     auto* close = signal.findChild<QToolButton*>("closeSignalPlot");
     QVERIFY(close);
+    signal.resize(800, 350); signal.show(); QTest::qWait(30);
+    for (const QSize size : {QSize(800, 350), QSize(1100, 600), QSize(650, 300)}) {
+        signal.resize(size); QTest::qWait(30);
+        const QRect area = signal.mapFromScene(signal.chart()->mapToScene(signal.chart()->plotArea())).boundingRect();
+        QVERIFY(area.contains(close->geometry()));
+        QVERIFY(std::abs(area.right() - close->geometry().right() - 4) <= 1);
+        QVERIFY(std::abs(close->y() - area.top() - 4) <= 1);
+    }
     close->click(); QTRY_COMPARE(closed.count(), 1);
     QCOMPARE(closed.first().first().value<QVector<int>>(), QVector<int>{0});
 
@@ -169,6 +185,7 @@ void UiTests::sidebarCloseAndMeasurement() {
     view.RefreshNow();
     view.resize(1200, 700); view.show();
     view.SetTheme(ThemeFor(AppThemeId::ForestDark));
+    view.setStyleSheet(BuildApplicationStyleSheet(ThemeFor(AppThemeId::ForestDark)));
     auto* plot = view.findChild<TrajectoryPlotWidget*>();
     auto* chart = plot->findChild<QChartView*>();
     auto* mode = plot->findChild<QComboBox*>("trajectoryCoordinateMode");
@@ -225,9 +242,24 @@ void UiTests::collapseGroupsAndClearAllDisplays() {
     window.BuildSignalTree();
     for (int i = 0; i < window.signalTree_->topLevelItemCount(); ++i)
         QVERIFY(!window.signalTree_->topLevelItem(i)->isExpanded());
-    window.findChild<QPushButton*>("expandSignalGroups")->click();
+    QVERIFY(!window.findChild<QPushButton*>("expandSignalGroups"));
+    QVERIFY(!window.findChild<QPushButton*>("collapseSignalGroups"));
+    const auto triggerGroupMenu = [&window](const QString& text) {
+        QTimer::singleShot(0, &window, [text] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            QVERIFY(menu);
+            bool found = false;
+            for (auto* action : menu->actions()) if (action->text() == text) {
+                action->trigger(); found = true; break;
+            }
+            menu->close();
+            QVERIFY(found);
+        });
+        window.ShowSignalActionsMenu({}, false, QPoint(100, 100));
+    };
+    triggerGroupMenu(QStringLiteral("全部展开信号组"));
     QVERIFY(window.signalTree_->topLevelItem(0)->isExpanded());
-    window.findChild<QPushButton*>("collapseSignalGroups")->click();
+    triggerGroupMenu(QStringLiteral("全部折叠信号组"));
     QVERIFY(!window.signalTree_->topLevelItem(0)->isExpanded());
     window.signalTreeController_->SetSignalsChecked({0, 7}, true);
     window.UpdateCharts();

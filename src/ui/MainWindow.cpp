@@ -49,6 +49,7 @@
 #include <QTabWidget>
 #include <QHBoxLayout>
 #include <QSplitter>
+#include <QSplitterHandle>
 #include <QStringList>
 #include <QThread>
 #include <QVBoxLayout>
@@ -64,6 +65,47 @@
 #include <limits>
 
 namespace {
+
+class SignalPaneSplitter final : public QSplitter {
+public:
+    explicit SignalPaneSplitter(QWidget* parent) : QSplitter(Qt::Horizontal, parent) {
+        setObjectName("signalPaneSplitter");
+        setHandleWidth(18);
+    }
+protected:
+    QSplitterHandle* createHandle() override {
+        auto* handle = new QSplitterHandle(Qt::Horizontal, this);
+        auto* column = new QVBoxLayout(handle);
+        column->setContentsMargins(1, 0, 1, 0);
+        column->addStretch();
+        auto* toggle = new QPushButton(QStringLiteral("◀"), handle);
+        toggle->setObjectName("toggleSignalPane");
+        toggle->setFixedSize(16, 112);
+        toggle->setCursor(Qt::ArrowCursor);
+        toggle->setToolTip(tr("收起信号区"));
+        column->addWidget(toggle);
+        column->addStretch();
+        connect(toggle, &QPushButton::clicked, this, [this, savedWidth = 300]() mutable {
+            const auto widths = sizes();
+            if (widths.size() != 2) return;
+            const int total = widths[0] + widths[1];
+            if (widths[0] > 0) { savedWidth = widths[0]; setSizes({0, total}); }
+            else setSizes({savedWidth, std::max(1, total - savedWidth)});
+            UpdateToggle();
+        });
+        connect(this, &QSplitter::splitterMoved, toggle, [this] { UpdateToggle(); });
+        return handle;
+    }
+private:
+    void UpdateToggle() {
+        const bool collapsed = !sizes().isEmpty() && sizes().first() == 0;
+        for (auto* toggle : findChildren<QPushButton*>("toggleSignalPane")) {
+            toggle->setText(collapsed ? QStringLiteral("▶") : QStringLiteral("◀"));
+            toggle->setToolTip(collapsed ? tr("展开信号区") : tr("收起信号区"));
+            toggle->setAccessibleName(toggle->toolTip());
+        }
+    }
+};
 
 bool UseIndexedFile(const QString& path, const pat::FormatDefinition& format) {
     if (format.IsIndexedMixed()) return true;
@@ -262,7 +304,7 @@ void MainWindow::SetupUi() {
     auto* layout = new QHBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
 
-    auto* splitter = new QSplitter(Qt::Horizontal, central);
+    auto* splitter = new SignalPaneSplitter(central);
     splitter->setChildrenCollapsible(false);
 
     auto* leftPane = new QWidget(splitter);
@@ -283,16 +325,6 @@ void MainWindow::SetupUi() {
     connect(signalTree_, &SignalTreeWidget::MergeRequested,
             this, &MainWindow::HandleMergeRequested);
     leftLayout->addWidget(listLabel);
-    auto* treeActions = new QHBoxLayout;
-    auto* collapse = new QPushButton(tr("全部折叠"), leftPane);
-    auto* expand = new QPushButton(tr("全部展开"), leftPane);
-    collapse->setObjectName("collapseSignalGroups");
-    expand->setObjectName("expandSignalGroups");
-    treeActions->addWidget(collapse);
-    treeActions->addWidget(expand);
-    leftLayout->addLayout(treeActions);
-    connect(collapse, &QPushButton::clicked, signalTree_, &QTreeWidget::collapseAll);
-    connect(expand, &QPushButton::clicked, signalTree_, &QTreeWidget::expandAll);
     auto* differenceButton = new QPushButton(tr("信号运算…"), leftPane);
     differenceButton->setObjectName(QStringLiteral("createDifferenceButton"));
     connect(differenceButton, &QPushButton::clicked, differenceAction, &QAction::trigger);
@@ -335,17 +367,6 @@ void MainWindow::SetupUi() {
     auto* rightLayout = new QVBoxLayout(rightPane);
     rightLayout->setContentsMargins(2, 2, 2, 2);
     rightLayout->setSpacing(2);
-    auto* sidebarToggle = new QPushButton(tr("◀"), central);
-    sidebarToggle->setObjectName("toggleSignalPane");
-    sidebarToggle->setFixedWidth(24);
-    sidebarToggle->setToolTip(tr("收起信号区"));
-    layout->addWidget(sidebarToggle);
-    connect(sidebarToggle, &QPushButton::clicked, this, [leftPane, sidebarToggle] {
-        const bool show = leftPane->isHidden();
-        leftPane->setVisible(show);
-        sidebarToggle->setText(show ? QStringLiteral("◀") : QStringLiteral("▶"));
-        sidebarToggle->setToolTip(show ? tr("收起信号区") : tr("展开信号区"));
-    });
     auto* fileHeader = new QLabel(rightPane);
     fileHeader->setObjectName(QStringLiteral("currentFileHeader"));
     fileHeader->setText(tr("尚未打开格式或数据文件"));
@@ -424,6 +445,7 @@ void MainWindow::SetupUi() {
 
     splitter->addWidget(leftPane);
     splitter->addWidget(rightPane);
+    splitter->setCollapsible(0, true);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 3);
     splitter->setSizes({300, 980});

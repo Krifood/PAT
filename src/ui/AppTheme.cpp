@@ -189,6 +189,22 @@ QString BuildApplicationStyleSheet(const AppTheme& theme) {
                                   border-radius: 4px; padding: 4px 8px; }
         QPushButton:hover, QToolButton:hover { background: @BUTTON_HOVER@; }
         QPushButton:disabled, QToolButton:disabled { color: @SUBDUED@; }
+        QPushButton#toggleSignalPane { background: transparent; border: 0;
+                                      padding: 0; border-radius: 3px; }
+        QPushButton#toggleSignalPane:hover { background: @BUTTON_HOVER@; }
+        QToolButton#closeSignalPlot { padding: 0; border: 0; border-radius: 3px;
+                                     background: @PANEL@; font-size: 16px; }
+        QToolButton#closeSignalPlot:hover { background: @BUTTON_HOVER@; }
+        QCheckBox[plotOption="true"] { spacing: 6px; padding: 5px 6px;
+            border: 1px solid @BORDER@; border-radius: 4px; background: @BUTTON@; }
+        QCheckBox[plotOption="true"]:hover { background: @BUTTON_HOVER@; }
+        QCheckBox[plotOption="true"]:checked { background: @SELECTION@; }
+        QCheckBox[plotOption="true"]::indicator { width: 14px; height: 14px;
+            border: 1px solid @SUBDUED@; border-radius: 3px; background: @INPUT@; }
+        QCheckBox[plotOption="true"]::indicator:checked {
+            background: @SELECTION@; image: url(@CHECK_ICON@); }
+        QCheckBox[plotOption="true"]::indicator:indeterminate {
+            background: @SUBDUED@; border: 3px solid @INPUT@; }
         QTabWidget::pane { border: 1px solid @BORDER@; background: @CONTENT@; }
         QTabBar::tab { background: @PANEL@; color: @TEXT@; border: 1px solid @BORDER@;
                        padding: 5px 12px; }
@@ -209,5 +225,7 @@ QString BuildApplicationStyleSheet(const AppTheme& theme) {
     for (const auto& [token, color] : replacements) {
         style.replace(QString::fromLatin1(token), CssColor(color));
     }
+    style.replace("@CHECK_ICON@", theme.text.lightness() > 128
+        ? QStringLiteral(":/pat/check-light.svg") : QStringLiteral(":/pat/check-dark.svg"));
     return style;
 }

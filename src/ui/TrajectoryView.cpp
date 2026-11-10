@@ -356,6 +356,7 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
     layout->setSpacing(2);
 
     auto* header = new QHBoxLayout;
+    header->setSpacing(12);
     headerTitle_ = new QLabel(tr("☰  空间子图 %1").arg(plotId_ + 1), this);
     headerTitle_->setObjectName(QStringLiteral("trajectoryDragHandle_%1").arg(plotId_));
     headerTitle_->setCursor(Qt::OpenHandCursor);
@@ -366,6 +367,7 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
     headerTitle_->setFont(headerFont);
     dimensionLabel_ = new QLabel(dimension_ == TrajectoryDimension::TwoD ? tr("二维") : tr("三维"), this);
     autoRange_ = new QCheckBox(tr("自动范围"), this);
+    autoRange_->setProperty("plotOption", true);
     autoRange_->setChecked(true);
     autoRange_->setVisible(dimension_ == TrajectoryDimension::TwoD);
     auto* removeButton = new QToolButton(this);
@@ -380,6 +382,7 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
     header->addStretch();
     header->addWidget(autoRange_);
     equalAspect_ = new QCheckBox(tr("等比例坐标"), this);
+    equalAspect_->setProperty("plotOption", true);
     equalAspect_->setObjectName(QStringLiteral("trajectoryEqualAspect"));
     equalAspect_->setVisible(dimension_ == TrajectoryDimension::TwoD);
     equalAspect_->setToolTip(tr("X/Y 每单位对应相同像素长度（类似 axis equal）；不改变数据。请确保两轴单位可直接比较，经纬度不等于实际地面距离。"));
@@ -391,6 +394,7 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
         coordinateMode_->setToolTip(tr("地理模式：X 为经度，Y 为纬度；平面模式：两轴须为相同单位"));
         header->addWidget(coordinateMode_);
         measureEnabled_ = new QCheckBox(tr("测距"), this);
+        measureEnabled_->setProperty("plotOption", true);
         measureEnabled_->setObjectName("trajectoryMeasure");
         measureEnabled_->setToolTip(tr("单击采样点设置起终点，右键清除锚点"));
         header->addWidget(measureEnabled_);
@@ -406,6 +410,7 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
         });
     }
     auto* showTracks = new QCheckBox(tr("显示全部轨迹"), this);
+    showTracks->setProperty("plotOption", true);
     showTracks->setObjectName(QStringLiteral("trajectoryShowAll"));
     showTracks->setChecked(true);
     showTracks->setTristate(true);
