@@ -260,12 +260,32 @@ bool VmcLogReader::VisitRecords(const QString& path, const VmcSourceHeader& head
             break;
         }
         const qint64 recordOffset = file.pos();
+        if (quint8(marker[0]) != 0x5A) {
+            // The next frame may begin just one byte after the damaged boundary.
+            // Do not trust any header fields from an unsynchronized position.
+            const qint64 next = recover(recordOffset + 1);
+            if (next == -2 || (isCancelled && isCancelled()) || file.error() != QFileDevice::NoError) {
+                errorMessage = isCancelled && isCancelled() ? QStringLiteral("日志读取已取消") : file.errorString();
+                return false;
+            }
+            const qint64 skipped = (next >= 0 ? next : file.size()) - recordOffset;
+            ++summary.skippedRegions;
+            summary.skippedBytes += skipped;
+            if (summary.faults.size() < 10000) {
+                VmcReadSummary::Fault fault;
+                fault.offset = recordOffset;
+                fault.skippedBytes = skipped;
+                fault.resumed = next >= 0;
+                fault.kind = QStringLiteral("invalid_sync");
+                fault.observedSync = quint8(marker[0]);
+                summary.faults.append(fault);
+            }
+            if (next < 0) break;
+            if (!file.seek(next)) { errorMessage = file.errorString(); return false; }
+            continue;
+        }
         QByteArray fixed;
         if (!ReadExact(file, kRecordFixedSize, fixed, errorMessage)) return false;
-        if (quint8(fixed[0]) != 0x5A) {
-            errorMessage = QStringLiteral("数据帧同步字非法，偏移 0x%1").arg(recordOffset, 0, 16);
-            return false;
-        }
         const quint16 candidateMessageId = qFromLittleEndian<quint16>(
             reinterpret_cast<const uchar*>(fixed.constData() + 2));
         const auto descriptorIt = header.descriptorByMessageId.constFind(candidateMessageId);

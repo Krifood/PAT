@@ -67,6 +67,7 @@ public:
     void AppendSnapshots(const QVector<TrackSnapshot>& snapshots);
     void SetRemoveEnabled(bool enabled);
     void SetGeographicMode();
+    void SetDenseGrid(bool enabled);
 
 signals:
     void ClearAllDisplaysRequested();
@@ -152,6 +153,9 @@ private:
     bool measureLocked_ = false;
     bool measureTargetSnapped_ = false;
     bool aspectPending_ = false;
+    bool denseGrid_ = false;
+    bool middlePanning_ = false;
+    QPoint panLastPos_;
     bool applyingAspect_ = false;
     double baseXMin_ = -1, baseXMax_ = 1, baseYMin_ = -1, baseYMax_ = 1;
     QLabel* extrema_ = nullptr;

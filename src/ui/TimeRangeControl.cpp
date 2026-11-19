@@ -17,7 +17,7 @@ class TimeRangeBar : public QWidget {
 public:
     explicit TimeRangeBar(QWidget* parent) : QWidget(parent) {
         setObjectName(QStringLiteral("timeRangeBar"));
-        setFixedHeight(50);
+        setFixedHeight(38);
         setMinimumWidth(180);
         setMouseTracking(true);
         setToolTip(tr("尺子 0–100% 对应完整时间范围，实际时间见上方输入框。悬停已选色带联动时间游标；拖动端点选区，拖动中间平移，释放后更新数据"));
@@ -44,7 +44,7 @@ protected:
         p.setFont(rulerFont);
         p.setPen(QPen(palette().color(QPalette::Text), 1));
         const int labelStep = width() >= 500 ? 10 : 20;
-        const qreal baseline = height() - 24;
+        const qreal baseline = height() - 18;
         p.drawLine(QPointF(Pixel(0), baseline), QPointF(Pixel(1), baseline));
         for (int percent = 0; percent <= 100; percent += 5) {
             const qreal x = Pixel(percent / 100.0);
@@ -54,10 +54,10 @@ protected:
                 const QString label = QString::number(percent) + (percent == 0 || percent == 100 ? "%" : "");
                 const qreal labelWidth = p.fontMetrics().horizontalAdvance(label) + 4;
                 const qreal labelLeft = std::clamp(x - labelWidth / 2, 0.0, std::max(0.0, width() - labelWidth));
-                p.drawText(QRectF(labelLeft, 0, labelWidth, baseline - 6), Qt::AlignHCenter | Qt::AlignBottom, label);
+                p.drawText(QRectF(labelLeft, 0, labelWidth, baseline - 5), Qt::AlignHCenter | Qt::AlignBottom, label);
             }
         }
-        const qreal trackCenter = height() - 12;
+        const qreal trackCenter = height() - 8;
         const QRectF track(10, trackCenter - 4, width() - 20, 8);
         p.setPen(Qt::NoPen);
         p.setBrush(palette().color(QPalette::Mid));
@@ -67,7 +67,7 @@ protected:
         p.setPen(QPen(palette().color(QPalette::Text), 1));
         p.setBrush(palette().color(QPalette::Button));
         for (qreal x : {left, right}) {
-            p.drawRoundedRect(QRectF(x - 5, trackCenter - 9, 10, 18), 3, 3);
+            p.drawRoundedRect(QRectF(x - 5, trackCenter - 7, 10, 14), 3, 3);
         }
         if (hover_ >= 0) {
             p.setPen(QPen(Qt::black, 3));

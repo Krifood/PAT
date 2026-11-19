@@ -402,8 +402,14 @@ void ChartArea::BuildCharts() {
         return parts.join(',');
     };
     QHash<QString, QVector<GuideLine>> savedGuides;
+    QHash<QString, bool> savedDenseGrid;
+    QHash<QString, bool> savedGuideReadoutsHidden;
     for (const auto* chart : charts_) {
-        if (chart) savedGuides.insert(guideKey(chart->SeriesIndices()), chart->GuideLines());
+        if (chart) {
+            savedGuides.insert(guideKey(chart->SeriesIndices()), chart->GuideLines());
+            savedDenseGrid.insert(guideKey(chart->SeriesIndices()), chart->DenseGrid());
+            savedGuideReadoutsHidden.insert(guideKey(chart->SeriesIndices()), chart->GuideReadoutsHidden());
+        }
     }
     ClearCharts();
 
@@ -450,6 +456,8 @@ void ChartArea::BuildCharts() {
         view->SetXAxisVisible(groupIndex == groups_.size() - 1);
         view->SetPlotLeftMargin(std::max(44.0, view->YLabelWidth() + 14.0));
         view->SetGuideLines(savedGuides.value(guideKey(group.signalIndices)));
+        view->SetDenseGrid(savedDenseGrid.value(guideKey(group.signalIndices)));
+        view->SetGuideReadoutsHidden(savedGuideReadoutsHidden.value(guideKey(group.signalIndices)));
 
         connect(view, &SignalChartView::CursorMoved, this, &ChartArea::HandleCursorMoved);
         connect(view, &SignalChartView::AxisLayoutChanged, this, &ChartArea::AlignYAxisMargins);

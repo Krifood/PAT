@@ -320,14 +320,26 @@ bool UnifiedLogWriter::ConvertVmcFiles(const QStringList& sourcePaths,
         result.skippedBytes += summary.skippedBytes;
         QJsonArray faults;
         for (const auto& fault : summary.faults) {
-            const QString description = QStringLiteral("%1：偏移 0x%2，消息 0x%3，记录声明长度 %4，描述表长度 %5；跳过 %6 字节；%7")
+            QString description = QStringLiteral("%1：偏移 0x%2，消息 0x%3，记录声明长度 %4，描述表长度 %5；跳过 %6 字节；%7")
                 .arg(QFileInfo(sourcePath).fileName()).arg(fault.offset, 0, 16)
                 .arg(fault.messageId, 4, 16, QLatin1Char('0')).arg(fault.declaredLength)
                 .arg(fault.expectedLength).arg(fault.skippedBytes)
                 .arg(fault.resumed ? QStringLiteral("已在下一可靠帧边界恢复") : QStringLiteral("未找到可靠边界，剩余数据未转换"));
-            faults.append(QJsonObject{{"offset", fault.offset}, {"skipped_bytes", fault.skippedBytes},
+            QJsonObject detail{{"offset", fault.offset}, {"skipped_bytes", fault.skippedBytes},
                 {"message_id", int(fault.messageId)}, {"declared_length", fault.declaredLength},
-                {"expected_length", fault.expectedLength}, {"resumed", fault.resumed}, {"description", description}});
+                {"expected_length", fault.expectedLength}, {"resumed", fault.resumed}, {"kind", fault.kind}};
+            if (fault.kind == QStringLiteral("invalid_sync")) {
+                description = QStringLiteral("%1：偏移 0x%2，同步字非法（实际 0x%3，期望 0x5A）；跳过 %4 字节；%5")
+                    .arg(QFileInfo(sourcePath).fileName()).arg(fault.offset, 0, 16)
+                    .arg(fault.observedSync, 2, 16, QLatin1Char('0')).arg(fault.skippedBytes)
+                    .arg(fault.resumed ? QStringLiteral("已在下一可靠帧边界恢复") : QStringLiteral("未找到可靠边界，剩余数据未转换"));
+                detail["message_id"] = QJsonValue(QJsonValue::Null);
+                detail["declared_length"] = QJsonValue(QJsonValue::Null);
+                detail["expected_length"] = QJsonValue(QJsonValue::Null);
+                detail["observed_sync"] = fault.observedSync;
+            }
+            detail["description"] = description;
+            faults.append(detail);
             if (result.faultReport.size() < 200) result.faultReport.append(description);
         }
         QJsonObject segment;

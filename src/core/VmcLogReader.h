@@ -52,6 +52,8 @@ struct VmcReadSummary {
         int declaredLength = 0;
         int expectedLength = 0;
         bool resumed = false;
+        QString kind = QStringLiteral("length_mismatch");
+        int observedSync = -1;
     };
     QVector<Fault> faults; // First 10000 regions; aggregate counters cover all regions.
     quint64 skippedRegions = 0;

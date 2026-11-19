@@ -19,8 +19,7 @@ SignalTransformDialog::SignalTransformDialog(const QString& signalName,
     setMinimumWidth(430);
     auto* layout = new QVBoxLayout(this);
     auto* explanation = new QLabel(
-        tr("当前信号所有显示值 = 解析值 × 显示比例/LSB 系数 + 整体纵向平移量\n"
-           "时序图和二维/三维空间图同步应用；不修改解析值、派生图源数据或日志。"), this);
+        tr("当前信号所有显示值 = 解析值 × 显示比例/LSB 系数 + 整体纵向平移量\n"), this);
     explanation->setWordWrap(true);
     layout->addWidget(explanation);
 
@@ -67,10 +66,6 @@ DifferenceDialog::DifferenceDialog(const pat::FormatDefinition& format,
     auto* explanation = new QLabel(
         tr("选择 A、B 后生成独立的差值趋势子图，可重复创建多组对比。\n"
            "使用原始解析值（不含显示比例/平移），两信号单位须一致。\n"
-           "前值保持：仅在临时运算图合并两条时间轴，未更新的信号沿用上一值，保留高精度时间点。"
-           "仅使用共同覆盖时间，不跨日志段；段内长间隔仍会保持，请结合采样状态判断。\n"
-           "线性插值：在 A 的采样时间估算 B，只使用 B 前后有效样本，不外推、不跨日志段。"
-           "有效样本间隔较大时也会插值；突变/状态信号建议选择前值保持或严格同时间。"
            "无共同时间范围时仍无有效差值。"), this);
     explanation->setWordWrap(true);
     layout->addWidget(explanation);

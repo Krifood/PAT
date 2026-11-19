@@ -114,10 +114,65 @@ private slots:
     void vmcHaSampleRegression();
     void vmcPartialTailRecovery();
     void vmcLengthFaultRecovery();
+    void vmcSyncFaultRecovery();
     void vmcKangdingSampleRegression_data();
     void vmcKangdingSampleRegression();
     void vmcTwentyFoldStress();
 };
+
+void CoreTests::vmcSyncFaultRecovery() {
+    QTemporaryDir dir;
+    const QString path = dir.filePath("sync.bin");
+    const QByteArray clean = SyntheticVmcLog(7, false);
+    const int start = clean.size() - 17 - 7 * 24;
+    for (int scenario = 0; scenario < 5; ++scenario) {
+        QByteArray broken = clean;
+        quint64 count = 6, skipped = 24;
+        if (scenario == 0) broken[start + 24] = char(0x33); // Damaged sync byte.
+        if (scenario == 1) { // Extra bytes, including a false 5A candidate.
+            broken.insert(start + 24, QByteArray::fromHex("335a000000")); count = 7; skipped = 5;
+        }
+        if (scenario == 2) { // Lost bytes shift the next expected boundary.
+            broken.remove(start + 24, 3); skipped = 21;
+        }
+        if (scenario == 3) { // Too-short garbage tail must not hide preceding valid data.
+            broken = clean.left(start + 24) + QByteArray::fromHex("335a00");
+            count = 1; skipped = 3;
+        }
+        if (scenario == 4) { // Recovery crosses a scan-block boundary.
+            broken.insert(start + 24, QByteArray(65537, char(0x33)));
+            count = 7; skipped = 65537;
+        }
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(broken), qint64(broken.size())); file.close();
+        pat::VmcLogReader reader;
+        pat::VmcLogInspection inspection;
+        QString error;
+        QVERIFY2(reader.Inspect(path, inspection, error), qPrintable(error));
+        QCOMPARE(inspection.summary.routedRecordCount, count);
+        QCOMPARE(inspection.summary.skippedRegions, quint64(1));
+        QCOMPARE(inspection.summary.skippedBytes, skipped);
+        const auto& fault = inspection.summary.faults.first();
+        QCOMPARE(fault.offset, qint64(start + 24));
+        QCOMPARE(fault.kind, QStringLiteral("invalid_sync"));
+        QCOMPARE(fault.resumed, scenario != 3);
+        pat::UnifiedLogWriter writer;
+        pat::UnifiedLogWriteResult result;
+        QVERIFY2(writer.ConvertVmcFiles({path}, dir.filePath("out.patbin"), dir.filePath("out.json"), {}, result, error), qPrintable(error));
+        QCOMPARE(result.routedRecordCount, count);
+        QVERIFY(result.faultReport.first().contains("同步字非法"));
+        QFile report(result.jsonPath); QVERIFY(report.open(QIODevice::ReadOnly));
+        const auto detail = QJsonDocument::fromJson(report.readAll()).object()["source_segments"].toArray().first()
+            .toObject()["parse_fault_report"].toObject()["details"].toArray().first().toObject();
+        QCOMPARE(detail["kind"].toString(), QStringLiteral("invalid_sync"));
+        QVERIFY(detail["message_id"].isNull());
+        QCOMPARE(detail["observed_sync"].toInt(), fault.observedSync);
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), broken); file.close();
+        int checks = 0;
+        QVERIFY(!reader.Inspect(path, inspection, error, [&] { return ++checks > 2; }));
+        QVERIFY(error.contains("取消"));
+    }
+}
 
 void CoreTests::vmcLengthFaultRecovery() {
     QTemporaryDir dir;

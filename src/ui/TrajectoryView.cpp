@@ -7,6 +7,7 @@
 #include <QContextMenuEvent>
 #include <QGraphicsLineItem>
 #include <QGraphicsEllipseItem>
+#include "ui/PlotGridStyle.h"
 #include <QMenu>
 #include <QCompleter>
 #include <QDataStream>
@@ -147,6 +148,7 @@ public:
         tracks_ = std::move(tracks);
         update();
     }
+    void SetDenseGrid(bool enabled) { denseGrid_ = enabled; update(); }
     void SetCursorPoints(QVector<pat::TrajectoryPoint3D> points) {
         cursorPoints_ = std::move(points);
         setProperty("timeCursorPointCount", cursorPoints_.size());
@@ -194,7 +196,7 @@ protected:
         const double cy = std::cos(yaw), sy = std::sin(yaw);
         const double cp = std::cos(pitch), sp = std::sin(pitch);
         const double baseScale = std::min(area.width(), area.height()) * 0.34 * zoom_;
-        const QPointF center = area.center();
+        const QPointF center = area.center() + panOffset_;
         const auto projectNormalized = [&](double nx, double ny, double nz) {
             const double rx = nx * cy - nz * sy;
             const double rz = nx * sy + nz * cy;
@@ -219,6 +221,16 @@ protected:
         }
         painter.setPen(QPen(theme_.gridLine, 1.0, Qt::DashLine));
         for (const auto& edge : edges) painter.drawLine(cube[edge[0]], cube[edge[1]]);
+        if (denseGrid_) {
+            painter.setPen(QPen(theme_.gridLine, 0.7, Qt::DotLine));
+            for (int i = 1; i < 10; ++i) {
+                const double v = -1.0 + i * 0.2;
+                painter.drawLine(projectNormalized(v, -1, -1), projectNormalized(v, -1, 1));
+                painter.drawLine(projectNormalized(-1, -1, v), projectNormalized(1, -1, v));
+                painter.drawLine(projectNormalized(-1, v, -1), projectNormalized(1, v, -1));
+                painter.drawLine(projectNormalized(v, -1, -1), projectNormalized(v, 1, -1));
+            }
+        }
 
         for (const auto& track : tracks_) {
             if (track.points.isEmpty()) continue;
@@ -244,7 +256,7 @@ protected:
         }
         painter.setPen(theme_.axisText);
         painter.drawText(QRectF(area.left(), area.bottom() + 8, area.width(), 22),
-                         Qt::AlignCenter, tr("拖动旋转 · 滚轮缩放 · 双击复位"));
+                         Qt::AlignCenter, tr("左键旋转 · 中键平移 · 滚轮缩放 · 双击复位"));
         qreal legendX = area.left() + 8;
         const qreal legendY = area.top() + 8;
         for (const auto& track : tracks_) {
@@ -259,6 +271,10 @@ protected:
     }
 
     void mousePressEvent(QMouseEvent* event) override {
+        if (event->button() == Qt::MiddleButton) {
+            panning_ = true; lastMouse_ = event->position().toPoint();
+            setCursor(Qt::ClosedHandCursor); event->accept(); return;
+        }
         if (event->button() == Qt::LeftButton) {
             rotating_ = true;
             lastMouse_ = event->position().toPoint();
@@ -269,6 +285,14 @@ protected:
     }
 
     void mouseMoveEvent(QMouseEvent* event) override {
+        if (panning_) {
+            if (event->buttons() & Qt::MiddleButton) {
+                panOffset_ += event->position().toPoint() - lastMouse_;
+                lastMouse_ = event->position().toPoint();
+                update(); event->accept(); return;
+            }
+            panning_ = false; unsetCursor();
+        }
         pointer_ = event->position();
         pointerInside_ = rect().contains(pointer_.toPoint());
         UpdateReadout();
@@ -291,6 +315,7 @@ protected:
     }
 
     void mouseReleaseEvent(QMouseEvent* event) override {
+        if (event->button() == Qt::MiddleButton) { panning_ = false; unsetCursor(); }
         if (event->button() == Qt::LeftButton) rotating_ = false;
         QWidget::mouseReleaseEvent(event);
     }
@@ -299,6 +324,7 @@ protected:
         yawDegrees_ = -35.0;
         pitchDegrees_ = 24.0;
         zoom_ = 1.0;
+        panOffset_ = {};
         update();
         event->accept();
     }
@@ -339,6 +365,9 @@ private:
     QVector<pat::TrajectoryPoint3D> cursorPoints_;
     AppTheme theme_ = ThemeFor(AppThemeId::IndoorDark);
     bool rotating_ = false;
+    bool panning_ = false;
+    bool denseGrid_ = false;
+    QPointF panOffset_;
     QPoint lastMouse_;
     double yawDegrees_ = -35.0;
     double pitchDegrees_ = 24.0;
@@ -482,7 +511,10 @@ TrajectoryPlotWidget::TrajectoryPlotWidget(int plotId, TrajectoryDimension dimen
         layout->addWidget(chartView_, 1);
         // Stable-width labels break the label-width/aspect-range feedback loop,
         // while Qt retains ownership of layout and series/axis transforms.
-        connect(chart, &QChart::plotAreaChanged, this, [this] { ScheduleEqualAspect(); });
+        connect(chart, &QChart::plotAreaChanged, this, [this] {
+            ApplyPlotGridStyle(chartView_->chart(), denseGrid_, theme_);
+            ScheduleEqualAspect();
+        });
         const auto rangeChanged = [this] {
             if (applyingAspect_ || !equalAspect_->isChecked()) return;
             baseXMin_ = xAxis_->min(); baseXMax_ = xAxis_->max();
@@ -612,6 +644,7 @@ void TrajectoryPlotWidget::SetTheme(const AppTheme& theme) {
         }
     }
     if (canvas3D_) canvas3D_->SetTheme(theme_);
+    SetDenseGrid(denseGrid_);
     Ensure2DSeries();
     Render();
 }
@@ -1346,7 +1379,53 @@ void TrajectoryPlotWidget::UpdateMeasurementOverlay() {
     measureReadout_->raise();
 }
 
+void TrajectoryPlotWidget::SetDenseGrid(bool enabled) {
+    denseGrid_ = enabled;
+    if (chartView_) ApplyPlotGridStyle(chartView_->chart(), denseGrid_, theme_);
+    if (canvas3D_) canvas3D_->SetDenseGrid(enabled);
+}
+
 bool TrajectoryPlotWidget::eventFilter(QObject* watched, QEvent* event) {
+    if (chartView_ && watched == chartView_->viewport()) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto* mouse = static_cast<QMouseEvent*>(event);
+            const auto position = chartView_->chart()->mapFromScene(chartView_->mapToScene(mouse->position().toPoint()));
+            if (mouse->button() == Qt::MiddleButton && chartView_->chart()->plotArea().contains(position)) {
+                middlePanning_ = true; panLastPos_ = mouse->position().toPoint();
+                if (pointerReadout_) pointerReadout_->hide();
+                autoRange_->setChecked(false);
+                chartView_->viewport()->setCursor(Qt::ClosedHandCursor);
+                return true;
+            }
+        }
+        if (event->type() == QEvent::MouseMove && middlePanning_) {
+            auto* mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->buttons() & Qt::MiddleButton) {
+                const auto area = chartView_->chart()->plotArea();
+                const QPoint delta = mouse->position().toPoint() - panLastPos_;
+                panLastPos_ = mouse->position().toPoint();
+                if (!area.isEmpty()) {
+                    const double dx = -delta.x() * (xAxis_->max() - xAxis_->min()) / area.width();
+                    const double dy = delta.y() * (yAxis_->max() - yAxis_->min()) / area.height();
+                    applyingAspect_ = true;
+                    xAxis_->setRange(xAxis_->min() + dx, xAxis_->max() + dx);
+                    yAxis_->setRange(yAxis_->min() + dy, yAxis_->max() + dy);
+                    baseXMin_ = xAxis_->min(); baseXMax_ = xAxis_->max();
+                    baseYMin_ = yAxis_->min(); baseYMax_ = yAxis_->max();
+                    applyingAspect_ = false;
+                }
+                return true;
+            }
+            middlePanning_ = false;
+            chartView_->viewport()->setCursor(measureEnabled_->isChecked() ? Qt::CrossCursor : Qt::ArrowCursor);
+        }
+        if (event->type() == QEvent::MouseButtonRelease
+            && static_cast<QMouseEvent*>(event)->button() == Qt::MiddleButton) {
+            middlePanning_ = false;
+            chartView_->viewport()->setCursor(measureEnabled_->isChecked() ? Qt::CrossCursor : Qt::ArrowCursor);
+            return true;
+        }
+    }
     if (chartView_ && watched == chartView_->viewport() && measureEnabled_->isChecked()) {
         if (event->type() == QEvent::ContextMenu) {
             ClearMeasurement();
@@ -1400,6 +1479,10 @@ bool TrajectoryPlotWidget::eventFilter(QObject* watched, QEvent* event) {
         auto* context = static_cast<QContextMenuEvent*>(event);
         auto* menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
+        auto* dense = menu->addAction(dimension_ == TrajectoryDimension::TwoD ? tr("密集纵轴刻度") : tr("密集网格"));
+        dense->setObjectName("densePlotGrid");
+        dense->setCheckable(true); dense->setChecked(denseGrid_);
+        connect(dense, &QAction::toggled, this, &TrajectoryPlotWidget::SetDenseGrid);
         menu->addAction(tr("清空所有画布"), this, &TrajectoryPlotWidget::ClearAllDisplaysRequested)
             ->setObjectName("clearAllDisplays");
         if (dimension_ == TrajectoryDimension::TwoD) {

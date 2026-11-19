@@ -2,6 +2,7 @@
 
 #include "ui/SignalTreeWidget.h"
 #include "ui/CompactValueAxis.h"
+#include "ui/PlotGridStyle.h"
 
 #include <QAction>
 #include <QApplication>
@@ -162,6 +163,8 @@ SignalChartView::SignalChartView(QWidget* parent) : QChartView(parent) {
 
 void SignalChartView::SetTheme(const AppTheme& theme) {
     theme_ = theme;
+    ScheduleGuideReadouts();
+    ApplyPlotGridStyle(chart(), denseGrid_, theme_);
     setBackgroundBrush(theme_.canvasBackground);
     mousePositionLabel_->setStyleSheet(BuildReadoutStyleSheet(theme_));
     guidePopup_->setStyleSheet(BuildReadoutStyleSheet(theme_));
@@ -270,8 +273,10 @@ void SignalChartView::Configure(const QString& title,
     }
 
     setChart(chart);
+    ApplyPlotGridStyle(chart, denseGrid_, theme_);
     connect(chart, &QGraphicsWidget::geometryChanged, this, &SignalChartView::SchedulePlotLayout);
     connect(chart, &QChart::plotAreaChanged, this, [this](const QRectF&) {
+        ApplyPlotGridStyle(this->chart(), denseGrid_, theme_);
         UpdateHeaderLayout();
         UpdateZeroLine();
         UpdateGuides();
@@ -366,6 +371,7 @@ void SignalChartView::Configure(const QString& title,
 }
 
 void SignalChartView::SetSeriesSamples(const QVector<QVector<QPointF>>& seriesSamples) {
+    ScheduleGuideReadouts();
     bool hasFinite = false;
     for (int i = 0; i < series_.size() && i < seriesSamples.size(); ++i) {
         if (series_[i]) {
@@ -405,6 +411,7 @@ void SignalChartView::SetSeriesSamples(const QVector<QVector<QPointF>>& seriesSa
 
 void SignalChartView::SetDisplaySources(const QVector<const pat::Series*>& sources,
                                         const QVector<pat::DisplayTransform>& transforms) {
+    ScheduleGuideReadouts();
     displaySources_ = sources;
     displayTransforms_ = transforms;
     while (displayTransforms_.size() < displaySources_.size()) {
@@ -474,6 +481,7 @@ void SignalChartView::SetGuideLines(const QVector<GuideLine>& guides) {
     for (const auto& visual : guides_) {
         delete visual.item;
         delete visual.outline;
+        delete visual.readout;
     }
     guides_.clear();
     for (const auto& guide : guides) AddGuide(guide.orientation, guide.value);
@@ -481,6 +489,7 @@ void SignalChartView::SetGuideLines(const QVector<GuideLine>& guides) {
 
 void SignalChartView::SetRangeContext(const ChartRangeContext& context) {
     rangeContext_ = context;
+    ScheduleGuideReadouts();
 }
 
 void SignalChartView::SetXAxisRange(double minX, double maxX) {
@@ -500,7 +509,7 @@ void SignalChartView::SetYAxisRange(double minY, double maxY) {
     auto* axisY = qobject_cast<QValueAxis*>(chart()->axes(Qt::Vertical, series_.first()).value(0));
     if (!axisY) return;
     autoMinY_ = minY; autoMaxY_ = maxY;
-    const double center = minY * .5 + maxY * .5;
+    const double center = minY * .5 + maxY * .5 + yPanOffset_;
     const double half = (maxY * .5 - minY * .5) * yZoom_;
     if (std::isfinite(center - half) && std::isfinite(center + half) && half > 0)
         axisY->setRange(center - half, center + half);
@@ -518,6 +527,7 @@ void SignalChartView::ZoomY(double factor) {
 
 void SignalChartView::ResetYZoom() {
     yZoom_ = 1.0;
+    yPanOffset_ = 0.0;
     SetYAxisRange(autoMinY_, autoMaxY_);
     emit AxisLayoutChanged();
 }
@@ -544,6 +554,7 @@ void SignalChartView::HideCursor() {
         if (label) label->setVisible(false);
     }
     cursorActive_ = false;
+    LayoutGuideReadouts();
     mousePositionLabel_->hide();
     viewport()->update();
 }
@@ -553,10 +564,13 @@ void SignalChartView::SetViewIndex(int index) {
 }
 
 void SignalChartView::SetXAxisVisible(bool visible) {
+    xAxisVisible_ = visible;
     if (!chart() || series_.isEmpty()) return;
     auto* axis = qobject_cast<QValueAxis*>(chart()->axes(Qt::Horizontal, series_.first()).value(0));
     if (!axis) return;
     axis->setVisible(visible);
+    axis->setLabelsVisible(visible);
+    axis->setLineVisible(visible);
     axis->setTitleVisible(false);
     UpdateAlignedPlotArea();
 }
@@ -579,6 +593,22 @@ qreal SignalChartView::YLabelWidth() const {
 }
 
 void SignalChartView::mouseMoveEvent(QMouseEvent* event) {
+    if (middlePanning_) {
+        if (!(event->buttons() & Qt::MiddleButton)) { middlePanning_ = false; unsetCursor(); return; }
+        const QPoint delta = event->position().toPoint() - panLastPos_;
+        panLastPos_ = event->position().toPoint();
+        const auto area = chart()->plotArea();
+        auto* x = qobject_cast<QValueAxis*>(chart()->axes(Qt::Horizontal).value(0));
+        auto* y = qobject_cast<QValueAxis*>(chart()->axes(Qt::Vertical).value(0));
+        if (x && y && area.width() > 0 && area.height() > 0) {
+            const double dx = -delta.x() * (x->max() - x->min()) / area.width();
+            const double offset = yPanOffset_ + delta.y() * (y->max() - y->min()) / area.height();
+            if (std::isfinite(offset)) yPanOffset_ = offset;
+            SetYAxisRange(autoMinY_, autoMaxY_);
+            emit XRangeRequested(x->min() + dx, x->max() + dx);
+        }
+        event->accept(); return;
+    }
     if (chart() && !series_.isEmpty()) {
         const QPointF point = chart()->mapFromScene(mapToScene(event->position().toPoint()));
         const bool inside = chart()->plotArea().contains(point);
@@ -600,6 +630,7 @@ void SignalChartView::mouseMoveEvent(QMouseEvent* event) {
         infoPositions_[draggingInfo_] = QPointF(std::clamp((target.x() - area.left()) / width, 0.0, 1.0),
                                                std::clamp((target.y() - area.top()) / height, 0.0, 1.0));
         PlaceInfoBlocks();
+        LayoutGuideReadouts();
         event->accept();
         return;
     }
@@ -690,6 +721,14 @@ void SignalChartView::mouseMoveEvent(QMouseEvent* event) {
 
 void SignalChartView::mousePressEvent(QMouseEvent* event) {
     HideGuideTooltip();
+    if (event->button() == Qt::MiddleButton && chart() && !series_.isEmpty()
+        && chart()->plotArea().contains(chart()->mapFromScene(mapToScene(event->position().toPoint())))) {
+        middlePanning_ = true;
+        panLastPos_ = event->position().toPoint();
+        HideCursor(); emit CursorLeft();
+        setCursor(Qt::ClosedHandCursor);
+        event->accept(); return;
+    }
     if (event->button() != Qt::LeftButton || !chart()) return;
 
     const QPoint viewPos = event->position().toPoint();
@@ -748,6 +787,9 @@ void SignalChartView::mousePressEvent(QMouseEvent* event) {
 }
 
 void SignalChartView::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() == Qt::MiddleButton) {
+        middlePanning_ = false; unsetCursor(); event->accept(); return;
+    }
     if (event->button() == Qt::LeftButton) {
         if (chart() && !chart()->plotArea().contains(chart()->mapFromScene(mapToScene(event->position().toPoint())))) {
             HideCursor();
@@ -831,6 +873,8 @@ void SignalChartView::leaveEvent(QEvent* event) {
 }
 
 void SignalChartView::hideEvent(QHideEvent* event) {
+    middlePanning_ = false;
+    unsetCursor();
     HideGuideTooltip();
     HideCursor();
     QChartView::hideEvent(event);
@@ -922,12 +966,18 @@ void SignalChartView::AddGuide(GuideOrientation orientation, double value) {
     pen.setCosmetic(true);
     item->setPen(pen);
     item->setZValue(960);
-    guides_.append({{orientation, value}, item, outline});
+    auto* readout = new QLabel(viewport());
+    readout->setObjectName("guidePersistentReadout");
+    readout->setTextFormat(Qt::PlainText);
+    readout->setAttribute(Qt::WA_TransparentForMouseEvents);
+    readout->hide();
+    guides_.append({{orientation, value}, item, outline, readout});
     UpdateGuides();
     emit GuidesEdited();
 }
 
 void SignalChartView::UpdateGuides() {
+    ScheduleGuideReadouts();
     if (!chart() || series_.isEmpty()) return;
     const QRectF plot = chart()->plotArea();
     auto* axisX = qobject_cast<QValueAxis*>(chart()->axes(Qt::Horizontal, series_.first()).value(0));
@@ -957,6 +1007,108 @@ void SignalChartView::UpdateGuides() {
             }
         }
     }
+}
+
+void SignalChartView::SetGuideReadoutsHidden(bool hidden) {
+    guideReadoutsHidden_ = hidden;
+    HideGuideTooltip();
+    for (const auto& visual : guides_) if (visual.readout) visual.readout->hide();
+    ScheduleGuideReadouts();
+}
+
+void SignalChartView::ScheduleGuideReadouts() {
+    if (guideReadoutsPending_) return;
+    guideReadoutsPending_ = true;
+    QTimer::singleShot(0, this, [this] {
+        guideReadoutsPending_ = false;
+        UpdateGuideReadouts();
+    });
+}
+
+void SignalChartView::UpdateGuideReadouts() {
+    if (!chart()) return;
+    const QRect area = mapFromScene(chart()->mapToScene(chart()->plotArea())).boundingRect()
+        .intersected(viewport()->rect()).adjusted(5, 5, -5, -5);
+    for (int i = 0; i < guides_.size(); ++i) {
+        const auto& visual = guides_[i];
+        auto* label = visual.readout;
+        if (!label) continue;
+        label->hide();
+        if (guideReadoutsHidden_ || !visual.item || !visual.item->isVisible()
+            || area.width() < 80 || area.height() < 40) continue;
+        // Reference readouts use a dashed frame and neutral theme text; live
+        // cursor readouts retain their yellow text and signal-color stripe.
+        label->setStyleSheet(QStringLiteral("QLabel { color: %1; background: %2; border: 1px dashed %3;"
+            " border-radius: 3px; padding: 2px; font-size: 10px; }")
+            .arg(theme_.text.name(), theme_.alternateBackground.name(), theme_.border.name()));
+        const int rows = std::clamp((area.height() - 12) / std::max(1, label->fontMetrics().lineSpacing()) - 2, 1, 12);
+        const QString full = GuideTooltip(i, rows);
+        QString text = full;
+        text.replace("key=", "k:"); text.replace("val=", "v:");
+        QStringList lines = text.split('\n');
+        lines[0] = visual.guide.orientation == GuideOrientation::Horizontal
+            ? tr("横线 v:%1（几何交点）").arg(visual.guide.value, 0, 'g', 12)
+            : tr("纵线 k:%1（最近采样）").arg(visual.guide.value, 0, 'g', 12);
+        const int width = std::min(area.width(), 420);
+        for (auto& line : lines) line = label->fontMetrics().elidedText(line, Qt::ElideRight, width - 8);
+        label->setText(lines.join('\n'));
+        label->setProperty("expandedReadoutText", label->text());
+        label->setToolTip(full);
+        label->adjustSize();
+        label->show();
+    }
+    LayoutGuideReadouts();
+}
+
+void SignalChartView::LayoutGuideReadouts() {
+    if (!chart() || guideReadoutsHidden_) return;
+    const QRect area = mapFromScene(chart()->mapToScene(chart()->plotArea())).boundingRect()
+        .intersected(viewport()->rect()).adjusted(5, 5, -5, -5);
+    if (area.isEmpty()) return;
+    QVector<QRect> cursorRects, placed;
+    for (auto* cursor : valueLabels_) {
+        if (cursor && cursor->isVisible())
+            cursorRects.append(mapFromScene(cursor->sceneBoundingRect()).boundingRect().adjusted(-4, -4, 4, 4));
+    }
+    for (const auto& visual : guides_) {
+        auto* label = visual.readout;
+        if (!label || !label->isVisible()) continue;
+        const QString expanded = label->property("expandedReadoutText").toString();
+        label->setText(expanded); label->adjustSize();
+        const QPoint anchor = mapFromScene(chart()->mapToScene(visual.item->line().p1())) + QPoint(6, 6);
+        QPoint chosen = area.topLeft();
+        const auto choose = [&]() {
+            QVector<int> xs{anchor.x(), area.left(), area.right() - label->width() + 1};
+            QVector<int> ys{anchor.y(), area.top(), area.bottom() - label->height() + 1};
+            for (const auto& rect : cursorRects + placed) {
+                xs << rect.right() + 4 << rect.left() - label->width() - 4;
+                ys << rect.bottom() + 4 << rect.top() - label->height() - 4;
+            }
+            qint64 best = std::numeric_limits<qint64>::max();
+            bool found = false;
+            for (int x : xs) for (int y : ys) {
+                const QPoint candidate(std::clamp(x, area.left(), std::max(area.left(), area.right() - label->width() + 1)),
+                                       std::clamp(y, area.top(), std::max(area.top(), area.bottom() - label->height() + 1)));
+                const QRect box(candidate, label->size());
+                if (std::any_of(cursorRects.begin(), cursorRects.end(), [&](const QRect& r) { return r.intersects(box); })) continue;
+                qint64 score = (candidate - anchor).manhattanLength();
+                for (const auto& r : placed) {
+                    const auto overlap = r.intersected(box);
+                    score += qint64(overlap.width()) * overlap.height() * 1000;
+                }
+                if (score < best) { best = score; chosen = candidate; found = true; }
+            }
+            return found;
+        };
+        if (!choose()) {
+            // Keep a visible reference summary rather than cover live values.
+            label->setText(tr("辅助线 %1 · 详情可复制").arg(visual.guide.value, 0, 'g', 8));
+            label->adjustSize();
+            choose();
+        }
+        label->move(chosen); label->raise(); placed.append(label->geometry());
+    }
+    if (closeButton_) closeButton_->raise();
 }
 
 int SignalChartView::GuideAt(const QPoint& viewPos) const {
@@ -995,6 +1147,7 @@ QString SignalChartView::GuideTooltip(int index, int maxEntries) const {
         rows.append(tr("%1：key=%2  val=%3").arg(name, xText, QString::number(y, 'g', 12)));
     };
     for (int seriesIndex = 0; seriesIndex < displaySources_.size(); ++seriesIndex) {
+        if (seriesIndex < series_.size() && !series_[seriesIndex]->isVisible()) continue;
         const auto* dataPtr = displaySources_[seriesIndex];
         if (!dataPtr) continue;
         const auto& data = *dataPtr;
@@ -1060,6 +1213,7 @@ QString SignalChartView::GuideTooltip(int index, int maxEntries) const {
 }
 
 void SignalChartView::ShowGuideTooltip(int index, const QPoint& globalPos) {
+    if (guideReadoutsHidden_) return;
     const auto* screen = QGuiApplication::screenAt(globalPos);
     if (!screen) screen = this->screen();
     const QRect bounds = screen->availableGeometry().adjusted(4, 4, -4, -4);
@@ -1081,9 +1235,24 @@ void SignalChartView::HideGuideTooltip() {
     if (guidePopup_) guidePopup_->hide();
 }
 
+void SignalChartView::SetDenseGrid(bool enabled) {
+    denseGrid_ = enabled;
+    ApplyPlotGridStyle(chart(), denseGrid_, theme_);
+    SetXAxisVisible(xAxisVisible_);
+}
+
 void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
     HideGuideTooltip();
     QMenu menu(this);
+    auto* declutter = menu.addAction(tr("防拥（隐藏辅助线交点数据）"));
+    declutter->setObjectName("hideGuideReadouts");
+    declutter->setCheckable(true);
+    declutter->setChecked(guideReadoutsHidden_);
+    connect(declutter, &QAction::toggled, this, &SignalChartView::SetGuideReadoutsHidden);
+    auto* dense = menu.addAction(tr("密集纵轴刻度"));
+    dense->setObjectName("densePlotGrid");
+    dense->setCheckable(true); dense->setChecked(denseGrid_);
+    connect(dense, &QAction::toggled, this, &SignalChartView::SetDenseGrid);
     menu.addAction(tr("清空所有画布"), this, &SignalChartView::ClearAllDisplaysRequested)
         ->setObjectName("clearAllDisplays");
     menu.addSeparator();
@@ -1096,7 +1265,9 @@ void SignalChartView::contextMenuEvent(QContextMenuEvent* event) {
         menu.addAction(tr("删除辅助线"), this, [this, guideIndex]() {
             delete guides_[guideIndex].item;
             delete guides_[guideIndex].outline;
+            delete guides_[guideIndex].readout;
             guides_.removeAt(guideIndex);
+            ScheduleGuideReadouts();
             HideGuideTooltip();
             emit GuidesEdited();
         });
@@ -1538,7 +1709,7 @@ void SignalChartView::UpdateCursor(double cursorX) {
                            bounds.width(), bounds.height()});
     }
 
-    if (placements.isEmpty()) return;
+    if (placements.isEmpty()) { LayoutGuideReadouts(); return; }
     std::stable_sort(placements.begin(), placements.end(),
                      [](const auto& left, const auto& right) {
         return left.desiredTop < right.desiredTop;
@@ -1637,4 +1808,5 @@ void SignalChartView::UpdateCursor(double cursorX) {
         }
     }
     PlaceInfoBlocks();
+    LayoutGuideReadouts();
 }

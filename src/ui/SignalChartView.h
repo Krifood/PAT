@@ -53,6 +53,10 @@ public:
     explicit SignalChartView(QWidget* parent = nullptr);
 
     void SetTheme(const AppTheme& theme);
+    void SetDenseGrid(bool enabled);
+    bool DenseGrid() const { return denseGrid_; }
+    void SetGuideReadoutsHidden(bool hidden);
+    bool GuideReadoutsHidden() const { return guideReadoutsHidden_; }
     void Configure(const QString& title,
                    const QString& unit,
                    const QString& timeUnit,
@@ -138,6 +142,11 @@ private:
     bool plotLayoutPending_ = false;
     bool updatingPlotLayout_ = false;
     void UpdateGuides();
+    void ScheduleGuideReadouts();
+    void UpdateGuideReadouts();
+    void LayoutGuideReadouts();
+    bool guideReadoutsPending_ = false;
+    bool guideReadoutsHidden_ = false;
     int GuideAt(const QPoint& viewPos) const;
     void AddGuide(GuideOrientation orientation, double value);
     void InputGuidePosition(GuideOrientation orientation, double initial, int index = -1);
@@ -151,6 +160,7 @@ private:
         GuideLine guide;
         QGraphicsLineItem* item = nullptr;
         QGraphicsLineItem* outline = nullptr;
+        QLabel* readout = nullptr;
     };
     QVector<GuideVisual> guides_;
     int draggingGuide_ = -1;
@@ -182,6 +192,10 @@ private:
     ChartRangeContext rangeContext_;
     bool cursorActive_ = false;
     bool panning_ = false;
+    bool middlePanning_ = false;
+    bool denseGrid_ = false;
+    bool xAxisVisible_ = true;
+    double yPanOffset_ = 0.0;
     QPoint panLastPos_;
     bool rubberActive_ = false;
     bool rubberShown_ = false;

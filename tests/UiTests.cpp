@@ -91,6 +91,7 @@ class UiTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void middlePanAndDenseGrid();
     void sidebarCloseAndMeasurement();
     void collapseGroupsAndClearAllDisplays();
     void cursorReadsSamplesWithoutInterpolation();
@@ -133,6 +134,68 @@ private slots:
 private:
     QTemporaryDir settingsDirectory_;
 };
+
+void UiTests::middlePanAndDenseGrid() {
+    const auto drag = [](QWidget* viewport, QPoint start, QPoint end) {
+        QTest::mousePress(viewport, Qt::MiddleButton, Qt::NoModifier, start);
+        QMouseEvent move(QEvent::MouseMove, end, viewport->mapToGlobal(end), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+        QApplication::sendEvent(viewport, &move);
+        QTest::mouseRelease(viewport, Qt::MiddleButton, Qt::NoModifier, end);
+    };
+    QVector<pat::Series> source(1);
+    source[0].samples = {{0, 0}, {10, 10}};
+    SignalChartView view;
+    view.Configure("pan", {}, "s", false, {Qt::cyan}, {0}, {source[0].samples}, &source, 0, 10, 0, 10, 0);
+    view.resize(800, 400); view.show(); QTest::qWait(30);
+    view.SetGuideLines({{GuideOrientation::Horizontal, 5}});
+    view.SetDenseGrid(true);
+    for (auto* axis : view.chart()->axes()) QCOMPARE(qobject_cast<QValueAxis*>(axis)->minorTickCount(), 0);
+    QSignalSpy pan(&view, &SignalChartView::XRangeRequested);
+    auto* y = qobject_cast<QValueAxis*>(view.chart()->axes(Qt::Vertical).first());
+    QVERIFY(y->tickCount() > 3);
+    auto* labeledY = dynamic_cast<CompactValueAxis*>(y);
+    QVERIFY(labeledY);
+    QCOMPARE(labeledY->categoriesLabels().size(), y->tickCount());
+    const int compactCount = y->tickCount();
+    view.resize(800, 700); QTest::qWait(50);
+    QVERIFY(y->tickCount() > compactCount);
+    QCOMPARE(labeledY->categoriesLabels().size(), y->tickCount());
+    for (int i = 0; i < y->tickCount(); ++i) {
+        const double expected = y->min() + (y->max() - y->min()) * i / (y->tickCount() - 1);
+        QVERIFY(std::abs(labeledY->endValue(labeledY->categoriesLabels()[i]) - expected) < 1e-8);
+    }
+    const double beforeY = y->min();
+    const QPoint start = view.mapFromScene(view.chart()->mapToScene(view.chart()->plotArea().center()));
+    drag(view.viewport(), start, start + QPoint(40, 20));
+    QCOMPARE(pan.count(), 1);
+    QVERIFY(pan.first()[0].toDouble() < 0);
+    QVERIFY(y->min() > beforeY);
+    QCOMPARE(view.GuideLines().size(), 1);
+    view.ResetYZoom(); QCOMPARE(y->min(), beforeY);
+    view.SetDenseGrid(false);
+    QCOMPARE(y->tickCount(), 3);
+    for (auto* axis : view.chart()->axes()) QCOMPARE(qobject_cast<QValueAxis*>(axis)->minorTickCount(), 0);
+
+    TrajectoryPlotWidget spatial(0, TrajectoryDimension::TwoD);
+    spatial.resize(1100, 600); spatial.show(); QTest::qWait(30);
+    auto* chart = spatial.findChild<QChartView*>();
+    auto* x = qobject_cast<QValueAxis*>(chart->chart()->axes(Qt::Horizontal).first());
+    spatial.SetDenseGrid(true);
+    QCOMPARE(x->minorTickCount(), 0);
+    QCOMPARE(x->tickCount(), 5);
+    auto* spatialY = qobject_cast<QValueAxis*>(chart->chart()->axes(Qt::Vertical).first());
+    QVERIFY(spatialY->tickCount() > 5);
+    const double beforeX = x->min(), span = x->max() - x->min();
+    const QPoint center = chart->mapFromScene(chart->chart()->mapToScene(chart->chart()->plotArea().center()));
+    drag(chart->viewport(), center, center + QPoint(30, 20));
+    QVERIFY(x->min() < beforeX);
+    QVERIFY(std::abs(x->max() - x->min() - span) < 1e-10);
+    spatial.SetTheme(ThemeFor(AppThemeId::ForestDark));
+    QVERIFY(spatialY->tickCount() > 5);
+    spatial.SetDenseGrid(false);
+    QCOMPARE(spatialY->tickCount(), 5);
+    QCOMPARE(x->tickCount(), 5);
+}
 
 void UiTests::sidebarCloseAndMeasurement() {
     QCOMPARE(pat::CoordinateDistance({0, 0}, {3, 4}, false), 5.0);
@@ -1094,6 +1157,9 @@ void UiTests::sharedCursorClearsWithoutTrails() {
         QCOMPARE(chart->viewportUpdateMode(), QGraphicsView::FullViewportUpdate);
         chart->SetGuideLines({{GuideOrientation::Horizontal, .5}});
         chart->HideCursor();
+        // Capture the persistent readouts after their coalesced update, so the
+        // before/after comparison still detects cursor trails, not new labels.
+        QApplication::processEvents();
         clean.append(chart->viewport()->grab().toImage());
     }
     for (int n = 0; n < 60; ++n) {
@@ -1983,6 +2049,21 @@ void UiTests::guideShowsAllCrossingsAndKeepsCursor() {
         if (line && line->zValue() == 960 && line->pen().color() == ThemeFor(AppThemeId::IndoorDark).guideLine) guideItem = line;
     }
     QVERIFY(guideItem);
+    auto* persistent = view.findChild<QLabel*>("guidePersistentReadout");
+    QVERIFY(persistent);
+    QVERIFY(persistent->isVisible());
+    QVERIFY(persistent->text().contains("k:0.5"));
+    QVERIFY(persistent->styleSheet().contains("dashed"));
+    for (double position : {0.1, 1.0, 2.0, 3.0, 3.9}) {
+        view.SetCursorX(position);
+        for (auto* item : view.chart()->childItems()) {
+            auto* cursor = dynamic_cast<QGraphicsSimpleTextItem*>(item);
+            if (!cursor || !cursor->isVisible() || !cursor->text().startsWith("k:")) continue;
+            const QRect cursorRect = view.mapFromScene(cursor->sceneBoundingRect()).boundingRect();
+            QVERIFY2(!persistent->geometry().intersects(cursorRect), "reference readout must avoid live cursor values");
+        }
+    }
+    view.HideCursor();
     QCOMPARE(guideItem->pen().widthF(), 1.0);
     const QPointF chartPoint(view.chart()->plotArea().center().x(), guideItem->line().y1());
     const QPoint viewPoint = view.mapFromScene(view.chart()->mapToScene(chartPoint));
@@ -2010,10 +2091,31 @@ void UiTests::guideShowsAllCrossingsAndKeepsCursor() {
     QEvent leave(QEvent::Leave);
     QCoreApplication::sendEvent(&view, &leave);
     QVERIFY(!popup->isVisible());
+    QVERIFY(persistent->isVisible());
+    const auto toggleDeclutter = [&] {
+        QTimer::singleShot(0, &view, [&] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            QVERIFY(menu);
+            auto* action = menu->findChild<QAction*>("hideGuideReadouts");
+            QVERIFY(action); action->trigger(); menu->close();
+        });
+        QContextMenuEvent context(QContextMenuEvent::Mouse, viewPoint, view.mapToGlobal(viewPoint));
+        QCoreApplication::sendEvent(view.viewport(), &context);
+    };
+    toggleDeclutter();
+    QVERIFY(view.GuideReadoutsHidden());
+    QVERIFY(!persistent->isVisible());
+    QVERIFY(guideItem->isVisible());
+    QCoreApplication::sendEvent(view.viewport(), &move);
+    QVERIFY(!popup->isVisible());
+    toggleDeclutter();
+    QTRY_VERIFY(persistent->isVisible());
+    QVERIFY(!view.GuideReadoutsHidden());
     QCoreApplication::sendEvent(view.viewport(), &move);
     QVERIFY(popup->isVisible());
     view.SetGuideLines({});
     QVERIFY(!popup->isVisible());
+    QVERIFY(view.findChildren<QLabel*>("guidePersistentReadout").isEmpty());
 }
 
 void UiTests::timeRangeControlSupportsHandlesAndPanning() {
@@ -2029,7 +2131,7 @@ void UiTests::timeRangeControlSupportsHandlesAndPanning() {
     auto* end = control.findChild<QDoubleSpinBox*>("timeRangeEnd");
     auto* reset = control.findChild<QPushButton*>("timeRangeReset");
     QVERIFY(bar && start && end && reset);
-    QCOMPARE(bar->height(), 50);
+    QCOMPARE(bar->height(), 38);
     QVERIFY(bar->accessibleDescription().contains("100%"));
     for (AppThemeId themeId : AvailableThemeIds()) {
         const auto& theme = ThemeFor(themeId);
